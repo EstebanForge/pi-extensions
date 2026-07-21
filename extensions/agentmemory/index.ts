@@ -5,6 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { createPlaintextBearerAuthGuard } from "./security.js";
 import { ensureServer } from "./server.js";
+import { loadFlagSettings, saveFlagSetting } from "./flag-settings.js";
 
 type TextBlock = { type?: string; text?: string };
 type AssistantMessage = { role?: string; content?: unknown };
@@ -165,14 +166,19 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
   // Register Pi-idiomatic flags at factory load time, NOT inside
   // session_start. registerFlag is static setup; calling it per session
-  // would clobber user preferences on every /new or /reload. Both flags
-  // default off/false as written here; agentmemory-npx-fallback is
-  // overridden to default true below (it only matters once auto-start is on).
+  // would clobber user preferences on every /new or /reload. Defaults are
+  // seeded from the persisted settings file (<piDir>/pi-agentmemory.json)
+  // when it has an explicit boolean for a flag, so toggles survive a pi
+  // restart; otherwise the in-code default below applies. Reloading the
+  // session re-runs this factory and re-seeds, which is how a toggle applies.
+  const persisted = loadFlagSettings();
   for (const f of FLAGS) {
+    const stored = persisted[f.name];
     pi.registerFlag(f.name, {
       description: f.description,
       type: "boolean",
-      default: f.name === "agentmemory-npx-fallback",
+      default:
+        typeof stored === "boolean" ? stored : f.name === "agentmemory-npx-fallback",
     });
   }
 
@@ -233,15 +239,15 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       ...flagLines,
       "",
       "toggle: /agentmemory toggle <flag>   (shorthand: /agentmemory <flag>)",
-      "also:   pi config set <flag> true",
     ].join("\n");
   }
 
   // /agentmemory — status display by default; `toggle <flag>` (or bare
   // `<flag>`) flips a boolean. ExtensionAPI exposes no live setFlag, so a
-  // toggle persists via `pi config set` and then reloads the session so
-  // the in-memory flag value picks up the change. ctx is stale after
-  // reload() — we notify first, reload last, and return immediately.
+  // toggle writes through to <piDir>/pi-agentmemory.json and then reloads
+  // the session so the in-memory flag value picks up the change. ctx is
+  // stale after reload() — we notify first, reload last, and return
+  // immediately.
   pi.registerCommand("agentmemory", {
     description:
       "agentmemory: show server health + flags, or toggle a flag. Usage: /agentmemory [toggle <flag>]",
@@ -273,7 +279,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       const trimmed = args.trim();
 
       // Toggle mode: `/agentmemory toggle <flag>` or `/agentmemory <flag>`.
-      // Direct one-shot flip — persists via `pi config set` then reloads.
+      // Direct one-shot flip — persists to the settings file then reloads.
       // Bare `/agentmemory toggle` (no flag) and `/agentmemory status`
       // fall through to the menu.
       if (
@@ -293,15 +299,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
         }
         const current = pi.getFlag(meta.name) === true;
         const next = !current;
-        const result = await pi.exec("pi", [
-          "config",
-          "set",
-          meta.name,
-          String(next),
-        ]);
-        if (result.code !== 0) {
+        if (!saveFlagSetting(meta.name, next)) {
           ctx.ui.notify(
-            `Failed to set ${meta.name}: ${result.stderr.trim() || `exit ${result.code}`}`,
+            `Failed to persist ${meta.name} (disk write failed).`,
             "error",
           );
           return;
@@ -378,9 +378,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
       const failures: string[] = [];
       for (const [name, val] of deltas) {
-        const r = await pi.exec("pi", ["config", "set", name, String(val)]);
-        if (r.code !== 0)
-          failures.push(`${name} (${r.stderr.trim() || `exit ${r.code}`})`);
+        if (!saveFlagSetting(name, val)) failures.push(name);
       }
       if (failures.length > 0) {
         ctx.ui.notify(`Failed to apply: ${failures.join("; ")}`, "error");
