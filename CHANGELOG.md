@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 — 2026-08-06
+
+### Changed
+- **Dependencies updated.** Raised the `pi-coding-agent`, `pi-ai`, `pi-tui` dev pins to `^0.84.0`. Audited against the pi v0.84.0 breaking changes (renamed `ModelsRequestTransforms`, null-tolerant `getApiKeyAndHeaders` headers, dropped `message_update` partial fields, v4 session APIs); no code changes were needed and `tsc`/`typecheck` passes against 0.84.0.
+
+### Fixed
+- **Header type widened to match pi-ai `ProviderHeaders`.** `SlotContext.getApiKeyAndHeaders` declared `headers?: Record<string, string>`; pi v0.84.0 made header values `string | null` (a `null` value is a deletion marker). Widened to `Record<string, string | null>`. Runtime behavior was already correct — headers are forwarded to pi-ai `complete()` unchanged, exactly as v0.84.0 requires — so this is a type-accuracy fix, not a behavior change.
+
 ## 1.0.0 — 2026-06-30
 
 Initial release. Ports the Mixture of Agents technique from

@@ -82,7 +82,7 @@ export interface SlotContext {
 	modelRegistry: {
 		find(provider: string, modelId: string): unknown;
 		getApiKeyAndHeaders(model: unknown): Promise<
-			| { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> }
+			| { ok: true; apiKey?: string; headers?: Record<string, string | null>; env?: Record<string, string> }
 			| { ok: false; error: string }
 		>;
 	};
