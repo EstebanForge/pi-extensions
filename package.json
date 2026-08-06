@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-agentmemory",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Pi-native agent-memory.dev tools — cross-session memory via REST, no MCP dependency",
   "keywords": [
     "pi-package"
@@ -48,8 +48,8 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.7",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@earendil-works/pi-tui": "^0.84.0",
     "typebox": "*"
   }
 }
