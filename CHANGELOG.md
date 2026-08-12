@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.8 (2026-08-12)
+
+### Fixed
+- **Plaintext-HTTP bearer warning no longer pins to the screen.** The warning fired via `console.warn`, which lands on stderr; pi's TUI captures stderr and holds it above the input box for the whole session, breaking the layout. It is now routed through `ctx.ui.notify`, the same ephemeral toast path `pi-antigravity-bridge` uses for its lifecycle messages. Headless modes (no UI) keep the `console.warn` fallback. `AGENTMEMORY_REQUIRE_HTTPS=1` still throws.
+- **Warning no longer prints twice.** Two entry points trip the guard during `session_start`: the host extension (`index.ts`, via the health check) and the server launcher (`server.ts`, via `isServerHealthy`). Each constructed its own `createPlaintextBearerAuthGuard()`, and the closure's dedupe flag only covers one instance, so both warned. They now share a single `guardPlaintextBearerAuth` singleton in `security.ts` with module-level dedupe, collapsing to one toast per session. `resetPlaintextBearerAuthWarning()` re-arms it each session so `/new` can surface it again.
+
+### Added
+- `tests/security.test.ts` covering the shared singleton: cross-call dedupe, `ui.notify` sink routing vs. `console.warn` fallback, per-session reset, loopback/no-secret skips, and the `AGENTMEMORY_REQUIRE_HTTPS=1` throw.
+
 ## 1.0.7 — 2026-08-06
 
 ### Changed

@@ -10,14 +10,13 @@
 // previous Pi, is never started twice. An in-flight dedup promise keeps a single
 // Pi process from spawning more than once if several tools fire while it's down.
 import { spawn } from "node:child_process";
-import { createPlaintextBearerAuthGuard } from "./security.js";
+import { guardPlaintextBearerAuth } from "./security.js";
 
 const NPX_ARGS = ["-y", "@agentmemory/agentmemory@latest"];
 const START_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 500;
 const IS_WIN = process.platform === "win32";
 const SPAWN_COOLDOWN_MS = 30_000;
-const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard();
 
 let lastSpawnAt = 0;
 

@@ -3,7 +3,11 @@ import { Type } from "typebox";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import path from "node:path";
 import crypto from "node:crypto";
-import { createPlaintextBearerAuthGuard } from "./security.js";
+import {
+  guardPlaintextBearerAuth,
+  setPlaintextBearerAuthNotifySink,
+  resetPlaintextBearerAuthWarning,
+} from "./security.js";
 import { ensureServer } from "./server.js";
 import { loadFlagSettings, saveFlagSetting } from "./flag-settings.js";
 
@@ -47,7 +51,6 @@ function classifyHealth(health: HealthResponse | null): HealthClass {
 }
 
 const DEFAULT_URL = process.env.AGENTMEMORY_URL || "http://localhost:3111";
-const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard();
 
 // User-facing flags. Single source of truth — drives registerFlag, the
 // /agentmemory status display, autocomplete, and the toggle subcommand.
@@ -694,6 +697,15 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     // health check; tools and before_agent_start await the shared attempt if
     // they need the server. Snapshot ui for the fire-and-forget callback.
     const { ui } = ctx;
+    // Route the plaintext-HTTP bearer warning through ui.notify (an ephemeral
+    // toast) instead of console.warn (stderr, which pi's TUI pins above the
+    // input for the whole session). Re-arm the per-session dedupe so each
+    // session can surface the warning once. Must run before ensureServer and
+    // refreshStatus: their health checks are the first calls to trip the guard,
+    // and both index.ts and server.ts share the singleton, so this collapses
+    // the previous double warning into a single toast.
+    setPlaintextBearerAuthNotifySink((msg, level) => ui.notify(msg, level));
+    resetPlaintextBearerAuthWarning();
     void ensureServer(ensureOpts())
       .then((ensured) => {
         if (ensured.ok && ensured.started && !autoStartedNotified) {
