@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.9 (2026-08-13)
+
+### Changed
+- **Plaintext-HTTP bearer notice no longer renders as a yellow warning.** The startup toast fired at `ui.notify` `warning` level, so pi's TUI pinned it in warning yellow above the input for the whole session, louder than every other startup message. It now fires at `info` level and matches the color of the other initial agent messages (status line, "server started automatically"). The message text is unchanged and still names the risk; `AGENTMEMORY_REQUIRE_HTTPS=1` still throws.
+
 ## 1.0.8 (2026-08-12)
 
 ### Fixed

@@ -37,7 +37,7 @@ describe("shared singleton guardPlaintextBearerAuth", () => {
     expect(sink).toHaveBeenCalledTimes(1);
     expect(sink).toHaveBeenLastCalledWith(
       expect.stringContaining("AGENTMEMORY_SECRET is configured for plaintext HTTP"),
-      "warning",
+      "info",
     );
   });
 

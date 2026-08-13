@@ -83,6 +83,10 @@ export function guardPlaintextBearerAuth(
   if (plaintextBearerAuthWarned) return;
   plaintextBearerAuthWarned = true;
   if (plaintextBearerAuthNotifySink)
-    plaintextBearerAuthNotifySink(message, "warning");
+    // info level: matches the other startup toasts (e.g. "server started
+    // automatically") instead of pinning a yellow warning above the input
+    // for the whole session. The message text still describes the risk; the
+    // hard-fail path (AGENTMEMORY_REQUIRE_HTTPS=1) throws above.
+    plaintextBearerAuthNotifySink(message, "info");
   else console.warn(message);
 }
