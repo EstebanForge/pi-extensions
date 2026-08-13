@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1] - 2026-08-13
+
+### Added
+
+- **Model and thinking effort shown next to the tool name.** While a
+  delegation runs, the TUI now renders
+  `AskClaude [model=sonnet, thinking=high]` with a prompt preview, plus a
+  tidy result row (`✓ AskClaude 12.3s`) with an expandable body. Built on
+  pi's `renderCall`/`renderResult` hooks; the values shown are the resolved
+  config defaults, not just the args the caller passed.
+- **Opt-in full-context delegation (`includeContext`).** New boolean param
+  (default `false`, isolated one-shot unchanged). When `true`, the current pi
+  conversation is exported as resolved markdown to
+  `~/.pi/extensions-data/estebanforge/pi-ask-claude/` and the prompt tells
+  Claude to read it first. The temp file is removed after the run.
+
 ## [1.0.0] - 2026-08-12
 
 Initial release.

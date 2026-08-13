@@ -41,11 +41,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
 	CONFIG_DIR_NAME,
+	buildSessionContext,
 	getAgentDir,
 	getSettingsListTheme,
+	keyHint,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, contentText } from "@earendil-works/pi-ai";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -55,6 +57,10 @@ const DEFAULT_TIMEOUT_MIN = 10;
 const GRACE_AFTER_TIMEOUT_MS = 5000;
 const STATUS_INTERVAL_MS = 1000;
 const DISCOVERY_TIMEOUT_MS = 8_000;
+
+// renderCall / renderResult preview limits (match pi-claude-bridge).
+const PREVIEW_MAX_CHARS = 1000;
+const PREVIEW_MAX_LINES = 6;
 
 const DEFAULT_MODEL = "sonnet";
 const DEFAULT_MODE = "read";
@@ -477,6 +483,73 @@ function describeStreamEvent(ev: ClaudeStreamEvent): string | null {
 	return null;
 }
 
+// --- Full-context export (opt-in includeContext) --------------------------
+// NOTE: this helper is intentionally duplicated per pi-ask-* package (each is
+// self-contained). Duck-typed over role/content so it tolerates AgentMessage's
+// union + custom message types without importing fragile internal generics.
+
+// Tool-call inputs and tool-result bodies are clamped so the exported
+// transcript stays reviewable; the agent can re-read any source file by path.
+// User/assistant prose is kept in full (that IS the conversation).
+const CONTEXT_BLOCK_MAX_CHARS = 2000;
+
+function clampBlock(text: unknown, limit = CONTEXT_BLOCK_MAX_CHARS): string {
+	const t = String(text ?? "");
+	return t.length > limit ? `${t.slice(0, limit)}\n…[truncated, ${t.length - limit} more chars]` : t;
+}
+
+/** Render resolved pi AgentMessages to a readable markdown transcript.
+ *  Pure: no IO. Caller writes the returned string to a temp file. */
+export function renderAgentMessagesMarkdown(messages: readonly unknown[]): string {
+	const lines: string[] = [
+		"# Pi conversation context",
+		"",
+		`_Exported for full-context delegation. ${messages.length} message(s)._`,
+		"",
+	];
+	for (const raw of messages) {
+		const m = raw as { role?: string; content?: unknown };
+		const role = m.role ?? "message";
+		const content = m.content;
+		if (role === "assistant") {
+			const blocks = (Array.isArray(content) ? content : []) as ReadonlyArray<{
+				type: string;
+				text?: string;
+				name?: string;
+				input?: unknown;
+			}>;
+			const text = blocks
+				.filter((b) => b.type === "text")
+				.map((b) => b.text ?? "")
+				.join("\n");
+			if (text.trim()) lines.push("## Assistant", "", text, "");
+			for (const b of blocks) {
+				if (b.type === "toolCall" || b.type === "tool_use") {
+					const input = clampBlock(
+						typeof b.input === "string" ? b.input : JSON.stringify(b.input ?? ""),
+						500,
+					);
+					lines.push(`> tool call: ${b.name ?? "(unknown)"}(${input})`, "");
+				}
+			}
+		} else if (role === "toolResult" || role === "tool_result" || role === "tool") {
+			const text = contentText(content as any);
+			if (text.trim()) lines.push("## Tool result", "", clampBlock(text), "");
+		} else {
+			const text = contentText(content as any);
+			if (text.trim()) lines.push(`## ${role}`, "", clampBlock(text), "");
+		}
+	}
+	return lines.join("\n");
+}
+
+/** Centralized scratch dir for full-context exports, following the
+ *  ~/.pi/extensions-data/<author>/<extension>/ convention (see pi-token-cost-ledger).
+ *  Derived from getAgentDir() so rebranded distros resolve correctly. */
+function askContextDir(): string {
+	return path.join(path.dirname(getAgentDir()), "extensions-data", "estebanforge", "pi-ask-claude");
+}
+
 // --- Extension -------------------------------------------------------------
 
 interface ClaudeDetails {
@@ -484,6 +557,7 @@ interface ClaudeDetails {
 	mode: PermissionMode;
 	effort: Effort;
 	sessionId: string | null;
+	includeContext: boolean;
 	exitCode: number;
 	aborted: boolean;
 	timedOut: boolean;
@@ -503,6 +577,7 @@ function emptyDetails(model: string | null, mode: PermissionMode, effort: Effort
 		mode,
 		effort,
 		sessionId: null,
+		includeContext: false,
 		exitCode: 0,
 		aborted: false,
 		timedOut: false,
@@ -710,6 +785,12 @@ export default async function (pi: ExtensionAPI) {
 						"Omit for a one-shot (Claude starts a fresh session). To CONTINUE a previous Claude session with its context intact, pass the sessionId returned in that call's details. Claude resumes that session.",
 				}),
 			),
+			includeContext: Type.Optional(
+				Type.Boolean({
+					description:
+						"When true, export the current pi conversation (resolved, as markdown) to a temp file inside the workspace and tell Claude to read it first. Default false (isolated one-shot). Opt in only when the user explicitly wants Claude to see the full conversation; it costs Claude tokens to read.",
+				}),
+			),
 			systemPrompt: Type.Optional(
 				Type.String({
 					description: "Replace Claude's default system prompt entirely (--system-prompt). Rarely needed.",
@@ -726,6 +807,67 @@ export default async function (pi: ExtensionAPI) {
 				}),
 			),
 		}),
+		renderCall(args, theme, context) {
+			// Show RESOLVED model/thinking/mode (config defaults applied) so the
+			// row identifies what will actually run, not just explicit args.
+			const cfg = loadConfig(context.cwd);
+			const model = (args.model as string | undefined)?.trim() || cfg.defaultModel;
+			const effort: Effort = isEffort(args.thinking) ? args.thinking : cfg.defaultEffort;
+			const mode: PermissionMode = isPermissionMode(args.mode) ? args.mode : cfg.defaultMode;
+			const isContinue =
+				typeof args.sessionId === "string" && SESSION_ID_RE.test(args.sessionId);
+
+			const tags: string[] = [`model=${model}`, `thinking=${effort}`];
+			if (mode !== cfg.defaultMode) tags.push(`mode=${mode}`);
+			if (isContinue) tags.push("continue");
+			if (args.includeContext) tags.push("context=full");
+
+			let text = theme.fg("mdLink", theme.bold("AskClaude "));
+			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
+
+			const prompt = String(args.prompt ?? "");
+			const truncated = prompt.length > PREVIEW_MAX_CHARS ? prompt.slice(0, PREVIEW_MAX_CHARS) : prompt;
+			const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
+			text += theme.fg("muted", `"${lines.join("\n")}"`);
+			if (prompt.length > PREVIEW_MAX_CHARS || prompt.split("\n").length > PREVIEW_MAX_LINES) {
+				text += theme.fg("dim", " …");
+			}
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			const d = result.details as ClaudeDetails | undefined;
+			if (isPartial) {
+				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
+				return new Text(theme.fg("mdLink", "◉ AskClaude ") + theme.fg("muted", status), 0, 0);
+			}
+
+			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const errored = !!d?.resultIsError || d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut;
+
+			let text = errored
+				? theme.fg("error", "✗ AskClaude error")
+				: theme.fg("mdLink", "✓ AskClaude");
+
+			const rTags: string[] = [];
+			if (d?.model) rTags.push(`model=${d.model}`);
+			if (d?.effort) rTags.push(`thinking=${d.effort}`);
+			if (rTags.length) text += ` ${theme.fg("accent", `[${rTags.join(", ")}]`)}`;
+			if (d?.durationMs) text += ` ${theme.fg("dim", `${(d.durationMs / 1000).toFixed(1)}s`)}`;
+			if (d?.mode && d.mode !== "read") text += ` ${theme.fg("muted", d.mode)}`;
+			if (d?.includeContext) text += ` ${theme.fg("muted", "context=full")}`;
+
+			if (expanded) {
+				if (body) text += `\n${theme.fg("toolOutput", body)}`;
+			} else {
+				const truncated = body.length > PREVIEW_MAX_CHARS ? body.slice(0, PREVIEW_MAX_CHARS) : body;
+				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
+				if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
+				if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) {
+					text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+				}
+			}
+			return new Text(text, 0, 0);
+		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			// Circular-delegation guard: if the active provider is the
 			// claude-bridge provider, the orchestrator is ALREADY running
@@ -834,11 +976,37 @@ export default async function (pi: ExtensionAPI) {
 				extraArgs: extraArgs(),
 			});
 
+			// Opt-in full-context export: render the resolved pi conversation to a
+			// temp markdown file inside the workspace and prepend a pointer to the
+			// prompt. Isolated (includeContext omitted/false) stays the default.
+			let effectivePrompt = params.prompt;
+			let contextFile: string | null = null;
+			if (params.includeContext) {
+				try {
+					const { messages } = buildSessionContext(ctx.sessionManager.getBranch());
+					if (messages.length) {
+						const md = renderAgentMessagesMarkdown(messages);
+						const ctxDir = askContextDir();
+						fs.mkdirSync(ctxDir, { recursive: true });
+						contextFile = path.join(
+							ctxDir,
+							`.ask-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`,
+						);
+						fs.writeFileSync(contextFile, md, { mode: 0o600 });
+						effectivePrompt = `The full pi conversation context (as markdown) is at: ${contextFile}\nRead that file first for context, then do the task below.\n\n---\n\n${params.prompt}`;
+					}
+				} catch {
+					// Fail soft: proceed isolated. details.includeContext reflects this.
+					contextFile = null;
+				}
+			}
+
 			const details: ClaudeDetails = {
 				model: requestedModel,
 				mode,
 				effort,
 				sessionId: isContinuation ? (rawSessionId as string) : null,
+				includeContext: contextFile !== null,
 				exitCode: 0,
 				aborted: false,
 				timedOut: false,
@@ -885,7 +1053,7 @@ export default async function (pi: ExtensionAPI) {
 					// would eat a positional). Write then end so claude proceeds
 					// without its 3s stdin-wait. Ignore EPIPE if claude exits first.
 					proc.stdin?.on("error", () => {});
-					proc.stdin?.write(params.prompt);
+					proc.stdin?.write(effectivePrompt);
 					proc.stdin?.end();
 
 					let stdoutBuf = "";
@@ -1083,6 +1251,13 @@ export default async function (pi: ExtensionAPI) {
 					content: [{ type: "text", text: `failed to run claude: ${msg}` }],
 					details,
 				};
+			}
+			finally {
+				if (contextFile) {
+					try {
+						fs.unlinkSync(contextFile);
+					} catch {}
+				}
 			}
 		},
 	});
