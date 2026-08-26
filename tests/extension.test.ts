@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +44,22 @@ function makePi(models: Array<{ provider: string; id: string }>) {
 }
 
 describe("pi-glm-tweaks extension entry", () => {
+	// Pin an empty settings file for every test in this block: without
+	// PI_CODING_AGENT_DIR they would read the developer's real
+	// ~/.pi/agent/pi-glm-tweaks.json and register against whatever API route
+	// the host install has set. (The route describe below pins its own.)
+	const settingsDir = mkdtempSync(join(tmpdir(), "glm-tweaks-test-"));
+	writeFileSync(join(settingsDir, "pi-glm-tweaks.json"), "{}");
+	beforeEach(() => {
+		process.env.PI_CODING_AGENT_DIR = settingsDir;
+	});
+	afterEach(() => {
+		delete process.env.PI_CODING_AGENT_DIR;
+	});
+	afterAll(() => {
+		rmSync(settingsDir, { recursive: true, force: true });
+	});
+
 	it("registers the glm-tweaks command", async () => {
 		const { pi, commands } = makePi([]);
 		await factory(pi as unknown as TestPi);
@@ -124,6 +140,97 @@ describe("pi-glm-tweaks extension entry", () => {
 		});
 		expect(out53e.thinking).toEqual({ type: "enabled", clear_thinking: false });
 		expect(out53e.reasoning_effort).toBe("max");
+	});
+
+	it("targets glm-5.3-flash and glm-5.3-flash[1m] with the 5.3 thinking map and vision input", async () => {
+		// Flash shares the 5.3 wire contract (thinking always on, low|high|max)
+		// but is the FIRST multimodal GLM-5: input must carry "image" or pi
+		// refuses to attach images to the model.
+		const { pi, handlers, state, ctx } = makePi([
+			{ provider: "zai", id: "glm-5.3-flash" },
+			{ provider: "zai", id: "glm-5.3-flash[1m]" },
+		]);
+		await factory(pi as unknown as TestPi);
+		await handlers.session_start(undefined, ctx);
+
+		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
+		for (const id of ["glm-5.3-flash", "glm-5.3-flash[1m]"]) {
+			const m = models.find((x) => x.id === id) as {
+				input: string[];
+				thinkingLevelMap: Record<string, string | null>;
+				compat: Record<string, unknown>;
+			};
+			expect(m.thinkingLevelMap).toEqual({
+				off: "low",
+				minimal: null,
+				medium: null,
+				low: "low",
+				high: "high",
+				xhigh: null,
+				max: "max",
+			});
+			expect(m.input).toEqual(["text", "image"]);
+			expect(m.compat.thinkingFormat).toBe("zai");
+			expect(m.compat.zaiToolStream).toBe(true);
+		}
+	});
+
+	it("rewrites thinking.type=disabled on flash (endpoint silently thinks and bills anyway)", async () => {
+		// Probed 2026-08-26: the coding endpoint does NOT reject disabled for
+		// flash — it accepts it and runs lightweight thinking anyway (billed
+		// reasoning tokens appeared). The guard must make the wire explicit.
+		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3-flash" }]);
+		await factory(pi as unknown as TestPi);
+
+		const evt = { payload: { thinking: { type: "disabled", clear_thinking: false } } };
+		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;
+		expect(out.thinking).toEqual({ type: "enabled", clear_thinking: false });
+		expect(out.reasoning_effort).toBe("low");
+	});
+
+	it("applies the flash fallback to unknown glm-5.4-flash, preserving vision input", async () => {
+		const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-5.4-flash" }]);
+		await factory(pi as unknown as TestPi);
+		await handlers.session_start(undefined, ctx);
+
+		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
+		const m = models.find((x) => x.id === "glm-5.4-flash") as { input: string[] };
+		expect(m.input).toEqual(["text", "image"]);
+	});
+
+	it("keeps text-only models text-only when the spec says so", async () => {
+		const { pi, handlers, state, ctx } = makePi([
+			{ provider: "zai", id: "glm-5.2" },
+			{ provider: "zai", id: "glm-5.3" },
+		]);
+		await factory(pi as unknown as TestPi);
+		await handlers.session_start(undefined, ctx);
+
+		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
+		for (const id of ["glm-5.2", "glm-5.3"]) {
+			expect((models.find((x) => x.id === id) as { input: string[] }).input).toEqual(["text"]);
+		}
+	});
+
+	it("registers published per-token costs (pricing page, list prices)", async () => {
+		// z.ai published rates (docs.z.ai/guides/overview/pricing, per 1M tok):
+		// 5.2/5.3 = 1.4 in / 4.4 out / 0.26 cached; flash = 0.15/0.50/0.03 list
+		// (50% promo through 2026-09-09 — list prices encoded, promo is
+		// temporary). Regression guard: buildGlmModel used to zero costs,
+		// wiping pi's built-in glm-5.2 rates on re-registration.
+		const { pi, handlers, state, ctx } = makePi([
+			{ provider: "zai", id: "glm-5.2" },
+			{ provider: "zai", id: "glm-5.3" },
+			{ provider: "zai", id: "glm-5.3-flash" },
+		]);
+		await factory(pi as unknown as TestPi);
+		await handlers.session_start(undefined, ctx);
+
+		const models = (state.registered!.def as { models: Array<Record<string, any>> }).models;
+		const costOf = (id: string) => models.find((m) => m.id === id)!.cost;
+		expect(costOf("glm-5.2")).toEqual({ input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 });
+		expect(costOf("glm-5.3")).toEqual({ input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 });
+		expect(costOf("glm-5.3-flash")).toEqual({ input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 });
 	});
 
 	it("applies the 5.3 spec fallback to unknown glm-5.4 (forward compat), not to glm-4.x", async () => {

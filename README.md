@@ -1,6 +1,6 @@
 # @estebanforge/pi-glm-tweaks
 
-Pi-native tweaks for Z.AI's **GLM coding models** — `glm-5.2`, `glm-5.3`, and the 1M-context `glm-5.3[1m]` Coding Plan route. Restricts the Pi thinking-level UI to the modes each model actually supports on the wire, wires the native `thinkingFormat:"zai"` translation, auto-clamps any stale level when the model is selected, and registers a `zai_web_search` tool that searches the live web through Z.AI's Web Search MCP endpoint — no MCP server setup needed.
+Pi-native tweaks for Z.AI's **GLM coding models** — `glm-5.2`, `glm-5.3`, `glm-5.3-flash` (the first multimodal GLM-5, native image input), and their 1M-context `[1m]` Coding Plan routes. Restricts the Pi thinking-level UI to the modes each model actually supports on the wire, wires the native `thinkingFormat:"zai"` translation, auto-clamps any stale level when the model is selected, and registers a `zai_web_search` tool that searches the live web through Z.AI's Web Search MCP endpoint — no MCP server setup needed.
 
 ## Install
 
@@ -8,9 +8,9 @@ Pi-native tweaks for Z.AI's **GLM coding models** — `glm-5.2`, `glm-5.3`, and 
 pi install npm:@estebanforge/pi-glm-tweaks
 ```
 
-Works with Pi's built-in `zai/glm-5.2` / `zai/glm-5.3` entries out of the box, or custom entries in `~/.pi/agent/models.json`. The extension re-registers each targeted model with the OpenAI-compat endpoint and its proper thinking map. Other Z.AI models (`zai/glm-4.7`, `zai/glm-5-turbo`, `zai/glm-5.1`, plus any custom entries) are preserved across the re-registration.
+Works with Pi's built-in `zai/glm-5.2` / `zai/glm-5.3` entries out of the box, or custom entries in `~/.pi/agent/models.json` (pi 0.84.x ships no built-in `glm-5.3-flash` yet — add it to `models.json` until pi-ai catches up). The extension re-registers each targeted model with the OpenAI-compat endpoint and its proper thinking map. Other Z.AI models (`zai/glm-4.7`, `zai/glm-5-turbo`, `zai/glm-5.1`, plus any custom entries) are preserved across the re-registration.
 
-**Forward compatibility:** an unknown `glm-5.N` with `N >= 3` (a rushed `glm-5.4`, say, or its `[1m]` variant) inherits the glm-5.3 spec automatically, so it gets the new thinking map on day one instead of Pi's unpatched six-level UI. An explicit entry in the extension's `MODEL_SPECS` table always wins once the real contract is known. glm-4.x and a future glm-6 get no fallback — their wire contracts are unknown, and guessing could send invalid requests.
+**Forward compatibility:** an unknown `glm-5.N` with `N >= 3` (a rushed `glm-5.4` or `glm-5.4-flash`, say, or their `[1m]` variants) inherits the matching glm-5.3-family spec automatically — plain ids get the text-only 5.3 base, `-flash` ids get the multimodal flash base — so they get the new thinking map on day one instead of Pi's unpatched six-level UI. An explicit entry in the extension's `MODEL_SPECS` table always wins once the real contract is known. glm-4.x and a future glm-6 get no fallback — their wire contracts are unknown, and guessing could send invalid requests.
 
 ## What it does
 
@@ -22,7 +22,7 @@ Works with Pi's built-in `zai/glm-5.2` / `zai/glm-5.3` entries out of the box, o
 | `high` | `thinking: { type: "enabled" }` + `reasoning_effort: "high"` |
 | `max` | `thinking: { type: "enabled" }` + `reasoning_effort: "max"` |
 
-**glm-5.3 / glm-5.3[1m]** changed the contract (see the [GLM-5.3 launch](https://z.ai/blog/glm-5.3) and [docs](https://docs.z.ai/devpack/latest-model)): thinking is always on (`thinking.type: "disabled"` is rejected), and the wire levels are `low | high | max` with `max` the default:
+**glm-5.3 / glm-5.3-flash / their [1m] variants** changed the contract (see the [GLM-5.3 launch](https://z.ai/blog/glm-5.3) and [docs](https://docs.z.ai/devpack/latest-model)): thinking is always on (`thinking.type: "disabled"` was removed; probed 2026-08-26, the coding endpoint no longer rejects it — 5.3 honors it, flash silently converts to lightweight thinking and bills it — so the extension rewrites it to `enabled` + `low`, z.ai's documented migration), and the wire levels are `low | high | max` with `max` the default:
 
 | Pi thinking level | GLM-5.3 wire |
 | --- | --- |
@@ -78,7 +78,7 @@ GLM-5.2 overthinks on long agent loops — it can spend an entire turn on `reaso
 | `glm-web-search` | `true` | Registers the `zai_web_search` tool (see [Z.AI web search tool](#zai-web-search-tool-zai_web_search)). Default ON so search works out of the box; turn it OFF if you run a different search provider, so the model does not see two competing search tools. |
 | `glm-budget-nudge` | `false` | Appends a constant thinking-budget fragment to the system prompt on every targeted zai GLM turn, steering the model toward committing to a tool call before it spirals into overthinking. Meant for GLM-5.2's overthinking loop; not recommended for GLM-5.3+, whose post-training already fixed it. **Cache:** safe — the fragment is a fixed string, so the appended system prompt stays byte-identical turn to turn and the cached prefix is reused. (The earlier mid-loop ratchet appended a reactive `[system reminder: ...]` message after the last tool result; that hint sat between the cached prefix and the model's next turn, displacing it from the cache and forcing a one-time re-ingest. It fired when reasoning was largest, so it is gone.) |
 | `glm-clear-thinking` | `false` | Forces `clear_thinking: true` on every request, opting out of z.ai Preserved Thinking. Preserved Thinking is the coding endpoint's default and is what keeps the prefix byte-stable across turns (so it caches). Disabling it re-bills the full prefix every turn — usually a net loss. |
-| `glm-skip-short-thinking` | `false` | For user prompts under 80 chars, uses the lightest thinking mode for that turn: `thinking.type: "disabled"` on 5.2, `thinking.type: "enabled"` + `reasoning_effort: "low"` on 5.3 (which rejects `disabled`). **Cache:** toggling thinking intensity across turns based on prompt length changes the reasoning_content sequence z.ai caches, so follow-up turns on the same session re-bill instead of hitting the cached prefix. |
+| `glm-skip-short-thinking` | `false` | For user prompts under 80 chars, uses the lightest thinking mode for that turn: `thinking.type: "disabled"` on 5.2, `thinking.type: "enabled"` + `reasoning_effort: "low"` on 5.3+ (where `disabled` no longer exists on the wire). **Cache:** toggling thinking intensity across turns based on prompt length changes the reasoning_content sequence z.ai caches, so follow-up turns on the same session re-bill instead of hitting the cached prefix. |
 
 All three flags surface in `pi config` and Pi's flag editor — `pi config set glm-clear-thinking true` to enable one of the opt-ins. Or flip them from inside Pi with `/glm-tweaks`.
 
@@ -142,7 +142,7 @@ The persisted setting keeps the short keys (`coding` | `api` | `anthropic`) for 
 
 ## Why this exists
 
-Pi's built-in `thinkingFormat: "zai"` (in `openai-completions.js`) already knows the wire translation. The catch is that a user-defined GLM model in `models.json` typically lacks a `thinkingLevelMap`, so the UI shows all six levels and sends invalid combinations on hidden ones (and on glm-5.3, a level that maps to `thinking.type: "disabled"` fails the request outright). This extension fills that gap automatically — no manual `models.json` editing.
+Pi's built-in `thinkingFormat: "zai"` (in `openai-completions.js`) already knows the wire translation. The catch is that a user-defined GLM model in `models.json` typically lacks a `thinkingLevelMap`, so the UI shows all six levels and sends invalid combinations on hidden ones (and on glm-5.3+, a level that maps to `thinking.type: "disabled"` sends a shape the model family no longer documents). This extension fills that gap automatically — no manual `models.json` editing.
 
 ## Compatibility
 

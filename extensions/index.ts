@@ -1,6 +1,6 @@
 /**
  * pi-glm-tweaks — Pi-native tweaks for Z.AI's GLM coding models
- * (glm-5.2, glm-5.3, glm-5.3[1m]).
+ * (glm-5.2, glm-5.3, glm-5.3-flash, and their [1m] variants).
  *
  * Restricts the Pi thinking-level UI to the modes each GLM model actually
  * supports, wires the native `thinkingFormat: "zai"` wire
@@ -21,8 +21,10 @@
  *     high      | "enabled"     | "high"
  *     max       | "enabled"     | "max"
  *
- *   glm-5.3 / glm-5.3[1m] (thinking always on; thinking.type:"disabled"
- *   removed in 5.3 — direct API rejects it; migration is enabled +
+ *   glm-5.3 / glm-5.3-flash / their [1m] variants (thinking always on;
+ *   thinking.type:"disabled" removed in 5.3 — probed 2026-08-26: the
+ *   coding endpoint no longer hard-rejects it, it silently converts to
+ *   lightweight thinking and bills it; migration is enabled +
  *   reasoning_effort "low"):
  *     Pi level  | thinking.type | reasoning_effort
  *     ----------|---------------|------------------
@@ -41,6 +43,10 @@
  * reasoning transport; 5.3: minimal/medium have no wire counterpart;
  * both: xhigh has no distinct wire tier under max).
  * Showing them invites accidental footguns.
+ *
+ * glm-5.3-flash is the first MULTIMODAL GLM-5 (native text+image input,
+ * docs.z.ai/guides/vlm/glm-5.3-flash); every other targeted model stays
+ * text-only. The spec's `input` field drives that per-model.
  *
  * Behavior:
  *   - On session_start, re-register the `zai` provider with every targeted
@@ -126,39 +132,92 @@ interface GlmSpec {
 	thinkingLevelMap: Record<string, string | null>;
 	/**
 	 * Whether `thinking.type: "disabled"` is legal for this model. True for
-	 * glm-5.2; false for glm-5.3, which removed "disabled" — the direct API
-	 * fails such requests (migration: enabled + reasoning_effort "low").
+	 * glm-5.2; false for glm-5.3 and glm-5.3-flash. Probed 2026-08-26: the
+	 * coding endpoint no longer rejects "disabled" for 5.3+ — 5.3 honors it
+	 * (0 reasoning tokens) but flash SILENTLY converts to lightweight thinking
+	 * and bills it (7 reasoning tokens on a probe). The request-layer guard
+	 * rewrites it to z.ai's documented migration shape (enabled + "low")
+	 * either way, so the wire is explicit instead of server-discretionary.
 	 */
 	canDisableThinking: boolean;
+	/** Input modalities. Flash is the first multimodal GLM-5 (text+image). */
+	input: ("text" | "image")[];
+	/**
+	 * Published per-1M-token rates (docs.z.ai/guides/overview/pricing).
+	 * LIST prices — flash runs a 50% promo through 2026-09-09; list is the
+	 * durable baseline. Coding Plan billing is points, not USD; these drive
+	 * pi's cost display/estimate only.
+	 */
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
+
+// Shared thinking map for every thinking-always-on GLM (5.3 contract:
+// off->low, low/high/max wire tiers, the rest hidden). Insertion order is
+// load-bearing: lightestEffort() takes the FIRST non-null value, which must
+// be the lightest documented effort ("low").
+const ALWAYS_ON_MAP: Record<string, string | null> = {
+	off: "low",
+	minimal: null,
+	medium: null,
+	low: "low",
+	high: "high",
+	xhigh: null,
+	max: "max",
+};
 
 const MODEL_SPECS: Record<string, GlmSpec> = {
 	"glm-5.2": {
 		name: "GLM-5.2",
 		thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" },
 		canDisableThinking: true,
+		input: ["text"],
+		cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
 	},
 	"glm-5.3": {
 		name: "GLM-5.3",
-		thinkingLevelMap: { off: "low", minimal: null, medium: null, low: "low", high: "high", xhigh: null, max: "max" },
+		thinkingLevelMap: ALWAYS_ON_MAP,
 		canDisableThinking: false,
+		input: ["text"],
+		cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
 	},
 	// 1M-context Coding Plan route (same model, bigger window).
 	"glm-5.3[1m]": {
 		name: "GLM-5.3 (1M)",
-		thinkingLevelMap: { off: "low", minimal: null, medium: null, low: "low", high: "high", xhigh: null, max: "max" },
+		thinkingLevelMap: ALWAYS_ON_MAP,
 		canDisableThinking: false,
+		input: ["text"],
+		cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
+	},
+	// Flash: same wire contract as 5.3, native multimodal input, 3x plan
+	// quota (docs.z.ai/guides/vlm/glm-5.3-flash). One-tenth the per-token
+	// price of 5.3 (list; 50% launch promo until 2026-09-09).
+	"glm-5.3-flash": {
+		name: "GLM-5.3 Flash",
+		thinkingLevelMap: ALWAYS_ON_MAP,
+		canDisableThinking: false,
+		input: ["text", "image"],
+		cost: { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 },
+	},
+	"glm-5.3-flash[1m]": {
+		name: "GLM-5.3 Flash (1M)",
+		thinkingLevelMap: ALWAYS_ON_MAP,
+		canDisableThinking: false,
+		input: ["text", "image"],
+		cost: { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 },
 	},
 };
 
 // Forward-compat fallback: z.ai iterates GLM-5.x fast (5.2 -> 5.3 was one
-// month apart) and 5.3 set the new contract (thinking always on, wire levels
-// low|high|max). An UNKNOWN glm-5.N where N >= 3 inherits the 5.3 spec so a
-// rushed 5.4 works on day one instead of falling back to Pi's unpatched
-// six-level UI. Explicit MODEL_SPECS entries always win, so when 5.4's real
-// contract is known a one-entry edit overrides the fallback. Deliberately
-// NOT applied to glm-4.x or a future glm-6: those are unknown contracts,
-// and guessing a wire shape there can send invalid requests.
+// month apart, then 5.3-flash two weeks later) and 5.3 set the new contract
+// (thinking always on, wire levels low|high|max). An UNKNOWN glm-5.N where
+// N >= 3 inherits the matching 5.3-family spec — plain ids inherit the
+// text-only 5.3 base, `-flash` suffixed ids inherit the multimodal flash
+// base — so a rushed 5.4 (or 5.4-flash) works on day one instead of falling
+// back to Pi's unpatched six-level UI. Explicit MODEL_SPECS entries always
+// win, so when a new model's real contract is known a one-entry edit
+// overrides the fallback. Deliberately NOT applied to glm-4.x or a future
+// glm-6: those are unknown contracts, and guessing a wire shape there can
+// send invalid requests.
 // Note: \d+ also matches multi-digit minors (a hypothetical glm-5.10),
 // which correctly sorts above 5.3 numerically — intended.
 const FALLBACK_MIN_MINOR = 3;
@@ -166,10 +225,10 @@ const FALLBACK_MIN_MINOR = 3;
 function resolveSpec(id: string): GlmSpec | undefined {
 	const exact = MODEL_SPECS[id];
 	if (exact) return exact;
-	const m = /^glm-5\.(\d+)(\[1m\])?$/.exec(id);
+	const m = /^glm-5\.(\d+)(-flash)?(\[1m\])?$/.exec(id);
 	if (m && Number(m[1]) >= FALLBACK_MIN_MINOR) {
-		const base = MODEL_SPECS[m[2] ? "glm-5.3[1m]" : "glm-5.3"];
-		return { ...base, name: id };
+		const baseId = m[2] ? (m[3] ? "glm-5.3-flash[1m]" : "glm-5.3-flash") : m[3] ? "glm-5.3[1m]" : "glm-5.3";
+		return { ...MODEL_SPECS[baseId], name: id };
 	}
 	return undefined;
 }
@@ -248,7 +307,7 @@ const FLAGS = [
 		label: "Budget nudge",
 		default: false,
 		description:
-			"Append a constant thinking-budget fragment to the system prompt on every targeted zai GLM turn (glm-5.2, glm-5.3, glm-5.3[1m]), steering the model toward committing to a tool call before overthinking. Cache-safe: the fragment is a fixed string, so the appended system prompt stays byte-identical turn to turn and the cached prefix is reused. Defaults OFF since 1.5.0: cache-neutral is not behavior-neutral — it still rewrites the system prompt for every GLM turn, so stock behavior is the safer default and users who want the nudge opt in. Meant for GLM-5.2's overthinking loop; not recommended for GLM-5.3 or greater, whose post-training already fixed the overthinking (fewer output tokens per task at every effort level). (The earlier mid-loop ratchet appended a reactive hint message after the last tool result; the hint sat between the cached prefix and the model's next turn, displacing that turn from the cache and forcing a one-time re-ingest. It fired precisely when reasoning was largest, so it is gone.)",
+			"Append a constant thinking-budget fragment to the system prompt on every targeted zai GLM turn (glm-5.2, glm-5.3, glm-5.3-flash, and [1m] variants), steering the model toward committing to a tool call before overthinking. Cache-safe: the fragment is a fixed string, so the appended system prompt stays byte-identical turn to turn and the cached prefix is reused. Defaults OFF since 1.5.0: cache-neutral is not behavior-neutral — it still rewrites the system prompt for every GLM turn, so stock behavior is the safer default and users who want the nudge opt in. Meant for GLM-5.2's overthinking loop; not recommended for GLM-5.3 or greater, whose post-training already fixed the overthinking (fewer output tokens per task at every effort level). (The earlier mid-loop ratchet appended a reactive hint message after the last tool result; the hint sat between the cached prefix and the model's next turn, displacing that turn from the cache and forcing a one-time re-ingest. It fired precisely when reasoning was largest, so it is gone.)",
 	},
 	{
 		name: "glm-clear-thinking",
@@ -286,17 +345,18 @@ You are operating under a per-turn thinking budget. Behave accordingly:
 - Prefer a concrete tool call over further internal deliberation.
 </glm-thinking-budget>`;
 
-// Build the re-registered model entry for a targeted GLM id. `cost`
-// mirrors the built-in (Z.AI does not publish per-token rates at the same
-// time as launches; zeros is conservative). thinkingLevelMap doubles as
+// Build the re-registered model entry for a targeted GLM id. `cost` carries
+// the published per-token rates from the spec (see GlmSpec.cost) — the
+// pre-1.7.0 zeros wiped pi's built-in glm-5.2 rates on re-registration. thinkingLevelMap doubles as
 // UI-hide (`null`) and wire-level mapping on the coding route (Pi's zai
 // branch in openai-completions.js reads it); on the anthropic route the map
 // still drives UI-hide + clamping, while the wire translation happens in
 // before_provider_request (Pi's anthropic provider never consults the map).
 // baseUrl is per-model (not provider-level) so we don't override any custom
 // baseUrl the user may have set on other `zai/*` models. contextWindow stays
-// 1M: glm-5.2 documented 1M, glm-5.3 same base with the [1m] Coding Plan
-// route; the base 5.3 standard-API window was unpublished at launch.
+// 1M: glm-5.2 documented 1M, glm-5.3/5.3-flash same base with the [1m]
+// Coding Plan route; the base 5.3 standard-API window was unpublished at
+// launch. Input modality is per-spec: flash is multimodal, the rest text.
 //
 // Route differences (see ApiRoute above):
 //   - api/baseUrl per route.
@@ -318,10 +378,10 @@ function buildGlmModel(id: string, spec: GlmSpec, route: ApiRoute) {
 		api: anthropic ? "anthropic-messages" : "openai-completions",
 		baseUrl: anthropic ? ZAI_ANTHROPIC_BASE_URL : route === "api" ? ZAI_API_BASE_URL : ZAI_CODING_BASE_URL,
 		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
+		input: spec.input,
 		contextWindow: 1_000_000,
 		maxTokens: 131_072,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		cost: spec.cost,
 		thinkingLevelMap: spec.thinkingLevelMap,
 		compat: anthropic
 			? {
@@ -354,7 +414,7 @@ function renderStatus(
 	const level = pi.getThinkingLevel();
 	const flagLines = FLAGS.map((f) => `  ${pi.getFlag(f.name) === true ? "[x]" : "[ ]"} ${f.name}`);
 	return [
-		`GLM tweaks — ${active ? `ACTIVE (${model!.provider}/${model!.id} selected)` : "inactive (select zai/glm-5.2, zai/glm-5.3, or a newer glm-5.x)"}`,
+		`GLM tweaks — ${active ? `ACTIVE (${model!.provider}/${model!.id} selected)` : "inactive (select zai/glm-5.2, zai/glm-5.3, zai/glm-5.3-flash, or a newer glm-5.x)"}`,
 		`thinking: ${active ? `current=${level}, wire=${wireLabels(spec!).join("|")}` : "n/a"}`,
 		`api route: ${ROUTE_LABELS[resolveRoute()]}`,
 		"",
@@ -649,7 +709,7 @@ export default function (pi: ExtensionAPI) {
 				const container = new Container();
 				const header = active
 					? `GLM tweaks — ${ctx.model!.provider}/${ctx.model!.id} active`
-					: "GLM tweaks — inactive (select zai/glm-5.2, zai/glm-5.3, or a newer glm-5.x)";
+					: "GLM tweaks — inactive (select zai/glm-5.2, zai/glm-5.3, zai/glm-5.3-flash, or a newer glm-5.x)";
 				container.addChild(new Text(theme.fg("accent", theme.bold(header)), 1, 1));
 
 				const settingsList = new SettingsList(
@@ -870,16 +930,20 @@ const updateFooterChips = (model: { provider: string; id: string } | undefined |
 
 		let mutated = false;
 
-		// 5.3+ safety net: `thinking.type: "disabled"` is rejected by glm-5.3
-		// and newer. Pi's zai branch (openai-completions.js) sends
+		// 5.3+ safety net: `thinking.type: "disabled"` was removed in glm-5.3.
+		// Probed 2026-08-26: the coding endpoint accepts it without error but
+		// the outcome is server-discretionary — 5.3 honors it, flash silently
+		// converts to lightweight thinking and bills it. Either way the user
+		// asked for "off", which no longer exists on the wire.
+		// Pi's zai branch (openai-completions.js) sends
 		// thinking.type="disabled" whenever reasoningEffort is falsy — which
 		// is exactly what Pi level "off" produces, and the model entry's
 		// thinkingLevelMap is NOT consulted on that path (it is only indexed
 		// by a non-undefined effort). So we cannot fix this in the map; we
 		// intercept the payload here and rewrite to z.ai's documented
 		// migration shape: enabled + reasoning_effort "low". This runs
-		// unconditionally (not flag-gated) because the alternative is a
-		// failed request.
+		// unconditionally (not flag-gated) because the alternative is an
+		// ambiguous request the endpoint may bill against the user's intent.
 		if (!spec.canDisableThinking && thinking.type === "disabled") {
 			thinking.type = "enabled";
 			if (obj.reasoning_effort === undefined) obj.reasoning_effort = "low";

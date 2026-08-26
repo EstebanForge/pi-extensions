@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.7.0 — 2026-08-26
+
+### Added
+- **`glm-5.3-flash` support** ([docs](https://docs.z.ai/guides/vlm/glm-5.3-flash)).
+  Z.AI's GLM-5.3-Flash shares the 5.3 wire contract (thinking always on,
+  `reasoning_effort` `low | high | max`, 1M context, `tool_stream`), with
+  two differences the extension now encodes:
+  - It is the **first multimodal GLM-5** (native text+image input), so the
+    spec table carries a per-model `input` field — flash registers with
+    `["text", "image"]`, every other targeted model stays text-only.
+  - Both `glm-5.3-flash` and the `glm-5.3-flash[1m]` Coding Plan route are
+    targeted; pi 0.84.x ships no built-in flash entry, so seed it in
+    `models.json` until pi-ai catches up.
+  - The forward-compat fallback regex now matches `-flash` suffixed ids:
+    an unknown `glm-5.4-flash` inherits the multimodal flash base instead
+    of falling through to Pi's unpatched six-level UI.
+
+### Fixed
+- **Published per-token costs are now wired**
+  ([pricing](https://docs.z.ai/guides/overview/pricing), per 1M tokens):
+  glm-5.2 and glm-5.3 at $1.4 in / $4.4 out / $0.26 cached, flash at
+  $0.15 / $0.50 / $0.03 (list prices; z.ai runs a 50% flash promo through
+  2026-09-09 — list is the durable baseline, and Coding Plan billing is
+  points, so these feed pi's cost display only). Regression fix:
+  re-registration used to zero costs, wiping pi's built-in glm-5.2 rates.
+- **Corrected the `disabled`-thinking story after a live probe
+  (2026-08-26).** The coding endpoint no longer rejects
+  `thinking.type: "disabled"` for 5.3+: glm-5.3 honors it (0 reasoning
+  tokens), but **flash silently converts it to lightweight thinking and
+  bills it** (7 reasoning tokens on the probe). The request-layer guard
+  still rewrites `disabled` to `enabled` + `reasoning_effort: "low"`
+  (z.ai's documented migration shape) for every 5.3-family model, so the
+  wire stays explicit instead of server-discretionary — the fix is about
+  intent and billing, not request survival. Docs and comments updated;
+  behavior unchanged for glm-5.2.
+
 ## 1.6.0 — 2026-08-21
 
 ### Added
