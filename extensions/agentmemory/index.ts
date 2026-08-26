@@ -469,8 +469,12 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
           details: { ok: false, query: params.query, results: [] },
         };
       }
+      // `search` returns full observations (title + narrative).
+      // `smart-search` returns title-only "compact" results by design (no
+      // narrative field), which left agents with ~80-char title fragments
+      // and no body — see CHANGELOG 1.0.10.
       const result = await callAgentMemory<{ results?: SmartSearchResult[] }>(
-        "smart-search",
+        "search",
         { body: { query: params.query, limit: params.limit ?? 5 } },
       );
       const results = result?.results || [];
@@ -727,8 +731,10 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
     if (lastPrompt) {
       pendingSearch = (async () => {
+        // `search`, not `smart-search`: full narratives in the injected
+        // recall block, same rationale as memory_search above.
         const result = await callAgentMemory<{ results?: SmartSearchResult[] }>(
-          "smart-search",
+          "search",
           { body: { query: lastPrompt, limit: 5 } },
         );
         const results = result?.results || [];

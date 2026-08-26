@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-agentmemory",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Pi-native agent-memory.dev tools — cross-session memory via REST, no MCP dependency",
   "keywords": [
     "pi-package"

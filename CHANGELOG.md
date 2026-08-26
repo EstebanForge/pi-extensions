@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.10 (2026-08-26)
+
+### Fixed
+- **memory_search and session-start recall now return full memories.** Both previously called the `smart-search` endpoint, which by design returns "compact" title-only results (no narrative field exists in that response), so agents only ever saw ~80-character title fragments with no body. Both call sites now use the `search` endpoint, whose results carry the full observation (title, narrative, type, facts). The response shape is compatible (`results[].observation` + `score`), so `formatSearchResults` needed no change.
+
 ## 1.0.9 (2026-08-13)
 
 ### Changed
