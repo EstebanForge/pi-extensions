@@ -64,12 +64,13 @@
     }
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-server": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
     "@types/node": "^22.0.0",
+    "typebox": "*",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.7",
-    "@earendil-works/pi-ai": "^0.84.0",
-    "@earendil-works/pi-coding-agent": "^0.84.0",
-    "@earendil-works/pi-tui": "^0.84.0",
-    "typebox": "*"
+    "vitest": "^4.1.7"
   }
 }
