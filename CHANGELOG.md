@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.11 (2026-09-07)
+
+### Fixed
+- **A running-but-unhealthy server no longer reads as "not running".** `isServerHealthy` treated any non-2xx from `/agentmemory/health` as "server down", but the engine answers 503 fail-closed under heap-watermark pressure while still serving reads and writes (and 401 on a secret mismatch), so a working server tripped the autostart-disabled bail or, with autostart on, spawned a duplicate. The two "already running" checks in `ensureServer` now fall back to the unauthenticated `/agentmemory/livez` liveness endpoint before declaring the server absent. The post-spawn `waitForHealth` poll stays health-only on purpose: livez answers as soon as the port binds, before engine init finishes, so a fallback there would report success mid-startup.
+- **Unreachable-server messages no longer hardcode `http://localhost:3111`.** The `memory_health` tool's failure text and the `/agentmemory` status panel now resolve the configured base URL (`AGENTMEMORY_URL`), so pointing at a LAN host no longer produces a misleading localhost red herring.
+
+### Added
+- `tests/extension.test.ts` coverage for `isServerHealthy`: fallback probes (health 503 + livez 200 counts as running; livez unreachable counts as down) and the strict post-spawn path (health 503 is down, livez never asked).
+
 ## 1.0.10 (2026-08-26)
 
 ### Fixed

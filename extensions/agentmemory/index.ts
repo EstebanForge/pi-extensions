@@ -231,7 +231,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     const statusWord = health?.status || health?.health?.status || "unknown";
     const healthLine = health
       ? `${statusWord}${health.version ? ` v${health.version}` : ""}`
-      : "unreachable at http://localhost:3111";
+      : `unreachable at ${
+          normalizeBaseUrl(process.env.AGENTMEMORY_URL || DEFAULT_URL)
+        }`;
     const flagLines = FLAGS.map(
       (f) => `  ${pi.getFlag(f.name) === true ? "[x]" : "[ ]"} ${f.name}`,
     );
@@ -406,7 +408,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: "agentmemory is unreachable at http://localhost:3111",
+              text: `agentmemory is unreachable at ${
+                normalizeBaseUrl(process.env.AGENTMEMORY_URL || DEFAULT_URL)
+              }`,
             },
           ],
           details: { ok: false },

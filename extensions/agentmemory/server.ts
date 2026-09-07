@@ -4,11 +4,14 @@
 // closing Pi leaves it running, and reopening Pi detects it via the health
 // check and does NOT start it again. First run downloads its engine (~15s).
 //
-// "Is it running?" is answered by the health endpoint (GET /agentmemory/health)
-// — the same one the tools already use. We check it before starting and poll it
-// after, so a server another Pi instance started, or one left running from a
-// previous Pi, is never started twice. An in-flight dedup promise keeps a single
-// Pi process from spawning more than once if several tools fire while it's down.
+// "Is it running?" is answered by two endpoints: GET /agentmemory/health (deep
+// health, Bearer-gated — can 503 under heap pressure while still serving, and
+// 401 on secret mismatch) and GET /agentmemory/livez (unauthenticated process
+// liveness). "Already running" checks fall back to livez so a pressured or
+// secret-mismatched server isn't misread as down; the post-spawn poll stays
+// health-only so we don't report success while the engine is still initializing.
+// An in-flight dedup promise keeps a single Pi process from spawning more than
+// once if several tools fire while it's down.
 import { spawn } from "node:child_process";
 import { guardPlaintextBearerAuth } from "./security.js";
 
@@ -44,27 +47,45 @@ function healthUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/agentmemory/health`;
 }
 
+function livezUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/agentmemory/livez`;
+}
+
 export async function isServerHealthy(
   baseUrl: string,
   secret?: string,
+  opts?: { fallbackToLivez?: boolean },
 ): Promise<boolean> {
   guardPlaintextBearerAuth(baseUrl, secret);
   const headers: Record<string, string> = {};
   if (secret) headers.Authorization = `Bearer ${secret}`;
   try {
     const res = await fetch(healthUrl(baseUrl), { method: "GET", headers });
-    if (!res.ok) return false;
-    const body = (await res.json()) as {
-      status?: string;
-      health?: { status?: string };
-    };
-    // The engine self-reports `degraded` under memory pressure (RSS watermark,
-    // KV lag) while still serving reads/writes. Treat anything except an
-    // explicit down/unhealthy as reachable so a pressured-but-working server
-    // shared across Pi instances (host + construct sandbox) isn't misread as
-    // down, which would trip the autostart-disabled bail path.
-    const status = body.status ?? body.health?.status;
-    return status !== "unhealthy" && status !== "down" && status !== undefined;
+    if (res.ok) {
+      const body = (await res.json()) as {
+        status?: string;
+        health?: { status?: string };
+      };
+      // The engine self-reports `degraded` under memory pressure (RSS watermark,
+      // KV lag) while still serving reads/writes. Treat anything except an
+      // explicit down/unhealthy as reachable so a pressured-but-working server
+      // shared across Pi instances (host + construct sandbox) isn't misread as
+      // down, which would trip the autostart-disabled bail path.
+      const status = body.status ?? body.health?.status;
+      return status !== "unhealthy" && status !== "down" && status !== undefined;
+    }
+  } catch {
+    // fall through to livez when allowed
+  }
+  if (!opts?.fallbackToLivez) return false;
+  // Health answered non-2xx (watermark 503 burst, secret-mismatch 401) or was
+  // unreachable. Liveness is a separate question from health: only the
+  // unauthenticated livez endpoint gets to declare an "already running"
+  // server down. Trade-off: a health path that 503s permanently (wedge, not
+  // burst) stays invisible here; tools still surface per-call failures.
+  try {
+    const res = await fetch(livezUrl(baseUrl), { method: "GET" });
+    return res.ok;
   } catch {
     return false;
   }
@@ -124,8 +145,10 @@ async function waitForHealth(opts: EnsureOptions): Promise<boolean> {
 export async function ensureServer(opts: EnsureOptions): Promise<EnsureResult> {
   // Already running (a previous Pi left it up, or another instance started it):
   // detect via the health check and do nothing. This is the "don't restart"
-  // guarantee for reopening Pi and for concurrent Pi instances.
-  if (await isServerHealthy(opts.baseUrl, opts.secret)) {
+  // guarantee for reopening Pi and for concurrent Pi instances. livez fallback:
+  // an up-but-pressured (503) or secret-mismatched (401) server must not be
+  // misread as absent, which would spawn a duplicate or trip the autostart bail.
+  if (await isServerHealthy(opts.baseUrl, opts.secret, { fallbackToLivez: true })) {
     return { ok: true, started: false };
   }
   if (!opts.autostart) {
@@ -144,7 +167,11 @@ export async function ensureServer(opts: EnsureOptions): Promise<EnsureResult> {
         return { up: false, installed, spawned: false };
       }
       // Re-check right before spawning: another Pi may have just brought it up.
-      if (await isServerHealthy(opts.baseUrl, opts.secret)) {
+      if (
+        await isServerHealthy(opts.baseUrl, opts.secret, {
+          fallbackToLivez: true,
+        })
+      ) {
         return { up: true, installed, spawned: false };
       }
       // Cooldown: if we spawned very recently and it's still warming up, don't
