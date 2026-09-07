@@ -106,7 +106,7 @@ const ZAI_API_BASE_URL = "https://api.z.ai/api/paas/v4";
 //     (see before_provider_request).
 // Persisted value is the short key ("coding" | "api" | "anthropic") for
 // backward compatibility with pre-existing settings files; the human-readable
-// labels below are display-only (settings menu, /glm-tweaks, footer chip).
+// labels below are display-only (settings menu, /glm-tweaks).
 type ApiRoute = "coding" | "api" | "anthropic";
 const ROUTE_VALUES: ApiRoute[] = ["coding", "api", "anthropic"];
 const ROUTE_LABELS: Record<ApiRoute, string> = {
@@ -775,42 +775,6 @@ export default function (pi: ExtensionAPI) {
 		shortPrompt: boolean;
 	} = { shortPrompt: false };
 
-	// ── Footer chips ────────────────────────────────────────────────────
-	// "glm": one compact chip showing the active API route — ⛕ OAI
-	// (coding / OpenAI Chat Completions) or ⛕ ANT (Anthropic
-	// Messages) — only while a TARGETED GLM model is selected; the chip is
-	// cleared for every other model (non-GLM providers and untargeted zai
-	// entries like glm-4.7, which keep their own baseUrl — showing a route
-	// there would be misleading). Display only — the authoritative
-	// per-request decision reads ctx.model.api, so a stale chip can mislead
-	// but never miswire.
-	//
-	// Set from TWO hooks, not just model_select: pi's interactive mode calls
-	// resetExtensionUI() (which CLEARS all extension footer statuses) on
-	// /reload, /new, and /resume — and model_select does not re-fire after
-	// those when the model is unchanged, so chips set only there vanished
-	// until the next manual model switch. session_start fires after every
-	// reload/session switch, making the pair cover all transitions:
-	//   - session_start: startup, /new, /resume, /reload (incl. the
-	//     /glm-tweaks toggle/route reload itself).
-	//   - model_select: model switches, incl. restore; also the clear path
-	//     for non-targeted models.
-	// Chip glyph: U+21E2 (⇢, rightwards dashed arrow — the user's pick;
-// verified present in Iosevka Nerd Font Mono's cmap). Earlier candidates
-// failed on font coverage: the traffic symbols (U+26D7, U+26D5) and the
-// road emoji are absent from Iosevka and every mainstream terminal font,
-// so they render as tofu. Built via fromCodePoint because the literal is
-// easy to corrupt in edits.
-const ROUTE_GLYPH = String.fromCodePoint(0x21e2);
-
-const updateFooterChips = (model: { provider: string; id: string } | undefined | null, ui: { setStatus: (key: string, text: string | undefined) => void }) => {
-		if (specFor(model) === undefined) {
-			ui.setStatus("glm", undefined);
-			return;
-		}
-		ui.setStatus("glm", `${ROUTE_GLYPH} ${resolveRoute() === "anthropic" ? "ANT" : "OAI"}`);
-	};
-
 	pi.on("session_start", async (_event, ctx) => {
 		// Build the full `zai` provider model list, patching only targeted GLM
 		// models. registerProvider replaces ALL models for the provider when models
@@ -853,12 +817,6 @@ const updateFooterChips = (model: { provider: string; id: string } | undefined |
 			models,
 		});
 
-		// Re-seed the footer chips for this session (see updateFooterChips:
-		// session_start is the only hook that runs after a /reload clears
-		// them). Placed last so an early return above (no zai models, no
-		// targeted model, no auth) leaves the chips untouched-or-cleared by
-		// the model_select path instead of asserting a dead provider.
-		updateFooterChips(ctx.model, ctx.ui);
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -988,10 +946,7 @@ const updateFooterChips = (model: { provider: string; id: string } | undefined |
 
 	pi.on("model_select", (event, ctx) => {
 		const spec = specFor(event.model);
-		if (spec === undefined) {
-			updateFooterChips(event.model, ctx.ui);
-			return;
-		}
+		if (spec === undefined) return;
 
 		// Auto-clamp if Pi's current level is one we hid for this model.
 		// setThinkingLevel is a no-op if already at the requested level.
@@ -1005,8 +960,5 @@ const updateFooterChips = (model: { provider: string; id: string } | undefined |
 			);
 		}
 
-		// event.model is the newly selected model; ctx.model lags until the
-		// event completes, so pass the event's model explicitly.
-		updateFooterChips(event.model, ctx.ui);
 	});
 }

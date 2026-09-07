@@ -37,7 +37,7 @@ function makePi(models: Array<{ provider: string; id: string }>) {
 			getAll: () => models,
 			getApiKeyForProvider: async () => "test-key",
 		},
-		ui: { notify: () => {}, setStatus: () => {} },
+		ui: { notify: () => {} },
 	};
 
 	return { pi, commands, handlers, state, tools, ctx };
@@ -270,9 +270,8 @@ describe("pi-glm-tweaks extension entry", () => {
 			getThinkingLevel: () => "xhigh",
 			setThinkingLevel: (l: string) => void set.push(l),
 		} as unknown as TestPi;
-		(ctx as { ui: { notify: (m: string) => void; setStatus: () => void } }).ui = {
+		(ctx as { ui: { notify: (m: string) => void } }).ui = {
 			notify: (m: string) => void notes.push(m),
-			setStatus: () => {},
 		};
 		await factory(pi2);
 
@@ -359,24 +358,6 @@ describe("glm-api-route setting", () => {
 		expect(glm53.compat.zaiToolStream).toBeUndefined();
 		// The thinking map still drives UI-hide/clamp on both routes.
 		expect(glm53.thinkingLevelMap.high).toBe("high");
-	});
-
-	it("session_start re-seeds footer chips (survive /reload wipes)", async () => {
-		// Regression: pi's interactive mode clears ALL extension footer
-		// statuses on /reload, /new, /resume — and model_select does not
-		// re-fire when the model is unchanged. Chips must be re-set from
-		// session_start or they vanish until a manual model switch.
-		withRouteSetting("coding");
-		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		const statuses: Array<[string, string | undefined]> = [];
-		(ctx as { ui: unknown }).ui = {
-			notify: () => {},
-			setStatus: (key: string, text: string | undefined) => void statuses.push([key, text]),
-		};
-		await factory(pi as unknown as TestPi);
-		await handlers.session_start(undefined, ctx);
-
-		expect(statuses).toContainEqual(["glm", `${String.fromCodePoint(0x21e2)} OAI`]);
 	});
 
 	it("coding route (default) keeps the documented OpenAI-shape contract", async () => {

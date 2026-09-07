@@ -60,8 +60,7 @@ This extension collapses that mismatch:
    }
    ```
 2. **Auto-clamps on `model_select`** — if the current level is one we hid (e.g. you switched from a model that allowed `medium`), bump to the nearest visible level at or above it (a stale `xhigh`, the old label for wire `max`, lands on `max`) and notify.
-3. **Footer chip** — one compact status while a targeted GLM model is selected: `⇢ OAI` (either OpenAI Chat Completions route: coding plan or api usage) or `⇢ ANT` (Anthropic Messages), rendered on the extension-statuses line of the footer; cleared for every other model. The glyph is a single-width monochrome symbol (U+21E2 ⇢, verified present in Iosevka Nerd Font Mono), not an emoji — emoji render double-width in most terminals and can shift the footer line. It is re-seeded on every `session_start` — pi's interactive mode clears ALL extension footer statuses on `/reload`, `/new`, and `/resume`, and `model_select` does not re-fire when the model is unchanged, so setting it only on model selection made the chip vanish until the next manual model switch. (Inline placement in the bottom-right model segment is not possible: `FooterComponent` hardcodes that side; extensions can only append status lines or replace the whole footer.)
-4. **`/glm-tweaks` command** — status panel + flag toggle from inside Pi (see [`/glm-tweaks` command](#glm-tweaks-command)).
+3. **`/glm-tweaks` command** — status panel + flag toggle from inside Pi (see [`/glm-tweaks` command](#glm-tweaks-command)).
 
 `Shift+Tab`, `/thinking`, and the level picker all see only the supported modes for the selected model.
 

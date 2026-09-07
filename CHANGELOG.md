@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.1 — 2026-09-07
+
+### Removed
+- **Route footer chip.** The `⇢ OAI` / `⇢ ANT` extension status (introduced
+  1.4.2, consolidated 1.5.0) is gone — noise, not signal: the route is
+  visible in `/glm-tweaks` and the authoritative per-request decision reads
+  `ctx.model.api` anyway, so the chip could mislead but never inform.
+  `/glm-tweaks` and every other behavior are unchanged.
+
 ## 1.7.0 — 2026-08-26
 
 ### Added
