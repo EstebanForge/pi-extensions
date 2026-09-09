@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.12 (2026-09-09)
+
+### Fixed
+- **The status bar no longer reads "off" while the server is serving.** `refreshStatus` classified any failed `/agentmemory/health` fetch as off (network blip, watermark 503), but agents obey that label and stop calling the memory tools entirely, so a cosmetic blip became a full memory outage until the next prompt refreshed it. The status refresh now probes unauthenticated `/agentmemory/livez` on transport failures and non-auth non-ok responses (mirroring `ensureServer`'s 1.0.11 fallback): the bar only goes off when the server fails both probes, and a live-but-health-unverified server shows "agentmemory~" instead. A 401 secret mismatch deliberately keeps the bar off: it is a durable config error, not a blip, and every tool call would fail with the same secret.
+- **Turns observed during an off window are no longer silently dropped.** The `agent_end` hook was gated on `lastHealthOk`, a turn-start snapshot: one blip at `before_agent_start` and the whole turn's observation was discarded without a retry. The gate is deleted. `callAgentMemory` already fails closed and silently, so the hook now always attempts the observe POST; a blip costs one bounded request instead of a lost memory.
+- **Every fetch is now bounded.** `callAgentMemory`, the status probes, and `isServerHealthy` in `server.ts` (which backs `ensureServer` and therefore every `memory_search`/`memory_save`/`memory_delete` tool call) used bare `fetch`, so a blackholed route (Tailscale dropping packets instead of refusing) hung on the OS TCP timeout instead of failing fast. API calls get a 20s budget and health/livez probes 5s via `AbortSignal.timeout`.
+
+### Added
+- **Observation retry queue for full outages.** A turn observed while the server is unreachable no longer vanishes: the payload waits in an in-memory ring buffer (capped at 50, oldest dropped) and is flushed oldest-first on the first successful API call after recovery. Removal is identity-based, so a cap eviction of the in-flight head can never discard a different, never-posted item. A failed post rotates to the tail and stops the flush: a poison item (validation 400) cannot head-block the rest, good items flow on the next trigger, and a real outage burns one bounded POST per trigger instead of the whole queue. Scope limits: pi restarts during an outage still lose the queue (pi session transcripts remain on disk), and `memory_save` calls that fail during an outage still surface per-call errors to the agent.
+- `TOOL_GUIDANCE` clause telling agents the status line may briefly show off during a network blip and to attempt the memory tools anyway, since failures surface per call. A stale label no longer teaches agents to refuse.
+- `tests/extension.test.ts` coverage: bar shows "agentmemory~" (not off) when health fails but livez answers; bar stays off when both probes fail; bar stays off on 401 with livez never asked; `agent_end` still posts the observation after an off turn; queued observation flushes on recovery; queue cap drops the oldest; flush stops at the first failure and resumes on the next success; poison item rotates to the tail and cannot head-block; cap evicting the in-flight head never loses a never-posted item.
+
 ## 1.0.11 (2026-09-07)
 
 ### Fixed

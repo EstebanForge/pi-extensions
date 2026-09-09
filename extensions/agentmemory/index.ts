@@ -52,6 +52,13 @@ function classifyHealth(health: HealthResponse | null): HealthClass {
 
 const DEFAULT_URL = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 
+// Fetch budgets. Every call is bounded so a blackholed route (Tailscale
+// drops packets instead of refusing) fails fast instead of hanging a turn
+// on the OS TCP timeout. Probes are cheap; API calls get headroom since
+// search/saves on a large store can legitimately take seconds.
+const PROBE_TIMEOUT_MS = 5_000;
+const CALL_TIMEOUT_MS = 20_000;
+
 // User-facing flags. Single source of truth — drives registerFlag, the
 // /agentmemory status display, autocomplete, and the toggle subcommand.
 // Auto-start is OPT-IN (default false): spawning a detached server (and
@@ -76,6 +83,7 @@ const TOOL_GUIDANCE = [
   "agentmemory is available for cross-session memory.",
   "Use memory_search to recall prior decisions, preferences, bugs, and workflows.",
   "Use memory_save when you discover durable facts worth remembering beyond this session.",
+  "The status line may briefly show agentmemory off during a network blip; still try the memory tools when relevant — failures surface per call.",
 ].join(" ");
 
 function normalizeBaseUrl(url: string): string {
@@ -149,6 +157,7 @@ async function callAgentMemory<T>(
     const response = await fetch(url, {
       method,
       headers,
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       body:
         options?.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
@@ -156,6 +165,65 @@ async function callAgentMemory<T>(
     return (await response.json()) as T;
   } catch {
     return null;
+  }
+}
+
+// Unauthenticated process liveness (mirrors server.ts livez checks).
+// Decides "reachable" separately from "healthy": answers even when the
+// deep health endpoint 503s under pressure, and needs no secret.
+async function livezOk(baseUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/agentmemory/livez`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Observations that could not be posted during a server outage. Flushed
+// oldest-first on the next successful API call, so a full outage costs a
+// delay instead of a permanent memory gap. In-memory only: if pi restarts
+// mid-outage the queue dies with it, but pi session transcripts still hold
+// the raw text. Capped: a long outage drops the oldest first. Module scope
+// on purpose: the queue must survive factory reloads (/agentmemory toggle
+// re-runs the factory), or a reload mid-outage would drop pending items.
+const MAX_PENDING_OBSERVATIONS = 50;
+const pendingObservations: unknown[] = [];
+let flushingObservations = false;
+
+function enqueueObservation(body: unknown): void {
+  pendingObservations.push(body);
+  if (pendingObservations.length > MAX_PENDING_OBSERVATIONS) {
+    pendingObservations.shift();
+  }
+}
+
+// Single-flight: overlapping triggers (search success, observe success)
+// share one loop. Identity-based removal: the cap can evict the head while
+// its POST is in flight (a same-tick enqueue at the cap shifts index 0),
+// and a blind shift would then discard a never-posted item. A failed post
+// rotates to the tail and the flush stops: a poison item (validation 400)
+// cannot head-block the rest, goods flow on the next trigger, and a real
+// outage burns one bounded POST per trigger instead of the whole queue.
+async function flushObservations(): Promise<void> {
+  if (flushingObservations) return;
+  flushingObservations = true;
+  try {
+    while (pendingObservations.length > 0) {
+      const body = pendingObservations[0];
+      const posted = await callAgentMemory("observe", { body });
+      const at = pendingObservations.indexOf(body);
+      if (at === -1) continue; // evicted by the cap mid-flight
+      pendingObservations.splice(at, 1);
+      if (posted === null) {
+        pendingObservations.push(body);
+        return;
+      }
+    }
+  } finally {
+    flushingObservations = false;
   }
 }
 
@@ -198,7 +266,6 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
   let sessionId = `ephemeral-${crypto.randomUUID().slice(0, 8)}`;
   let currentProject = process.cwd();
   let lastPrompt = "";
-  let lastHealthOk = false;
   let pendingSearch: Promise<string> | null = null;
 
   async function getHealth() {
@@ -210,10 +277,33 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
   async function refreshStatus(ctx: {
     ui: { setStatus: (key: string, text: string) => void };
   }) {
-    const health = await getHealth();
-    const cls = classifyHealth(health);
-    // Healthy OR degraded = operational; anything else = off.
-    lastHealthOk = cls === "healthy" || cls === "degraded";
+    const { baseUrl, secret } = ensureOpts();
+    const headers: Record<string, string> = {};
+    if (secret) headers.Authorization = `Bearer ${secret}`;
+    let cls: HealthClass;
+    try {
+      const res = await fetch(`${baseUrl}/agentmemory/health`, {
+        headers,
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        cls = classifyHealth(await res.json());
+        // 200 without a recognizable status: liveness decides.
+        if (cls === "unknown" && (await livezOk(baseUrl))) cls = "degraded";
+      } else if (res.status === 401) {
+        // Secret mismatch is durable, not a blip: every tool call fails
+        // with the same secret. livez would answer and mislabel this as a
+        // serving blip, so it must not get the livez fallback.
+        cls = "unhealthy";
+      } else {
+        // Non-ok but not auth (watermark 503, transient 5xx): the engine
+        // serves reads/writes through it. Liveness decides reachable vs down.
+        cls = (await livezOk(baseUrl)) ? "degraded" : "unhealthy";
+      }
+    } catch {
+      // Transport failure (network blip, timeout). Liveness decides.
+      cls = (await livezOk(baseUrl)) ? "degraded" : "unhealthy";
+    }
     const label =
       cls === "healthy"
         ? "🧠 agentmemory"
@@ -742,6 +832,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
           { body: { query: lastPrompt, limit: 5 } },
         );
         const results = result?.results || [];
+        // Server answered: drain whatever an outage queued.
+        if (result !== null) void flushObservations();
         return results.length
           ? ["Relevant long-term memory from agentmemory:", formatSearchResults(results)].join("\n")
           : "";
@@ -777,22 +869,31 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
   // Hook: agent_end (observe)
   pi.on("agent_end", async (event) => {
-    if (!lastHealthOk || !lastPrompt) return;
+    if (!lastPrompt) return;
     const assistantText = getLastAssistantText(event.messages as unknown[]);
     if (!assistantText) return;
-    void callAgentMemory("observe", {
-      body: {
-        hookType: "post_tool_use",
-        sessionId,
-        project: currentProject,
-        cwd: currentProject,
-        timestamp: new Date().toISOString(),
-        data: {
-          tool_name: "conversation",
-          tool_input: lastPrompt.slice(0, 500),
-          tool_output: assistantText.slice(0, 4000),
-        },
+    // Always attempt: callAgentMemory fails closed and silently, so a blip
+    // costs one bounded POST but recovers the observation. Gating on a
+    // turn-start health snapshot dropped whole turns during outages.
+    const body = {
+      hookType: "post_tool_use",
+      sessionId,
+      project: currentProject,
+      cwd: currentProject,
+      timestamp: new Date().toISOString(),
+      data: {
+        tool_name: "conversation",
+        tool_input: lastPrompt.slice(0, 500),
+        tool_output: assistantText.slice(0, 4000),
       },
+    };
+    void callAgentMemory("observe", { body }).then((posted) => {
+      if (posted === null) {
+        enqueueObservation(body);
+        return;
+      }
+      // Success signals the server is back: drain the outage backlog.
+      void flushObservations();
     });
   });
 }

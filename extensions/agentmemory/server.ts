@@ -18,6 +18,10 @@ import { guardPlaintextBearerAuth } from "./security.js";
 const NPX_ARGS = ["-y", "@agentmemory/agentmemory@latest"];
 const START_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 500;
+// Health/livez probes are cheap LAN calls; without a signal a blackholed
+// route (Tailscale drops packets instead of refusing) hangs the tool path
+// on the OS TCP timeout.
+const PROBE_TIMEOUT_MS = 5_000;
 const IS_WIN = process.platform === "win32";
 const SPAWN_COOLDOWN_MS = 30_000;
 
@@ -60,7 +64,11 @@ export async function isServerHealthy(
   const headers: Record<string, string> = {};
   if (secret) headers.Authorization = `Bearer ${secret}`;
   try {
-    const res = await fetch(healthUrl(baseUrl), { method: "GET", headers });
+    const res = await fetch(healthUrl(baseUrl), {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     if (res.ok) {
       const body = (await res.json()) as {
         status?: string;
@@ -84,7 +92,10 @@ export async function isServerHealthy(
   // server down. Trade-off: a health path that 503s permanently (wedge, not
   // burst) stays invisible here; tools still surface per-call failures.
   try {
-    const res = await fetch(livezUrl(baseUrl), { method: "GET" });
+    const res = await fetch(livezUrl(baseUrl), {
+      method: "GET",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     return res.ok;
   } catch {
     return false;
