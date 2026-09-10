@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-09-10
+
+### Fixed
+- **Parallel gated tool calls no longer hang.** Same root cause and fix as pi-git-me 1.3.1: pi's TUI replaces an overlapping dialog and the replaced promise never settles, so a batch like three `slack_post_message` calls showed one gate and hung the rest. `confirmWrite` now holds the shared process-wide dialog lock (`withDialogLock`, `Symbol.for("pi-me.dialog-lock")`) only while a dialog is open; queued prompts appear in turn, and the queue survives a throwing dialog. Lock tests added in `tests/confirm.test.ts`.
+
+### Changed
+- `writeSettings` now writes atomically (temp file in the same directory + rename): a crash mid-write can no longer leave a truncated `pi-slack-me.json` that `readSettings` would silently reset to the safe defaults.
+
 ## 1.2.0 — 2026-09-05
 
 ### Added

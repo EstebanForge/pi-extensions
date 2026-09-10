@@ -303,3 +303,142 @@ describe("summarizeDeleteMessage", () => {
     expect(s).toMatch(/permanent|cannot be undone/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dialog serialization. pi's interactive UI shows ONE extension dialog at a
+// time; an overlapping ctx.ui.confirm/editor call replaces the live dialog
+// and the replaced promise never settles, so parallel gated tool calls (three
+// slack_post_message calls in one batch) hang forever with their gates never
+// shown. confirmWrite therefore holds a process-wide FIFO lock while a dialog
+// is open. These tests pin the contract: no two dialogs overlap, order
+// follows call order, and every caller resolves.
+// ---------------------------------------------------------------------------
+
+// UI whose dialogs stay open until the test releases them. Every open/close
+// is recorded so overlap can be asserted exactly.
+function makeGatedUI() {
+  const events: string[] = [];
+  const waiters: Array<() => void> = [];
+  const releaseNext = () => waiters.shift()?.();
+  const gate = () => new Promise<void>((resolve) => waiters.push(resolve));
+  return {
+    events,
+    releaseNext,
+    ui: {
+      async confirm(title: string): Promise<boolean> {
+        events.push(`open:${title}`);
+        await gate();
+        events.push(`close:${title}`);
+        return true;
+      },
+      async editor(title: string): Promise<string | undefined> {
+        events.push(`open:${title}`);
+        await gate();
+        events.push(`close:${title}`);
+        return "human edited";
+      },
+    },
+  };
+}
+
+// Flush pending microtasks so queued callers reach (or pass) their dialog
+// before the next release.
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+describe("dialog serialization", () => {
+  it("shows concurrent confirm() dialogs one at a time, in FIFO order", async () => {
+    const { events, releaseNext, ui } = makeGatedUI();
+    const ctx: ConfirmContext = { hasUI: true, ui };
+
+    const calls = Promise.all([
+      confirmWrite(ctx, { title: "one", summary: "s" }),
+      confirmWrite(ctx, { title: "two", summary: "s" }),
+      confirmWrite(ctx, { title: "three", summary: "s" }),
+    ]);
+
+    await settle();
+    releaseNext();
+    await settle();
+    releaseNext();
+    await settle();
+    releaseNext();
+
+    expect(await calls).toEqual([
+      { proceed: true },
+      { proceed: true },
+      { proceed: true },
+    ]);
+    expect(events).toEqual([
+      "open:one",
+      "close:one",
+      "open:two",
+      "close:two",
+      "open:three",
+      "close:three",
+    ]);
+  });
+
+  it("serializes mixed editor()/confirm() traffic", async () => {
+    const { events, releaseNext, ui } = makeGatedUI();
+    const ctx: ConfirmContext = { hasUI: true, ui };
+
+    const calls = Promise.all([
+      confirmWrite(ctx, { title: "a", editableText: "draft a", summary: "s" }),
+      confirmWrite(ctx, { title: "b", summary: "s" }),
+      confirmWrite(ctx, { title: "c", editableText: "draft c", summary: "s" }),
+    ]);
+
+    await settle();
+    releaseNext();
+    await settle();
+    releaseNext();
+    await settle();
+    releaseNext();
+
+    const outcomes = await calls;
+    expect(outcomes[0]).toEqual({ proceed: true, text: "human edited", edited: true });
+    expect(outcomes[1]).toEqual({ proceed: true });
+    expect(outcomes[2]).toEqual({ proceed: true, text: "human edited", edited: true });
+    expect(events).toEqual([
+      "open:a",
+      "close:a",
+      "open:b",
+      "close:b",
+      "open:c",
+      "close:c",
+    ]);
+  });
+
+  it("shares one lock across modules via Symbol.for", () => {
+    // Same key in every pi-*-me repo: one queue per pi process, so gates from
+    // different extensions in one parallel batch serialize against each other.
+    expect(
+      (globalThis as Record<symbol, unknown>)[Symbol.for("pi-me.dialog-lock")],
+    ).toBeDefined();
+  });
+
+  it("releases the lock when a dialog throws", async () => {
+    const bombUI = {
+      async confirm(): Promise<boolean> {
+        throw new Error("boom");
+      },
+      async editor(): Promise<string | undefined> {
+        return undefined;
+      },
+    };
+    await expect(
+      confirmWrite({ hasUI: true, ui: bombUI }, { title: "boom", summary: "s" }),
+    ).rejects.toThrow("boom");
+
+    // The queue must not stay wedged: the next caller still gets its dialog.
+    const { events, releaseNext, ui } = makeGatedUI();
+    const after = confirmWrite(
+      { hasUI: true, ui } as ConfirmContext,
+      { title: "after", summary: "s" },
+    );
+    await settle();
+    releaseNext();
+    expect(await after).toEqual({ proceed: true });
+    expect(events).toEqual(["open:after", "close:after"]);
+  });
+});
