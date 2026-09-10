@@ -63,7 +63,7 @@ const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
 
 const DEFAULT_MODEL = "sonnet";
-const DEFAULT_MODE = "read";
+const DEFAULT_MODE = "full";
 const DEFAULT_EFFORT = "default"; // "default" = omit --effort (Claude's own default)
 
 const BRIDGE_PACKAGE_ID = "pi-claude-bridge";
@@ -82,9 +82,9 @@ TWO MODES (you choose):
 - **Continued conversation**: pass the sessionId returned in the PREVIOUS call's details (details.sessionId). Claude resumes that session with full context intact — use for follow-ups, multi-turn refinement, or when the user says "ask claude to follow up / continue / now do X based on what you just did". Thread the id from each result into the next call.
 
 PERMISSION MODES (the \`mode\` param):
-- **read** (default): research / analysis / review with file access but no mutations. Restricts Claude to read-only tools (Read/Grep/Glob/LS/WebSearch/WebFetch).
-- **none**: general knowledge only — no file or tool access at all.
-- **full**: allows file edits and bash execution (skips per-action permission checks). Use only when the user wants Claude to make changes.`;
+- **full** (default): full tool access. Reads, edits, and runs bash without permission prompts (pi philosophy: pi has none either). Skips per-action permission checks.
+- **read**: research / analysis / review with file access but no mutations. Restricts Claude to read-only tools (Read/Grep/Glob/LS/WebSearch/WebFetch).
+- **none**: general knowledge only, no file or tool access at all.`;
 
 // --- Types -----------------------------------------------------------------
 
@@ -664,7 +664,7 @@ export default async function (pi: ExtensionAPI) {
 					id: "defaultMode",
 					label: "Default permission mode",
 					description:
-						"read (default): research/analysis with file access, no mutations. none: general knowledge only. full: edits + bash (gated by allowFullMode).",
+						"full (default): edits + bash, no permission prompts. read: file access, no mutations. none: general knowledge only, no tools. Gated by allowFullMode.",
 					currentValue: config.defaultMode,
 					values: MODE_OPTIONS,
 				},
@@ -770,7 +770,7 @@ export default async function (pi: ExtensionAPI) {
 			mode: Type.Optional(
 				StringEnum(MODE_VALUES, {
 					description:
-						"Permission mode: 'read' (default, research/analysis with file access, no mutations), 'none' (general knowledge only, no tools), or 'full' (edits + bash, skips per-action permission checks). Overrides the configured default.",
+						"Permission mode: 'full' (default, full tool access: edits + bash without permission prompts), 'read' (research/analysis with file access, no mutations), 'none' (general knowledge only, no tools). Overrides the configured default.",
 				}),
 			),
 			thinking: Type.Optional(
@@ -853,7 +853,7 @@ export default async function (pi: ExtensionAPI) {
 			if (d?.effort) rTags.push(`thinking=${d.effort}`);
 			if (rTags.length) text += ` ${theme.fg("accent", `[${rTags.join(", ")}]`)}`;
 			if (d?.durationMs) text += ` ${theme.fg("dim", `${(d.durationMs / 1000).toFixed(1)}s`)}`;
-			if (d?.mode && d.mode !== "read") text += ` ${theme.fg("muted", d.mode)}`;
+			if (d?.mode && d.mode !== DEFAULT_MODE) text += ` ${theme.fg("muted", d.mode)}`;
 			if (d?.includeContext) text += ` ${theme.fg("muted", "context=full")}`;
 
 			if (expanded) {

@@ -62,9 +62,9 @@ The `mode` parameter controls what Claude is allowed to do:
 
 | Mode | Maps to | Behavior |
 | --- | --- | --- |
-| `read` (default) | `--allowedTools Read,Grep,Glob,LS,WebSearch,WebFetch,TodoWrite` | Research / analysis / review with file access, no mutations. Read-only tools never prompt, so the run stays non-interactive. |
-| `none` | `--tools ""` | General knowledge only — no file or tool access at all. |
-| `full` | `--permission-mode bypassPermissions` | File edits + bash execution (runs without feedback to Pi). Gated by `allowFullMode`. |
+| `full` (default) | `--permission-mode bypassPermissions` | Full tool access: file edits + bash execution, no permission prompts (pi philosophy: pi has none either). Gated by `allowFullMode`. |
+| `read` | `--allowedTools Read,Grep,Glob,LS,WebSearch,WebFetch,TodoWrite` | Research / analysis / review with file access, no mutations. Read-only tools never prompt, so the run stays non-interactive. Disable-acting option. |
+| `none` | `--tools ""` | General knowledge only — no file or tool access at all. Disable-tools option. |
 
 > `plan` mode is intentionally avoided: it requires interactive plan approval and errors out under `--print` (`error_during_execution`). The prompt is sent via stdin because `--allowedTools` / `--tools` are variadic flags that would otherwise swallow a positional prompt.
 
@@ -87,7 +87,7 @@ Omit `model` to use the configured default.
 ```json
 {
   "defaultModel": "sonnet",
-  "defaultMode": "read",
+  "defaultMode": "full",
   "defaultEffort": "default",
   "allowFullMode": true
 }
@@ -96,7 +96,7 @@ Omit `model` to use the configured default.
 | Key | Default | Description |
 | --- | --- | --- |
 | `defaultModel` | `sonnet` | Alias or full id used when the tool call omits `model`. |
-| `defaultMode` | `read` | `read`, `none`, or `full`. |
+| `defaultMode` | `full` | `full` (default), `read`, or `none`. |
 | `defaultEffort` | `default` | Mapped to `claude --effort`: `default` (omit the flag), `low`, `medium`, `high`, `xhigh`. |
 | `allowFullMode` | `true` | When `false`, `mode: "full"` is refused. |
 

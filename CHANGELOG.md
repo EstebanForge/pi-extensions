@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-09-10
+
+### Changed
+
+- **Default permission mode is now `full` (was `read`).** Delegated Claude runs get full tool access (file edits + bash via `--permission-mode bypassPermissions`) with no permission prompts, matching pi's own no-gate philosophy: pi has none either. `read` stays as the restrictive mode (read-only tool allowlist) and `none` as the zero-tools mode; both remain per-call overrides or `defaultMode` in `~/.pi/agent/ask-claude.json`. `allowFullMode` still gates `full` (default on) and the read-only allowlist fallback inside `buildClaudeArgs` is unchanged.
+
+### Fixed
+
+- The TUI result renderer compared modes against the old default (`read`), so default runs gained a redundant mode tag while non-default runs rendered untagged. It now compares against `DEFAULT_MODE`.
+- The README Configuration section still documented `defaultMode: "read"` after the modes table was updated; the example JSON and the defaults table now say `full`.
+
 ## [1.0.1] - 2026-08-13
 
 ### Added
