@@ -10,6 +10,7 @@ import {
 } from "./security.js";
 import { ensureServer } from "./server.js";
 import { loadFlagSettings, saveFlagSetting } from "./flag-settings.js";
+import { withDialogLock } from "./dialog-lock.js";
 
 type TextBlock = { type?: string; text?: string };
 type AssistantMessage = { role?: string; content?: unknown };
@@ -720,15 +721,19 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       // HARD GATE: blocks tool execution until the human answers in the TUI.
       // In headless/RPC mode ui.confirm has no TUI and resolves false, so
       // unattended agents cannot delete — by design.
-      const confirmed = await ctx.ui.confirm(
-        "Delete from agentmemory?",
-        [
-          "This is permanent and audited. Confirm only if you initiated this.",
-          "",
-          ...previewLines,
-          "",
-          `reason: ${sanitize(params.reason ?? "(none given)")}`,
-        ].join("\n"),
+      // One dialog at a time (see dialog-lock.ts): parallel gated calls queue
+      // up and each prompt is shown in turn instead of clobbering the live one.
+      const confirmed = await withDialogLock(() =>
+        ctx.ui.confirm(
+          "Delete from agentmemory?",
+          [
+            "This is permanent and audited. Confirm only if you initiated this.",
+            "",
+            ...previewLines,
+            "",
+            `reason: ${sanitize(params.reason ?? "(none given)")}`,
+          ].join("\n"),
+        ),
       );
       if (!confirmed) {
         return {

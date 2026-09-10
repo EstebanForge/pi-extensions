@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.13 (2026-09-10)
+
+### Fixed
+- **`memory_delete` confirmation dialogs no longer clobber each other in parallel batches.** pi's TUI shows ONE extension dialog at a time; an overlapping `ctx.ui.confirm` replaces the live dialog and the replaced promise never settles, so the delete gate could hang forever or pair the wrong answer with the wrong call. The confirm now holds the same shared cross-extension dialog lock as the pi-*-me gates (`withDialogLock`, `Symbol.for("pi-me.dialog-lock")`), so gates from different extensions in one parallel batch queue instead of clobbering. New `dialog-lock.ts` module plus contract tests (FIFO order, throw-release, shared key).
+
 ## 1.0.12 (2026-09-09)
 
 ### Fixed
