@@ -17,7 +17,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { contentText } from "@earendil-works/pi-ai";
+import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
 	CONVERSATIONS_DIR,
@@ -26,7 +26,7 @@ import {
 } from "./discovery.js";
 import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
-import { spawnAgyModelsRaw } from "./models.js";
+import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
 
 // --- Constants -------------------------------------------------------------
 
@@ -80,7 +80,12 @@ EXECUTION MODES (param: mode):
 - **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks.
 - **accept-edits** (default): agy applies edits directly inside the workspace.
 
-COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request compact digests instead of full file contents. Defaults on for plan, off for accept-edits.`;
+COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request compact digests instead of full file contents. Defaults on for plan, off for accept-edits.
+
+THINKING LEVEL (params: thinking, effort - SYNONYMS for one knob):
+- pi calls it thinking, agy calls it effort. Same thing. Pass ONE of the two.
+- Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to agy's low|medium|high; unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
+- An explicit level beats a tier embedded in model ("flash high") and the configured default. Omit both for the configured default.`;
 
 // --- Types -----------------------------------------------------------------
 
@@ -176,6 +181,10 @@ export function resolveModel(
 	input: string,
 	entries: ModelEntry[],
 	defaultThinking: ThinkingTier,
+	/** Explicit thinking param (thinking/effort). Beats a tier embedded in
+	 *  the alias ("flash high") and the configured default; clamped to the
+	 *  family's real tiers, ignored for fixed-thinking families. */
+	preferredTier?: ThinkingTier,
 ): ResolvedModel | null {
 	const lower = input.toLowerCase().trim();
 
@@ -232,6 +241,7 @@ export function resolveModel(
 	if (familyTiers.size === 0) return toResolved(candidates[0].full, null);
 
 	const preferred =
+		preferredTier ??
 		tier ??
 		(familyTiers.has(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER[family]);
 	const chosenTier = nearestTier([...familyTiers], preferred);
@@ -293,6 +303,18 @@ export async function registerAskAntigravityTool(
 						"Model alias or exact id. Friendly: 'flash', 'pro', 'gemini'. Add a tier: 'flash high'. Pin a version: '3.5 flash'. Exact: 'gemini-3.6-flash-medium'. Omit for the configured default.",
 				}),
 			),
+			thinking: Type.Optional(
+				Type.String({
+					description:
+						"Thinking level (= agy effort tier). pi vocabulary: minimal|low|medium|high|xhigh|max, clamped to agy's low|medium|high (unknown values fall back to low). Overrides a tier embedded in `model`. Omit for the configured default.",
+				}),
+			),
+			effort: Type.Optional(
+				Type.String({
+					description:
+						"Alias for `thinking` (agy's own name for the same knob). Pass ONE of the two; different values on both is an error.",
+				}),
+			),
 			mode: Type.Optional(
 				Type.Union([Type.Literal("plan"), Type.Literal("accept-edits")], {
 					description:
@@ -327,8 +349,14 @@ export async function registerAskAntigravityTool(
 			// row identifies what will actually run, not just explicit args.
 			const cfg = loadConfig();
 			const requestedModel = (args.model as string | undefined)?.trim() || cfg.defaultModel;
+			const thinkingArg = (args.thinking as string | undefined) ?? (args.effort as string | undefined);
 			const resolved =
-				resolveModel(requestedModel, entries, cfg.defaultThinking) ?? { model: requestedModel };
+				resolveModel(
+					requestedModel,
+					entries,
+					cfg.defaultThinking,
+					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER) : undefined,
+				) ?? { model: requestedModel };
 			const thinking: ThinkingTier = resolved.effort ?? cfg.defaultThinking;
 			const mode: AgyMode = (args.mode as AgyMode | undefined) ?? "accept-edits";
 			const useDigest = typeof args.digest === "boolean" ? args.digest : mode === "plan";
@@ -415,8 +443,27 @@ export async function registerAskAntigravityTool(
 					details: emptyDetails(requestedModel),
 				};
 			}
+			if (
+				typeof params.thinking === "string" &&
+				typeof params.effort === "string" &&
+				params.thinking !== params.effort
+			) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "thinking and effort are synonyms for the same knob - pass one, not both with different values.",
+						},
+					],
+					details: emptyDetails(requestedModel),
+				};
+			}
+			const thinkingArg = (params.thinking as string | undefined) ?? (params.effort as string | undefined);
+			const preferredTier = thinkingArg
+				? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER)
+				: undefined;
 			const resolved =
-				resolveModel(requestedModel, entries, config.defaultThinking) ?? {
+				resolveModel(requestedModel, entries, config.defaultThinking, preferredTier) ?? {
 					model: requestedModel,
 				};
 

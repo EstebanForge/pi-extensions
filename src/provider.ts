@@ -33,7 +33,7 @@ import type { Api } from "@earendil-works/pi-ai";
 import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
 import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
-import { type AgyEffort, type AgyModelEntry } from "./models.js";
+import { toAgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
 import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-gate.js";
@@ -336,46 +336,6 @@ export interface StreamSimpleDeps {
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
-}
-
-/** pi thinking-effort order mirrors agy's, for clamping. */
-const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high"];
-
-/** Map pi's thinking level onto one of the tiers `efforts` the base actually
- *  supports, clamping to the nearest available. agy rejects an effort tier a
- *  base doesn't list (e.g. medium on Pro), so we never emit one. A base slug is
- *  invalid without --effort, so when pi sends no level we default to the
- *  middle tier (or the highest available). */
-export function toAgyEffort(
-	reasoning: ThinkingLevel | undefined,
-	efforts: readonly AgyEffort[],
-): AgyEffort {
-	let candidate: AgyEffort;
-	switch (reasoning) {
-		case "minimal":
-		case "low":
-			candidate = "low";
-			break;
-		case "medium":
-			candidate = "medium";
-			break;
-		case "high":
-		case "xhigh":
-		case "max":
-			candidate = "high";
-			break;
-		default:
-			candidate = efforts[0] ?? "low";
-	}
-	if (efforts.includes(candidate)) return candidate;
-	const i = AGY_EFFORT_ORDER.indexOf(candidate);
-	for (let j = i; j < AGY_EFFORT_ORDER.length; j++) {
-		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
-	}
-	for (let j = i - 1; j >= 0; j--) {
-		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
-	}
-	return efforts[0] ?? "low";
 }
 
 // --- G9: no-patch pi-tool round-trips -----------------------------------------

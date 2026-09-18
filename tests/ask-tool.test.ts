@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { resolveModel, toolModelsFromRaw } from "../src/ask-tool.js";
+import { toAgyEffort } from "../src/models.js";
 
 // The REAL `agy models` stdout shape (verified live via `ct agy models`).
 const RAW = [
@@ -94,6 +95,33 @@ test("resolveModel: an exact tiered slug splits to base + effort (not passed who
 	assert.deepEqual(resolveModel("claude-sonnet-4-6", entries, DEFAULT_THINKING), {
 		model: "claude-sonnet-4-6",
 	});
+});
+
+test("resolveModel: explicit preferred tier beats alias tier, default, and clamps to the family", () => {
+	// thinking/effort param wins over the alias's own tier and the default.
+	assert.deepEqual(resolveModel("flash high", entries, DEFAULT_THINKING, "low"), {
+		model: "gemini-3.6-flash",
+		effort: "low",
+	});
+	// Pro has no medium variant; the explicit tier clamps to the nearest
+	// listed tier (distance tie low/high -> higher rank wins).
+	assert.deepEqual(resolveModel("pro", entries, DEFAULT_THINKING, "medium"), {
+		model: "gemini-3.1-pro",
+		effort: "high",
+	});
+	// Fixed-thinking families ignore the tier: agy rejects --effort for them.
+	assert.deepEqual(resolveModel("sonnet", entries, DEFAULT_THINKING, "high"), {
+		model: "claude-sonnet-4-6",
+	});
+});
+
+test("toAgyEffort: full pi thinking-level vocabulary clamps to agy tiers", () => {
+	const all: readonly ("low" | "medium" | "high")[] = ["low", "medium", "high"];
+	assert.equal(toAgyEffort("minimal", all), "low");
+	assert.equal(toAgyEffort("medium", all), "medium");
+	assert.equal(toAgyEffort("xhigh", all), "high");
+	assert.equal(toAgyEffort("max", all), "high");
+	assert.equal(toAgyEffort(undefined, all), "low");
 });
 
 test("resolveModel: short aliases still resolve when agy omits them (static overlay)", () => {

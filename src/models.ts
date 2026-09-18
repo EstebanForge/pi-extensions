@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { Api, Model, ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 
 const DISCOVERY_TIMEOUT_MS = 8_000;
 
@@ -30,6 +30,47 @@ export type AgyEffort = "low" | "medium" | "high";
 
 /** low < medium < high, for sorting/clamping. */
 const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2 };
+
+/** pi thinking-effort order mirrors agy's, for clamping. */
+export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high"];
+
+/** Map pi's thinking level onto one of the tiers `efforts` the base actually
+ *  supports, clamping to the nearest available. agy rejects an effort tier a
+ *  base doesn't list (e.g. medium on Pro), so we never emit one. Shared by the
+ *  provider turns AND the AskAntigravity delegation tool (thinking/effort
+ *  params): one vocabulary, one clamp. When pi sends no level we fall to the
+ *  first available tier. */
+export function toAgyEffort(
+	reasoning: ThinkingLevel | undefined,
+	efforts: readonly AgyEffort[],
+): AgyEffort {
+	let candidate: AgyEffort;
+	switch (reasoning) {
+		case "minimal":
+		case "low":
+			candidate = "low";
+			break;
+		case "medium":
+			candidate = "medium";
+			break;
+		case "high":
+		case "xhigh":
+		case "max":
+			candidate = "high";
+			break;
+		default:
+			candidate = efforts[0] ?? "low";
+	}
+	if (efforts.includes(candidate)) return candidate;
+	const i = AGY_EFFORT_ORDER.indexOf(candidate);
+	for (let j = i; j < AGY_EFFORT_ORDER.length; j++) {
+		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
+	}
+	for (let j = i - 1; j >= 0; j--) {
+		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
+	}
+	return efforts[0] ?? "low";
+}
 
 /** Split an agy slug into (base, tier). tier is null when the slug has no
  *  -high/-medium/-low suffix (claude-sonnet-4-6, gpt-oss-120b-medium's "medium"
