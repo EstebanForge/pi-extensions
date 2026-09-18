@@ -76,7 +76,12 @@ const CODEX_DESCRIPTION = `Delegate a self-contained sub-task to OpenAI Codex. T
 
 TWO MODES (you choose):
 - **One-shot (isolated)**: omit sessionId. Codex starts fresh with no memory of prior calls. Use for independent questions.
-- **Continued conversation**: pass the sessionId returned in the PREVIOUS call's details (details.sessionId). Codex resumes that session with full context intact — use for follow-ups, multi-turn refinement, or when the user says "ask codex to follow up / continue / now do X based on what you just did". Thread the id from each result into the next call.`;
+- **Continued conversation**: pass the sessionId returned in the PREVIOUS call's details (details.sessionId). Codex resumes that session with full context intact — use for follow-ups, multi-turn refinement, or when the user says "ask codex to follow up / continue / now do X based on what you just did". Thread the id from each result into the next call.
+
+THINKING / REASONING EFFORT (params: thinking, reasoningEffort - SYNONYMS for one knob):
+- pi calls it thinking, Codex calls it reasoning effort. Same thing. Pass ONE of the two.
+- Values: minimal|low|medium|high. "think harder / peer review on high thinking" -> thinking: "high".
+- An explicit level beats the configured default. Lowering it is the primary speed/cost lever.`;
 
 // --- Types -----------------------------------------------------------------
 
@@ -789,6 +794,12 @@ export default async function (pi: ExtensionAPI) {
 						"Reasoning effort: 'minimal'/'low' (fast, cheap) through 'high' (thorough). Overrides the configured default. Lowering this is the primary lever for speed/cost.",
 				}),
 			),
+			thinking: Type.Optional(
+				StringEnum(REASONING_VALUES, {
+					description:
+						"Alias for `reasoningEffort` (pi calls it thinking, Codex reasoning effort). Same knob. Pass ONE of the two; different values on both is an error.",
+				}),
+			),
 			sandbox: Type.Optional(
 				StringEnum(SANDBOX_VALUES, {
 					description:
@@ -818,8 +829,9 @@ export default async function (pi: ExtensionAPI) {
 			// the row identifies what will actually run, not just explicit args.
 			const cfg = loadConfig();
 			const model = (args.model as string | undefined)?.trim() || cfg.defaultModel;
-			const reasoning: ReasoningEffort = isReasoningEffort(args.reasoningEffort)
-				? args.reasoningEffort
+			const reasoningArg = (args.thinking ?? args.reasoningEffort) as string | undefined;
+			const reasoning: ReasoningEffort = isReasoningEffort(reasoningArg)
+				? reasoningArg
 				: cfg.defaultReasoning;
 			const sandbox: SandboxMode = isSandboxMode(args.sandbox) ? args.sandbox : cfg.defaultSandbox;
 			const isContinue = typeof args.sessionId === "string" && SESSION_ID_RE.test(args.sessionId);
@@ -923,8 +935,24 @@ export default async function (pi: ExtensionAPI) {
 				};
 			}
 			const resolved = resolveModel(requestedModel, discovered);
-			const reasoning = isReasoningEffort(params.reasoningEffort)
-				? params.reasoningEffort
+			if (
+				typeof params.thinking === "string" &&
+				typeof params.reasoningEffort === "string" &&
+				params.thinking !== params.reasoningEffort
+			) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "thinking and reasoningEffort are synonyms for the same knob - pass one, not both with different values.",
+						},
+					],
+					details: emptyDetails(requestedModel, null),
+				};
+			}
+			const reasoningArg = (params.thinking ?? params.reasoningEffort) as string | undefined;
+			const reasoning = isReasoningEffort(reasoningArg)
+				? reasoningArg
 				: config.defaultReasoning;
 			const sandbox = isSandboxMode(params.sandbox) ? params.sandbox : config.defaultSandbox;
 

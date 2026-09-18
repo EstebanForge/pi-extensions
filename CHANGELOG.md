@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.5] - 2026-09-18
+
+### Added
+
+- **`thinking` param as a synonym for `reasoningEffort`.** The knob existed, but the word "thinking" appeared nowhere in the schema or docs, so a caller told "think harder / high thinking" had to translate to `reasoningEffort` unaided (and sometimes skipped it, silently running the configured default). `thinking` now accepts the same values and feeds the same `-c model_reasoning_effort`; both params with different values is a tool error, not a silent pick. Family alignment with AskAntigravity (`thinking`/`effort`) and AskClaude (`thinking`).
+
 ## [1.0.4] - 2026-09-10
 
 ### Changed
