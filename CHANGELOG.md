@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.1] - 2026-09-18
+
+### Added
+
+- **`thinking` / `effort` params on AskAntigravity (synonyms).** Delegation calls had no direct tier knob: the only lever was tier sugar inside `model` ("flash high"), so a caller told "peer review on high thinking" fell through to the configured default (medium) with no signal anything was dropped. The tool now takes `thinking` (pi vocabulary: minimal|low|medium|high|xhigh|max, clamped to agy's low|medium|high; unknown values fall back to low) plus `effort` as the same knob under agy's own name, so calling models reach for either word. An explicit level beats a tier embedded in `model` and the config default; passing both with different values errors; fixed-thinking families (Claude, GPT-OSS) ignore it because agy rejects `--effort` for them. `toAgyEffort` moved from `src/provider.ts` to `src/models.ts` so provider turns and the delegation tool share one clamp.
+
 ## [1.6.0] - 2026-09-14
 
 ### Added
