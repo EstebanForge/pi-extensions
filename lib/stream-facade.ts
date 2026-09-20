@@ -3,8 +3,9 @@
  *
  * This is the session-mode entry point, the direct analogue of the MoA reference's
  * streamSimple that owns the request lifecycle. When a `moa/<preset>` model
- * is selected, Pi calls this function with the full context (messages +
- * tools). We:
+ * is selected, Pi calls this function with the normalized transcript; the
+ * system prompt and tool declarations ride the transcript's system messages
+ * (pi 0.86 TranscriptContext), read via getCurrentSystemPrompt/getCurrentTools. We:
  *
  *   1. resolve the preset by model.id
  *   2. trim the transcript for references (text-only advisory view)
@@ -22,7 +23,13 @@
  * ctx is captured at session_start in index.ts and passed via a mutable ref,
  * because streamSimple's signature has no ExtensionContext parameter.
  */
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentTools,
+	withoutInitialSystemMessage,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import { TurnCache, signature } from "./dedup";
 import { runReferences } from "./engine";
 import { GUIDANCE_HEADER, SESSION_INSTRUCTION, hasUsableGuidance } from "./prompts";
@@ -52,7 +59,7 @@ export interface FacadeDeps {
  * The returned function matches pi-ai's streamSimple contract.
  */
 export function makeMoaStreamFacade(deps: FacadeDeps) {
-	return function moaStream(model: any, context: any, options?: any): any {
+	return function moaStream(model: any, context: TranscriptContext, options?: any): any {
 		// Stream must be created synchronously before any await.
 		const stream = createAssistantMessageEventStream();
 
@@ -72,7 +79,7 @@ export function makeMoaStreamFacade(deps: FacadeDeps) {
 
 			const signal: AbortSignal | undefined = options?.signal;
 			const messages: any[] = Array.isArray(context?.messages) ? context.messages : [];
-			const tools = context?.tools;
+			const tools = getCurrentTools(messages);
 
 			try {
 				const finalMessages = await buildAggregatorMessages({
@@ -84,12 +91,12 @@ export function makeMoaStreamFacade(deps: FacadeDeps) {
 				// system prompt (tool-use guidelines, project context) and prepend
 				// the MoA session instruction so the aggregator knows how to use
 				// the injected reference context. Without this it ran blind.
-				const baseSystem = typeof context?.systemPrompt === "string" ? context.systemPrompt : "";
+				const baseSystem = getCurrentSystemPrompt(messages) || "";
 				const systemPrompt = baseSystem ? `${baseSystem}\n\n${SESSION_INSTRUCTION}` : SESSION_INSTRUCTION;
 
 				deps.onProgress?.(`aggregating: ${preset.aggregator.provider}/${preset.aggregator.model}`);
 				const resp = await callAggregator(preset.aggregator, ctx, {
-					messages: finalMessages,
+					messages: withoutInitialSystemMessage(finalMessages),
 					tools,
 					systemPrompt,
 					temperature: preset.aggregator_temperature,

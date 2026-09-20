@@ -103,7 +103,9 @@ export async function callAggregator(
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (auth.ok === false) throw new Error(auth.error);
 
-	// TYPE-ESCAPE HATCH: `messages` / `tools` come from Pi's Context shape;
+	// TYPE-ESCAPE HATCH: `complete()` takes Pi's public Context shape, which
+	// normalizeContext() folds into TranscriptContext. `args.messages` must not
+	// carry an initial system message when `args.systemPrompt` is supplied.
 	// pi-ai's `complete()` is generic over KnownProvider/Message/Tool, which
 	// collapses to `never` for runtime string providers. `as never` bypasses
 	// the generic here on purpose — the structures are structurally compatible
