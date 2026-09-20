@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.2] - 2026-09-19
+
+### Fixed
+
+- **Compatibility with host 0.86.0's normalized provider stream input.** Stream entry points now receive a branded `TranscriptContext` (`{ messages }` only): the `context.systemPrompt` / `context.tools` fields are gone, and only `normalizeContext()` produces the new type. G10 fresh-conversation delivery read `context.systemPrompt`, so every fresh agy conversation silently lost the system prompt block (operating instructions, AGENTS.md project context, tool-priority note); the prompt now comes from the transcript via `getCurrentSystemPrompt(context.messages)`. `emitToolUse` arguments are restricted to `Record<string, JsonValue>` per the tightened `ToolCall.arguments` contract (driver args arrive JSON-decoded off the wire, so the two call-site casts are sound). Test fixtures in `provider-{sysprompt,streaming,late-result,escalation}.test.ts` and the `scripts/test-provider.ts` smoke context wrap raw objects with `normalizeContext()`. Dev pins `@earendil-works/*` raised `^0.85.0` to `^0.86.0`; `tsc` clean, 360 tests green.
+
 ## [1.6.1] - 2026-09-18
 
 ### Added
