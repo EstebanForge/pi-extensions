@@ -15,13 +15,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Message,
-	Model,
-	SimpleStreamOptions,
+import {
+	normalizeContext,
+	type Api,
+	type AssistantMessage,
+	type Message,
+	type Model,
+	type SimpleStreamOptions,
+	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
 import { SessionStore } from "../src/sessions.js";
@@ -145,13 +146,13 @@ test("late delivery: incident repro, tool result after park death runs as a new 
 	const rt = new ToolRoundTrips(driver);
 	await parkAndFail(rt, "call-1", "AskClaude", "agy disconnected before the tool result arrived");
 
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [
 			{ role: "user", content: "peer review wp-plugin", timestamp: Date.now() },
 			toolResultMessage("call-1", "REVIEW OUTPUT", false),
 		],
-	};
+	});
 	const errors = await collect(makeStreamSimple(driver, rt)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
 
 	// The turn ran (no error) and the prompt frames the late result.
@@ -173,10 +174,10 @@ test("late delivery: tombstone is single-shot, the same context then errors as a
 	const driver = fakeDriver(seen);
 	const rt = new ToolRoundTrips(driver);
 	await parkAndFail(rt, "call-1", "AskClaude", "expired");
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [toolResultMessage("call-1", "REVIEW OUTPUT")],
-	};
+	});
 	const streamSimple = makeStreamSimple(driver, rt);
 	const options = { cwd: process.cwd() } as unknown as SimpleStreamOptions;
 
@@ -198,13 +199,13 @@ test("late delivery: a queued user message rides along with the late result", as
 	const driver = fakeDriver(seen);
 	const rt = new ToolRoundTrips(driver);
 	await parkAndFail(rt, "call-1", "AskClaude", "expired");
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [
 			toolResultMessage("call-1", "REVIEW OUTPUT"),
 			{ role: "user", content: "now run the tests", timestamp: Date.now() },
 		],
-	};
+	});
 	const errors = await collect(makeStreamSimple(driver, rt)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
 	assert.equal(errors.length, 0);
 	assert.ok(seen.opts);
@@ -236,10 +237,10 @@ test("late delivery: deferred while a pending park anchors the pass, delivered o
 
 	// Pass 1: continuation anchored by A's result; B must be deferred, not
 	// consumed (there is nowhere to put it this pass).
-	const context1: Context = {
+	const context1: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [toolResultMessage("call-a", "A OUTPUT"), toolResultMessage("call-b", "B OUTPUT")],
-	};
+	});
 	const errors1: AssistantMessage[] = [];
 	const s1 = streamSimple(model, context1, options);
 	for await (const ev of s1) {
@@ -260,13 +261,13 @@ test("late delivery: deferred while a pending park anchors the pass, delivered o
 		driver: driver2,
 		roundTrips: rt,
 	});
-	const context2: Context = {
+	const context2: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [
 			toolResultMessage("call-b", "B OUTPUT"),
 			{ role: "user", content: "continue", timestamp: Date.now() },
 		],
-	};
+	});
 	const s2 = streamSimple2(model, context2, options);
 	for await (const ev of s2) void ev;
 	assert.ok(seen2.opts);
@@ -281,10 +282,10 @@ test("late delivery: error results are flagged in the prompt", async () => {
 	const driver = fakeDriver(seen);
 	const rt = new ToolRoundTrips(driver);
 	await parkAndFail(rt, "call-1", "exec_command", "expired");
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [toolResultMessage("call-1", "exit code 1", true)],
-	};
+	});
 	const errors = await collect(makeStreamSimple(driver, rt)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
 	assert.equal(errors.length, 0);
 	assert.ok(seen.opts);

@@ -19,13 +19,15 @@
 
 import {
 	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
-	type Context,
+	type JsonValue,
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
 	type ThinkingLevel,
+	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
 import fs from "node:fs";
@@ -59,7 +61,7 @@ function zeroUsage(): Usage {
 /** Extract the latest user message as a flat prompt string. agy maintains its
  *  own conversation history via --conversation, so we collapse pi's structured
  *  message to text. Returns null if the last message isn't a user message. */
-function extractUserPrompt(context: Context): string | null {
+function extractUserPrompt(context: TranscriptContext): string | null {
 	const last = context.messages[context.messages.length - 1];
 	if (!last || last.role !== "user") return null;
 	const content = last.content;
@@ -75,7 +77,7 @@ function extractUserPrompt(context: Context): string | null {
 /** Image blocks of the latest user message (pi-ai ImageContent: base64 data
  *  + mimeType). The ACP engine forwards them as typed content blocks; the
  *  stream-json CLI prompt is text-only, so its driver simply ignores these. */
-function extractImages(context: Context): Array<{ data: string; mimeType: string }> {
+function extractImages(context: TranscriptContext): Array<{ data: string; mimeType: string }> {
 	const last = context.messages[context.messages.length - 1];
 	if (!last || last.role !== "user" || typeof last.content === "string") return [];
 	return last.content
@@ -100,7 +102,8 @@ const DIGEST_PREAMBLE =
 
 // --- pi system prompt (G10) ----------------------------------------------------
 //
-// pi composes context.systemPrompt every turn: its own operating instructions
+// pi normalizes the system prompt into the transcript every turn (read via
+// getCurrentSystemPrompt): its own operating instructions
 // plus every AGENTS.md/CLAUDE.md it loaded (global agent dir first, then
 // ancestors). The provider used to drop it, so agy models never saw the user's
 // machine-level or project-level instructions. agy has no system-prompt flag
@@ -921,13 +924,14 @@ function nextRtId(kind: "nat" | "wrap"): string {
 	return `${kind}-${++RT_SEQ}`;
 }
 
-/** Emit a complete toolCall block and end the pi call with toolUse. */
+/** Emit a complete toolCall block and end the pi call with toolUse.
+ *  pi 0.86 restricts ToolCall.arguments to JSON-compatible values. */
 function emitToolUse(
 	stream: AssistantMessageEventStream,
 	blocks: BlockState,
 	id: string,
 	name: string,
-	args: Record<string, unknown>,
+	args: Record<string, JsonValue>,
 ): void {
 	const partial = blocks.partial;
 	closeThinking(stream, blocks);
@@ -1050,7 +1054,7 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 				emitToolUse(stream, blocks, id, mapped.tool, {
 					reasoning: `re-exec of agy ${activity.name} for display`,
 					...mapped.args,
-				});
+				} as Record<string, JsonValue>);
 				return "parked";
 			}
 			{
@@ -1067,7 +1071,9 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 		case "bridge_call": {
 			// Park the pi call: real tool name + args, toolUse stopReason. pi
 			// executes; the toolResult returns on the next stream call.
-			emitToolUse(stream, blocks, activity.callId, activity.name, activity.args);
+			// Driver args are JSON-decoded off the agy wire, so the JsonValue
+			// cast is sound.
+			emitToolUse(stream, blocks, activity.callId, activity.name, activity.args as Record<string, JsonValue>);
 			return "parked";
 		}
 	}
@@ -1077,7 +1083,7 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 async function runTurnDriver(
 	stream: AssistantMessageEventStream,
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options: SimpleStreamOptions | undefined,
 	entries: AgyModelEntry[],
 	store: SessionStore,
@@ -1179,7 +1185,9 @@ async function runTurnDriver(
 		// Fresh conversation only: agy stores the block in its own history, so
 		// re-sending it every turn would bloat each prompt and bust the cache.
 		const sysPrompt =
-			config.systemPrompt && !existing?.conversationId ? context.systemPrompt : undefined;
+			config.systemPrompt && !existing?.conversationId
+				? getCurrentSystemPrompt(context.messages) || undefined
+				: undefined;
 		const fullPrompt =
 			late.length > 0
 				? buildLateResultPrompt(late, prompt || undefined)
@@ -1258,7 +1266,7 @@ async function runTurnDriver(
  *  fallback). */
 export function createStreamSimple(
 	deps: StreamSimpleDeps,
-): (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
+): (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => AssistantMessageEventStream {
 	const { entries, store, roundTrips } = deps;
 
 	return function streamSimple(model, context, options) {

@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
-import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type Model, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import {
 	SYSTEM_PROMPT_END,
 	SYSTEM_PROMPT_PREAMBLE,
@@ -84,11 +84,11 @@ const model: Model<Api> = {
 	maxTokens: 65_536,
 };
 
-function contextWith(prompt: string, systemPrompt?: string): Context {
-	return {
+function contextWith(prompt: string, systemPrompt?: string): TranscriptContext {
+	return normalizeContext({
 		systemPrompt,
 		messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-	};
+	});
 }
 
 interface Harness {

@@ -6,12 +6,13 @@
 
 import {
 	createAssistantMessageEventStream,
+	normalizeContext,
 	type AssistantMessage,
 	type AssistantMessageEvent,
-	type Context,
 	type Model,
 	type Api,
 	type SimpleStreamOptions,
+	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
 import { StreamDriver } from "../src/driver.js";
@@ -36,7 +37,7 @@ const model: Model<Api> = {
 	maxTokens: 65_536,
 };
 
-const context: Context = {
+const context: TranscriptContext = normalizeContext({
 	systemPrompt: undefined,
 	messages: [
 		{
@@ -45,7 +46,7 @@ const context: Context = {
 			timestamp: Date.now(),
 		},
 	],
-};
+});
 
 // Use a throwaway session store so this test never clobbers real state.
 const tmpStore = new SessionStore(`/tmp/antigravity-test-${process.pid}-sessions.json`);

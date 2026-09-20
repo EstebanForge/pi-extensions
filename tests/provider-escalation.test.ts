@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
-import type { Api, AssistantMessage, Context, Message, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type AssistantMessage, type Message, type Model, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import {
 	EscalationRegistry,
 	POLL_TOOL_NAME,
@@ -164,10 +164,10 @@ test("escalation: continuation with a dead agy turn settles quietly for escalate
 		driver: d as unknown as StreamDriver,
 		roundTrips: rt,
 	});
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [toolResultMessage("call-1", "REVIEW OUTPUT")],
-	};
+	});
 	const errors: AssistantMessage[] = [];
 	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
 	for await (const ev of stream) {
@@ -292,10 +292,10 @@ async function driveContinuation(engine: "stream-json" | "acp"): Promise<BridgeC
 		roundTrips: rt,
 		engine,
 	});
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [toolResultImageMessage("c1", "Read image file [image/png]")],
-	};
+	});
 	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
 	for await (const _ev of stream) {
 		// Drain: the parked promise settles inside the continuation pass; the

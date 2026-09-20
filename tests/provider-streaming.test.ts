@@ -15,8 +15,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
-import type { Api, Context, Model, SimpleStreamOptions, AssistantMessage } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	normalizeContext,
+	type Api,
+	type AssistantMessage,
+	type Model,
+	type SimpleStreamOptions,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple } from "../src/provider.js";
 import { toAgyEffort } from "../src/models.js";
 import { TurnDiffContext } from "../src/diff-render.js";
@@ -36,11 +43,11 @@ const model: Model<Api> = {
 	maxTokens: 65_536,
 };
 
-function contextWith(prompt: string): Context {
-	return {
+function contextWith(prompt: string): TranscriptContext {
+	return normalizeContext({
 		systemPrompt: undefined,
 		messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-	};
+	});
 }
 
 function tmpStorePath(): string {
@@ -117,7 +124,7 @@ test("streamSimple forwards image blocks from the user message to the driver", a
 		driver,
 		roundTrips: new ToolRoundTrips(driver),
 	});
-	const context: Context = {
+	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
 		messages: [
 			{
@@ -129,7 +136,7 @@ test("streamSimple forwards image blocks from the user message to the driver", a
 				],
 			},
 		],
-	};
+	});
 	const stream = streamSimple(
 		{ ...model, id: "gemini-flash" },
 		context,
@@ -172,8 +179,8 @@ test("streamSimple forwards the config turn caps to the driver", async () => {
 
 /** Context with a prior foreign-provider assistant turn, so the G1 digest
  *  has real content to deliver (buildContextDigest skips the current prompt). */
-function digestContext(): Context {
-	return {
+function digestContext(): TranscriptContext {
+	return normalizeContext({
 		systemPrompt: undefined,
 		messages: [
 			{ role: "user", content: "earlier", timestamp: Date.now() },
@@ -196,7 +203,7 @@ function digestContext(): Context {
 			},
 			{ role: "user", content: "current", timestamp: Date.now() },
 		],
-	} as Context;
+	});
 }
 
 test("streamSimple: acp engine ships the digest as a contextBlock, not inline", async () => {
