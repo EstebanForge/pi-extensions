@@ -1,30 +1,42 @@
 // Staging for the approval-gate hooks.json (docs/TODO.md 2.5).
 //
-// The ACP server and the agy CLI fire workspace `.agents/hooks.json`
-// PreToolUse hooks (V2: deny honored, reason reaches the model; V3: hook
-// TIMEOUT = soft-pass, agy proceeds ungated). Therefore:
+// The agy CLI discovers `.agents/hooks.json` in its --add-dir directories
+// (live-probed 2026-09-22: stream-json and interactive sessions load and
+// execute PreToolUse hooks from any add-dir; print mode reads only the
+// global config) and fires them before a gated tool runs (V2: deny
+// honored, reason reaches the model; V3: hook TIMEOUT = soft-pass, agy
+// proceeds ungated). Therefore:
 //   - the staged handler timeout must exceed the whole park budget with
 //     margin (never rely on timeout as a deny), and
 //   - the staged command delegates to the bundled poll script, which
 //     early-acks and polls the bridge for the terminal decision.
 //
-// Merge rules: never clobber a foreign hooks.json. Parse failures abort
-// staging; first-time modification of an existing file writes a
-// timestamped backup next to it (the 2026-09-05 incident rule: every
-// destructive path gets a guard).
+// ISOLATION (issue #5): the gate group is staged into the session-private
+// per-pid bridge dir (bridgeMcpConfigDir()), NOT the shared workspace. Only
+// this session's agy gets that dir as an extra --add-dir (driver.ts), so
+// standalone IDE/CLI sessions in the workspace can never load the gate -
+// neither denying their tools while pi is idle nor parking their calls
+// into a live pi turn. The private file is ours alone: no merge, no
+// foreign-file backup dance.
+//
+// Legacy: 1.6.x staged into the shared workspace `.agents/hooks.json`.
+// sweepWorkspaceGateGroups() removes gate groups left there by sessions
+// whose pid is dead; groups of live sessions and foreign groups are never
+// touched.
 //
 // Run: npm test
 
 import fs from "node:fs";
 import path from "node:path";
+import { bridgeMcpConfigDir } from "./mcp-server.js";
 
 export const HOOK_GROUP = "pi-bridge-gate";
 
-/** Group-key namespace. Each pi session stages its OWN group keyed per-pid
- *  (`pi-bridge-gate-<pid>`): hooks.json lives in the SHARED workspace, and
- *  two concurrent sessions must never remove or overwrite each other's gate
- *  (audit 2026-09-07: a single shared key let a gate-off session silently
- *  strip a gate-on session's PreToolUse matchers). */
+/** Group-key namespace. Each session's group is keyed per-pid
+ *  (`pi-bridge-gate-<pid>`): the key doubles as the ownership proof for the
+ *  legacy workspace sweep, which may only remove groups whose owning
+ *  session is dead (a stale shared key must never strip a live session's
+ *  gate - audit 2026-09-07). */
 export const GATE_GROUP_PREFIX = "pi-bridge-gate";
 
 /** This session's group key. */
@@ -143,7 +155,7 @@ export function stagedTimeoutSeconds(parkBudgetMs: number): number {
 	return Math.max(60, Math.ceil(parkBudgetMs / 1000) + 60);
 }
 
-/** Build our hooks.json group for one workspace staging. */
+/** Build our hooks.json group for private-dir staging. */
 export function buildGateGroup(opts: StageOptions): Record<string, unknown> {
 	const command = `node ${JSON.stringify(opts.scriptPath)}`;
 	return {
@@ -165,100 +177,94 @@ export function buildGateGroup(opts: StageOptions): Record<string, unknown> {
 
 export interface StageResult {
 	wrote: boolean;
-	/** Backup file written before first modification of a foreign file. */
-	backup?: string;
-	/** Why nothing was written (parse failure, already current, ...). */
+	/** Why nothing was written (already current, ...). */
 	reason?: string;
 }
 
-/** Stage the gate group into <workspaceDir>/.agents/hooks.json under THIS
- *  session's per-pid key. Merge-safe:
- *  - foreign groups are preserved;
- *  - gate groups of DEAD sessions are swept (their bridge is gone; the hook
- *    would fail closed forever), groups of live sessions never touched;
- *  - a foreign file is backed up before its first modification;
- *  - unparseable files are never touched. */
-export function stageGateHooks(workspaceDir: string, opts: StageOptions): StageResult {
-	const dir = path.join(workspaceDir, ".agents");
-	const file = path.join(dir, "hooks.json");
-	const group = buildGateGroup(opts);
-	const ownKey = gateGroupKey();
-	let current: Record<string, unknown> = {};
-	const existed = fs.existsSync(file);
-	if (existed) {
-		try {
-			if (fs.lstatSync(file).isSymbolicLink()) {
-				return { wrote: false, reason: "hooks.json is a symlink; refusing to follow it" };
-			}
-		} catch {
-			return { wrote: false, reason: "hooks.json vanished while staging" };
-		}
-		try {
-			const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-				return { wrote: false, reason: "hooks.json is not an object; refusing to touch it" };
-			}
-			current = parsed as Record<string, unknown>;
-		} catch {
-			return { wrote: false, reason: "hooks.json is not valid JSON; refusing to touch it" };
-		}
-		// Sweep gate groups whose owning session is gone. Never touch groups of
-		// live sessions (concurrent pi sessions share this workspace) or groups
-		// we cannot attribute.
-		let swept = 0;
-		for (const key of Object.keys(current)) {
-			if (key === ownKey) continue;
-			const isGateGroup = key === GATE_GROUP_PREFIX || key.startsWith(`${GATE_GROUP_PREFIX}-`);
-			if (!isGateGroup) continue;
-			const pid = gateGroupPid(current[key]);
-			if (pid === null || pidAlive(pid)) continue;
-			delete current[key];
-			swept += 1;
-		}
-		if (swept > 0 && JSON.stringify(current[ownKey]) === JSON.stringify(group)) {
-			// Own group already current; the pass only swept dead peers.
-			fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
-			return { wrote: true, reason: `swept ${swept} dead gate group(s)` };
-		}
-		if (JSON.stringify(current[ownKey]) === JSON.stringify(group)) {
-			return { wrote: false, reason: "already staged" };
-		}
-	}
-	const backup =
-		existed && current[ownKey] === undefined
-			? `${file}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}`
-			: undefined;
-	if (backup) fs.copyFileSync(file, backup);
-	current[ownKey] = group;
-	fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
-	return { wrote: true, backup };
+/** The session-private hooks.json for gate staging (beside the bridge's
+ *  mcp_config.json in the per-pid add-dir). */
+function gateHooksFile(dir: string = bridgeMcpConfigDir()): string {
+	return path.join(dir, ".agents", "hooks.json");
 }
 
-/** Remove ONLY this session's gate group (or the given pid's). Other
- *  sessions' groups - including live ones in a shared workspace - are never
- *  touched: a gate-off session must not strip a gate-on session's matchers
- *  (audit 2026-09-07). Foreign content stays; an object file is left in
- *  place (harmless). */
-export function removeGateHooks(workspaceDir: string, pid: number = process.pid): StageResult {
-	const file = path.join(workspaceDir, ".agents", "hooks.json");
+/** True if this session's gate hooks are currently staged in the private
+ *  add-dir. The driver uses this to decide whether to pass the extra
+ *  --add-dir even when the MCP config is absent. */
+export function gateHooksStaged(dir: string = bridgeMcpConfigDir()): boolean {
+	return fs.existsSync(gateHooksFile(dir));
+}
+
+/** Stage the gate group into the session-private per-pid dir:
+ *  <bridgeMcpConfigDir()>/.agents/hooks.json. The dir (and everything in
+ *  it) belongs to this pid alone, so the write is a plain atomic replace -
+ *  no merge, no foreign-file guards. */
+export function stageGateHooks(dir: string, opts: StageOptions): StageResult {
+	const file = gateHooksFile(dir);
+	const next = JSON.stringify({ [gateGroupKey()]: buildGateGroup(opts) }, null, 2) + "\n";
+	try {
+		if (fs.readFileSync(file, "utf8") === next) return { wrote: false, reason: "already staged" };
+	} catch {
+		/* absent or unreadable: write */
+	}
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	const tmp = `${file}.${process.pid}.tmp`;
+	try {
+		fs.writeFileSync(tmp, next, { mode: 0o600 });
+		fs.renameSync(tmp, file);
+	} catch (err) {
+		try {
+			fs.unlinkSync(tmp);
+		} catch {
+			/* nothing */
+		}
+		throw err;
+	}
+	return { wrote: true };
+}
+
+/** Remove the private gate hooks file. The rest of the per-pid dir (the MCP
+ *  config) is managed by the bridge server lifecycle and stays until close. */
+export function removeGateHooks(dir: string = bridgeMcpConfigDir()): StageResult {
+	const file = gateHooksFile(dir);
 	if (!fs.existsSync(file)) return { wrote: false, reason: "no hooks.json" };
 	try {
-		if (fs.lstatSync(file).isSymbolicLink()) {
-			return { wrote: false, reason: "hooks.json is a symlink; refusing to follow it" };
-		}
-	} catch {
-		return { wrote: false, reason: "hooks.json vanished while removing" };
-	}
-	try {
-		const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-		if (!parsed || typeof parsed !== "object") return { wrote: false, reason: "not an object; refusing" };
-		const ownKey = gateGroupKey(pid);
-		if (parsed[ownKey] === undefined) return { wrote: false, reason: "not staged" };
-		delete parsed[ownKey];
-		fs.writeFileSync(file, JSON.stringify(parsed, null, 2) + "\n");
+		fs.rmSync(file, { force: true });
 		return { wrote: true };
 	} catch {
-		return { wrote: false, reason: "not valid JSON; refusing" };
+		return { wrote: false, reason: "remove failed" };
 	}
+}
+
+/** Legacy cleanup (issue #5): remove gate groups that 1.6.x staged into the
+ *  SHARED workspace `.agents/hooks.json` when their owning session is dead
+ *  (its bridge is gone; the hook would fail closed forever). Live sessions'
+ *  groups and groups we cannot attribute are never touched; foreign groups
+ *  and foreign files are never touched. Returns the number of swept groups. */
+export function sweepWorkspaceGateGroups(workspaceDir: string): number {
+	const file = path.join(workspaceDir, ".agents", "hooks.json");
+	let current: Record<string, unknown>;
+	try {
+		if (fs.lstatSync(file).isSymbolicLink()) return 0;
+		const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
+		current = parsed as Record<string, unknown>;
+	} catch {
+		return 0;
+	}
+	let swept = 0;
+	for (const key of Object.keys(current)) {
+		const isGateGroup = key === GATE_GROUP_PREFIX || key.startsWith(`${GATE_GROUP_PREFIX}-`);
+		if (!isGateGroup) continue;
+		const pid = gateGroupPid(current[key]);
+		if (pid === null || pidAlive(pid)) continue;
+		delete current[key];
+		swept += 1;
+	}
+	if (swept === 0) return 0;
+	try {
+		fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
+	} catch {
+		return 0;
+	}
+	return swept;
 }

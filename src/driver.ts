@@ -18,6 +18,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseAgyLine } from "./stream-events.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
+import { gateHooksStaged } from "./approval-hook.js";
 import type {
 	AgyUsage,
 	DriverActivity,
@@ -335,7 +336,11 @@ export class StreamDriver implements TurnDriver {
 		this.#stderrTail = "";
 
 		const args: string[] = ["--add-dir", request.cwd];
-		if (bridgeMcpConfigExists()) args.push("--add-dir", bridgeMcpConfigDir());
+		// The bridge dir carries .agents/mcp_config.json (tool bridge) and, when
+		// the approval gate is on, .agents/hooks.json (gate staging). Only this
+		// session's agy ever gets it: standalone IDE/CLI sessions in the
+		// workspace must never load our gate (issue #5 isolation).
+		if (bridgeMcpConfigExists() || gateHooksStaged()) args.push("--add-dir", bridgeMcpConfigDir());
 		args.push("--model", request.model);
 		if (request.effort) args.push("--effort", request.effort);
 		args.push("--mode", request.mode);
