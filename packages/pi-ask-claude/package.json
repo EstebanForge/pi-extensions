@@ -1,0 +1,60 @@
+{
+  "name": "@estebanforge/pi-ask-claude",
+  "version": "1.0.2",
+  "description": "Pi tool that delegates a self-contained sub-task to the Claude Code CLI via `claude -p --output-format stream-json`. Streams structured events as partial output, returns the final agent message. Configurable default model + effort + permission mode, with multi-turn session continuity via `--resume`. Self-disables when pi-claude-bridge is installed, enabled, and has its own AskClaude enabled, to avoid a duplicate-tool conflict.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "claude",
+    "claude-code",
+    "anthropic",
+    "delegation",
+    "tool"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@attitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-ask-claude.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-server": "^0.87.0",
+    "@earendil-works/pi-tui": "^0.87.0",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.1.38",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.7"
+  }
+}
