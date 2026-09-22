@@ -1,0 +1,11 @@
+node_modules/
+*.tsbuildinfo
+
+# internal planning notes (not shipped)
+PLAN.md
+
+# npm publish artifacts
+*.tgz
+
+# OS
+.DS_Store
