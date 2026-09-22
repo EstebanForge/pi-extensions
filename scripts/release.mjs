@@ -58,5 +58,6 @@ run("git add package-lock.json package.json packages/*/package.json");
 execFileSync("git", ["commit", "-m", `chore(release): fleet ${bump}`, "-m", changes.map((c) => `${c.name} ${c.from} -> ${c.to}`).join("\n")], { stdio: "inherit" });
 // tags always mark a released version, never a fleet pseudo-version:
 // one tag per package, same scheme as single-package releases
-for (const c of changes) execFileSync("git", ["tag", `${c.name}-v${c.to}`], { stdio: "inherit" });
+// annotated: git push --follow-tags only carries annotated tags
+for (const c of changes) execFileSync("git", ["tag", "-a", `${c.name}-v${c.to}`, "-m", `${c.name} ${c.to}`], { stdio: "inherit" });
 console.log(`\nfleet ${bump} stamped. publish everything with: npm run publish, or one package with: npm run pub <name>`);

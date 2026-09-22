@@ -45,5 +45,6 @@ run("npm install --package-lock-only");
 
 run(`git add package-lock.json packages/${name}/package.json`);
 run(`git commit -m "chore(release): ${pkg.name} ${version}"`);
-run(`git tag ${name}-v${version}`);
+// annotated: git push --follow-tags only carries annotated tags
+execFileSync("git", ["tag", "-a", `${name}-v${version}`, "-m", `${pkg.name} ${version}`], { stdio: "inherit" });
 console.log(`\nreleased ${pkg.name} ${version}. publish with: npm run pub ${name}`);
