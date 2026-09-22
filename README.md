@@ -44,7 +44,7 @@ Versions are per-package: a package's version moves only when that package relea
 npm run rel <name> patch     # release one package: check, bump, lockfile, commit, tag <name>-v<version>
 npm run pub <name>           # full check, then npm publish for that package only
 
-npm run release:patch        # fleet stamp: check, then +1 on every package, one commit, tag fleet-v<x.y.z>
+npm run release:patch        # fleet stamp: check, then +1 on every package, one commit, one tag per package
 npm run publish              # full check, then npm publish for every package
 ```
 

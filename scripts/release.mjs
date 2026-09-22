@@ -47,15 +47,16 @@ for (const entry of readdirSync(join(rootDir, "packages"), { withFileTypes: true
   const before = pkg.version;
   pkg.version = bumpVersion(before);
   writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
-  changes.push(`${pkg.name} ${before} -> ${pkg.version}`);
+  changes.push({ name: entry.name, from: before, to: pkg.version });
 }
 
 // workspace versions live in the lockfile too
 run("npm install --package-lock-only");
 
 run("git add package-lock.json package.json packages/*/package.json");
-const rootVersion = JSON.parse(readFileSync(rootPkgPath, "utf8")).version;
 // execFileSync keeps the multi-line body intact (no shell mangling)
-execFileSync("git", ["commit", "-m", `chore(release): fleet ${bump}`, "-m", changes.join("\n")], { stdio: "inherit" });
-run(`git tag fleet-v${rootVersion}`);
+execFileSync("git", ["commit", "-m", `chore(release): fleet ${bump}`, "-m", changes.map((c) => `${c.name} ${c.from} -> ${c.to}`).join("\n")], { stdio: "inherit" });
+// tags always mark a released version, never a fleet pseudo-version:
+// one tag per package, same scheme as single-package releases
+for (const c of changes) execFileSync("git", ["tag", `${c.name}-v${c.to}`], { stdio: "inherit" });
 console.log(`\nfleet ${bump} stamped. publish everything with: npm run publish, or one package with: npm run pub <name>`);
