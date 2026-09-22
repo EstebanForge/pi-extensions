@@ -1,0 +1,76 @@
+{
+  "name": "@estebanforge/pi-show-me-the-meat",
+  "version": "1.0.1",
+  "description": "Reading-diff tool for Pi. Reduces a git diff to the lines that carry the change (the meat) by spawning an isolated sub-agent that selects which original diff lines to keep, then a deterministic compiler projects exactly those lines. Inspired by meat (https://github.com/boldsoftware/meat). Uses your configured Pi model, so it works with any provider.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "meat",
+    "git-diff",
+    "diff",
+    "reading-diff",
+    "abridged-diff",
+    "code-review",
+    "sub-agent"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@attitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-show-me-the-meat.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm run test"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-server": "^0.87.0",
+    "@earendil-works/pi-tui": "^0.87.0",
+    "@types/node": "^22.0.0",
+    "typebox": "*",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.7"
+  }
+}
