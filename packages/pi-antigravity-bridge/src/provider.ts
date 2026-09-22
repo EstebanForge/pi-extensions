@@ -1,0 +1,1402 @@
+// The pi provider: streamSimple(model, context, options) -> AssistantMessageEventStream.
+//
+// For each turn pi calls streamSimple. We:
+//   1. extract the latest user message (agy keeps its own history, so we send
+//      only the new prompt, not pi's full transcript)
+//   2. resolve the pi model id to the exact agy model string
+//   3. look up the stored agy conversation id + last streamed step for this
+//      pi session (resume) or start fresh
+//   4. spawn agy via runAgyTurn, mapping decoded AgyEvents to pi stream events
+//   5. persist the conversation id + final step idx for the next turn
+//
+// Event mapping (close-on-switch: at most one content block open at a time,
+// matching pi-claude-bridge's lifecycle):
+//   agy text     -> pi text block  (text_start / text_delta / text_end)
+//   agy thinking -> pi thinking block
+//   agy tool     -> pi thinking block, labelled "[agy tool: <name>]"
+// We do NOT emit toolCall blocks: agy runs its OWN closed tool loop, so there
+// is no toolUse stopReason and no tool-result delivery path back to pi.
+
+import {
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	type JsonValue,
+	type Message,
+	type Model,
+	type SimpleStreamOptions,
+	type ThinkingLevel,
+	type TranscriptContext,
+	type Usage,
+} from "@earendil-works/pi-ai";
+import fs from "node:fs";
+import type { Api } from "@earendil-works/pi-ai";
+import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
+import { toPiUsage } from "./stream-events.js";
+import { mapAgyToolToNative } from "./native-tools.js";
+import { toAgyEffort, type AgyModelEntry } from "./models.js";
+import { SessionStore } from "./sessions.js";
+import { loadConfig } from "./config.js";
+import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-gate.js";
+import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-server.js";
+import path from "node:path";
+import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
+
+const DEFAULT_TIMEOUT_MIN = 10;
+
+/** Zero-usage helper. agy doesn't expose token counts; pi's cost math gets
+ *  zeros (we're not billing through this provider). */
+function zeroUsage(): Usage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+/** Extract the latest user message as a flat prompt string. agy maintains its
+ *  own conversation history via --conversation, so we collapse pi's structured
+ *  message to text. Returns null if the last message isn't a user message. */
+function extractUserPrompt(context: TranscriptContext): string | null {
+	const last = context.messages[context.messages.length - 1];
+	if (!last || last.role !== "user") return null;
+	const content = last.content;
+	if (typeof content === "string") return content;
+	// Flatten text blocks; images ride separately via extractImages (ACP only).
+	return content
+		.filter((b): b is { type: "text"; text: string } => b.type === "text")
+		.map((b) => b.text)
+		.join("\n")
+		.trim() || null;
+}
+
+/** Image blocks of the latest user message (pi-ai ImageContent: base64 data
+ *  + mimeType). The ACP engine forwards them as typed content blocks; the
+ *  stream-json CLI prompt is text-only, so its driver simply ignores these. */
+function extractImages(context: TranscriptContext): Array<{ data: string; mimeType: string }> {
+	const last = context.messages[context.messages.length - 1];
+	if (!last || last.role !== "user" || typeof last.content === "string") return [];
+	return last.content
+		.filter((b): b is { type: "image"; data: string; mimeType: string } => b.type === "image")
+		.map((b) => ({ data: b.data, mimeType: b.mimeType }));
+}
+
+// --- G1: pi-side context digest --------------------------------------------------
+//
+// agy keeps its OWN conversation history (resumed via --conversation), so it
+// already holds every turn it produced. What it lacks is pi-side context it was
+// never spawned for: pi's compaction summaries and turns handled by OTHER
+// providers (or pi's own tools). pi materializes all of that into
+// context.messages every turn (verified: session-manager.js -> convertToLlm),
+// so we build a DELTA digest from those messages and prepend it to the prompt.
+// No pi patch, no new MCP tool. See docs/PI-BRIDGE-GAPS.md (G1).
+
+const COMPACTION_MARKER = "compacted into the following summary";
+
+const DIGEST_PREAMBLE =
+	"[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]";
+
+// --- pi system prompt (G10) ----------------------------------------------------
+//
+// pi normalizes the system prompt into the transcript every turn (read via
+// getCurrentSystemPrompt): its own operating instructions
+// plus every AGENTS.md/CLAUDE.md it loaded (global agent dir first, then
+// ancestors). The provider used to drop it, so agy models never saw the user's
+// machine-level or project-level instructions. agy has no system-prompt flag
+// (verified against `agy --help`), so the only delivery path is the prompt
+// text. We prepend it as a delimited block on the FIRST prompt of a fresh
+// conversation only: agy keeps its own history, the block stays byte-identical
+// afterwards, and agy's server-side prompt cache keeps hitting.
+
+export const SYSTEM_PROMPT_PREAMBLE =
+	"[The following is the system prompt of the pi session that spawned this conversation: operating instructions plus project context (AGENTS.md files). Apply it for this whole conversation.]";
+
+export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
+
+/** Brief tool-priority note appended inside every system prompt block: agy
+ *  runs embedded in pi, so its native interactive tools never reach the
+ *  user. Equivalent Pi Bridge tools must win. Concrete clashes observed
+ *  live: agy picked its native ask_question over the bridge's
+ *  ask_user_question and the question never displayed; on ACP its native
+ *  view_file rejects real filesystem paths (artifact sandbox), so reads of
+ *  the user's machine must go through the bridge. Rides the systemPrompt
+ *  gate: the note ships only when the system prompt ships. */
+export const TOOL_PRIORITY_NOTE =
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
+
+/** Assemble the full agy prompt: system prompt block, pi-side digest, user
+ *  prompt. Empty parts are dropped. Pure; exported for unit testing.
+ *  Pass systemPrompt only on a fresh conversation (see runTurnDriver). */
+export function buildFullPrompt(
+	systemPrompt: string | undefined,
+	digest: string,
+	prompt: string,
+): string {
+	const parts: string[] = [];
+	if (systemPrompt) {
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${TOOL_PRIORITY_NOTE}\n\n${SYSTEM_PROMPT_END}`);
+	}
+	if (digest) {
+		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);
+	}
+	if (prompt) {
+		parts.push(prompt);
+	}
+	return parts.join("\n\n---\n\n");
+}
+
+/** Flatten any message content shape (string or content-block array) to text.
+ *  Drops images, thinking, and tool-call blocks. */
+function blocksToText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter(
+			(b): b is { type: "text"; text: string } =>
+				typeof b === "object" && b !== null && (b as { type?: string }).type === "text",
+		)
+		.map((b) => b.text)
+		.join("\n");
+}
+
+/** A compaction summary arrives wrapped in pi's boilerplate prefix/suffix.
+ *  Return just the summary body. */
+function stripCompactionWrapping(t: string): string {
+	const open = t.indexOf("<summary>");
+	const close = t.lastIndexOf("</summary>");
+	if (open >= 0 && close > open) return t.slice(open + "<summary>".length, close).trim();
+	return t.trim();
+}
+
+export interface DigestOptions {
+	/** Provider id whose assistant turns are already in agy's own DB and so
+	 *  must be skipped to avoid double-counting. Default "antigravity". */
+	ownProvider?: string;
+	/** Soft cap on the digest body (0 = unbounded). Default 8000. */
+	maxChars?: number;
+}
+
+/** Build a delta digest of pi-side context agy was not spawned for: the most
+ *  recent compaction summary plus turns since the watermark that were not
+ *  produced by this provider. Pure: no I/O. Exported for unit testing.
+ *
+ *  Delta, not replay: skip our own assistant turns (provider === ownProvider)
+ *  and clamp the window to after any compaction (pre-compaction detail is
+ *  either already in agy's DB or summarized by the injected summary).
+ *
+ *  Fidelity note: other-provider assistant turns contribute only their text
+ *  blocks; tool-call and thinking blocks are dropped. The intent (which tool)
+ *  is lost, but their results still surface separately as toolResult messages. */
+export function buildContextDigest(
+	messages: Message[],
+	watermark: number,
+	opts: DigestOptions = {},
+): string {
+	const own = opts.ownProvider ?? "antigravity";
+	const maxChars = opts.maxChars ?? 8000;
+	if (messages.length === 0) return "";
+
+	let summaryPart: string | null = null;
+	const deltaParts: string[] = [];
+
+	// 1. Most-recent compaction summary (scan the whole list; it is never in
+	//    agy's DB, so it is always safe and high-value to inject).
+	let lastCompactionIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "user") continue;
+		const t = blocksToText(m.content);
+		if (t.includes(COMPACTION_MARKER)) {
+			lastCompactionIdx = i;
+			summaryPart = `[pi compaction summary]\n${stripCompactionWrapping(t)}`;
+			break;
+		}
+	}
+
+	// 2. Delta since the watermark, excluding the trailing current prompt.
+	//    Clamp start to just after the compaction summary when one is present.
+	let start = Math.max(0, Math.floor(watermark));
+	if (lastCompactionIdx >= 0) start = Math.max(start, lastCompactionIdx + 1);
+	const end = Math.max(0, messages.length - 1);
+	for (let i = start; i < end; i++) {
+		const m = messages[i];
+		if (m.role === "assistant") {
+			if (m.provider === own) continue; // our own turn: already in agy's DB
+			const t = blocksToText(m.content).trim();
+			if (!t) continue;
+			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
+		} else if (m.role === "user") {
+			const t = blocksToText(m.content);
+			if (t.includes(COMPACTION_MARKER)) continue; // injected as summaryPart
+			if (!t.trim()) continue;
+			deltaParts.push(`[earlier user message]\n${t}`);
+		} else if (m.role === "toolResult") {
+			const t = blocksToText(m.content).trim();
+			deltaParts.push(
+				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${t || "(no text output)"}`,
+			);
+		}
+	}
+
+	// Assemble. The compaction summary is always kept intact (it is the
+	// canonical compressed history). The DELTA is truncated from the newest end
+	// backward when over budget: recent context matters more for continuity
+	// than older detail, so drop the oldest delta first. If even the newest
+	// single item exceeds the budget, keep its tail slice.
+	const SEP = "\n\n";
+	const MARKER = "[truncated]";
+	let delta = deltaParts.join(SEP);
+	if (maxChars > 0) {
+		const budget = Math.max(0, maxChars - (summaryPart ? summaryPart.length + SEP.length : 0));
+		if (delta.length > budget) {
+			const kept: string[] = [];
+			let used = 0;
+			for (let i = deltaParts.length - 1; i >= 0; i--) {
+				const cost = deltaParts[i].length + (kept.length > 0 ? SEP.length : 0);
+				if (used + cost > budget) break;
+				kept.unshift(deltaParts[i]);
+				used += cost;
+			}
+			if (kept.length > 0) {
+				delta = `${MARKER}\n${kept.join(SEP)}`;
+			} else {
+				const room = Math.max(0, budget - MARKER.length - 1);
+				delta = room > 0 ? `${MARKER}\n${deltaParts[deltaParts.length - 1].slice(-room)}` : "";
+			}
+		}
+	}
+
+	return [summaryPart, delta]
+		.filter((s): s is string => typeof s === "string" && s.length > 0)
+		.join(SEP);
+}
+
+/** Build a fresh AssistantMessage shell for this turn. Mutated as blocks
+ *  stream; passed as `partial` with every event. */
+function newAssistant(model: Model<Api>): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: zeroUsage(),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+/** Session key: prefer pi's sessionId (stable per conversation), fall back to
+ *  cwd so a single pi process still resumes correctly when sessionId is absent. */
+function sessionKey(
+	options: SimpleStreamOptions | undefined,
+	cwd: string,
+	engine: "stream-json" | "acp",
+): string {
+	const sid = (options as { sessionId?: string } | undefined)?.sessionId;
+	const base = sid && sid.length > 0 ? `sid:${sid}` : `cwd:${cwd}`;
+	// Engine-scoped keys (plan 9.4): one ACP turn must never touch the stream
+	// binding and vice versa. Un-suffixed keys = stream-json, byte-compatible with
+	// every store that predates the ACP engine.
+	return base + (engine === "acp" ? "@acp" : "");
+}
+
+/** Track which content block is currently open so we close-on-switch.
+ *  At most one of textIdx / thinkingIdx is non-null at a time. */
+export interface BlockState {
+	partial: AssistantMessage;
+	textIdx: number | null;
+	thinkingIdx: number | null;
+	started: boolean;
+}
+
+export interface StreamSimpleDeps {
+	entries: AgyModelEntry[];
+	store: SessionStore;
+	/** Stream-json driver (the tested default engine). Turns run on the
+	 *  driver and bridge calls park as toolUse round-trips. Required with
+	 *  roundTrips. */
+	driver?: TurnDriver;
+	/** Official-server ACP engine. Opt-in via config.engine = "acp"; when
+	 *  absent the config switch falls back to the stream driver. */
+	acpDriver?: TurnDriver;
+	roundTrips?: ToolRoundTrips;
+	/** Replay store for the display-only antigravity wrapper tool. Required
+	 *  for native re-exec and wrapper cards; without it tool steps render as
+	 *  thinking labels only. */
+	replay?: WrapperReplay;
+	/** Whether a pi tool is active in the session; native re-exec toolCalls
+	 *  are only emitted for active builtins (else the wrapper). */
+	nativeActive?: (name: string) => boolean;
+	/** Engine latched at extension load. When omitted, the per-call config
+	 *  read decides (tests); production wiring always passes it so a
+	 *  mid-session config flip cannot move one side of a parked turn. */
+	engine?: "stream-json" | "acp";
+	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
+	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+}
+
+// --- G9: no-patch pi-tool round-trips -----------------------------------------
+//
+// The MCP bridge's onToolCall parks the call here instead of executing it:
+// the pending call is injected into the live driver turn as a bridge_call
+// activity, the provider ends the pi assistant message with stopReason
+// "toolUse" for the REAL pi tool, and pi's own loop executes it (native
+// cards, permissions, hooks). The toolResult arrives in the NEXT stream
+// call's context; resolve() then completes the parked MCP HTTP response and
+// agy continues its still-running turn. No pi patch, no privileged API.
+
+const BRIDGE_TIMEOUT_MS = 480_000;
+/** Bounded memory of failed bridge parks (late-delivery tombstones). */
+const MAX_PARK_TOMBSTONES = 64;
+
+/** One MCP tool-result content block: text always; image blocks carry base64
+ *  pixels and ride to the model on BOTH engines (ACP probe 2026-09-05;
+ *  stream-json probe 2026-09-07: the CLI's MCP client delivers tool-result
+ *  image content to the model). */
+export interface BridgeContentBlock {
+	type: string;
+	text?: string;
+	data?: string;
+	mimeType?: string;
+}
+
+export interface BridgeCallResultShape {
+	content: BridgeContentBlock[];
+	isError: boolean;
+}
+
+/** Early-ack sentinel: onToolCall settles with this when the pi tool is still
+ *  running after escalateAfterMs (~20s). agy's MCP client abandons a
+ *  tools/call HTTP request at ~180s (observed; see ACP-PROTOCOL-REFERENCE), so
+ *  slow calls must not hold the request. The bridge answers with
+ *  formatEscalatedAck and the real result arrives via bridge_poll_result (or,
+ *  if agy never polls, the late-delivery path). */
+export interface BridgeEscalation {
+	escalated: true;
+	callId: string;
+	name: string;
+}
+
+export const POLL_TOOL_NAME = "bridge_poll_result";
+
+/** Default quiet period before a park escalates to a poll handle. Well under
+ *  agy's ~180s request deadline; fast tools never see it. */
+export const ESCALATE_AFTER_MS = 20_000;
+/** Escalated parks carry a longer TTL: human-gated tools (commit previews,
+ *  permission dialogs) legitimately block for many minutes. */
+export const ESCALATED_TIMEOUT_MS = 1_800_000;
+/** Human-decision budget for one parked approval (docs/TODO.md 2.5). Same
+ *  envelope as the G9 park; the staged hook timeout exceeds it with margin
+ *  (approval-hook.stagedTimeoutSeconds). Exported: the extension needs the
+ *  same number for hooks.json staging and the hook script deadline. */
+export const APPROVAL_PARK_MS = BRIDGE_TIMEOUT_MS;
+
+export interface PollView {
+	state: "running" | "done" | "failed";
+	name: string;
+	text?: string;
+	isError?: boolean;
+	reason?: string;
+	images?: Array<{ data: string; mimeType: string }>;
+}
+
+/** Escalated bridge calls. Bounded: past the cap, oldest settled entries
+ *  evict first (a running call is never evicted while a newer one is). */
+export class EscalationRegistry {
+	#calls = new Map<string, PollView>();
+	#trim(): void {
+		// Soft cap: only settled entries evict. Evicting a RUNNING call would
+		// strand its result (settle becomes a no-op, poll reports unknown), so
+		// saturating the cap with in-flight calls grows the map instead.
+		while (this.#calls.size > MAX_PARK_TOMBSTONES) {
+			const victim = [...this.#calls.entries()].find(([, e]) => e.state !== "running")?.[0];
+			if (victim === undefined) break;
+			this.#calls.delete(victim);
+		}
+	}
+	escalate(callId: string, name: string): void {
+		this.#calls.set(callId, { name, state: "running" });
+		this.#trim();
+	}
+	settleDone(callId: string, text: string, isError: boolean, images: Array<{ data: string; mimeType: string }> = []): void {
+		const e = this.#calls.get(callId);
+		if (!e) return;
+		e.state = "done";
+		e.text = text;
+		e.isError = isError;
+		if (images.length > 0) e.images = images;
+		this.#trim();
+	}
+	settleFailed(callId: string, reason: string): void {
+		const e = this.#calls.get(callId);
+		if (!e) return;
+		e.state = "failed";
+		e.reason = reason;
+		this.#trim();
+	}
+	poll(callId: string): PollView | undefined {
+		const e = this.#calls.get(callId);
+		return e ? { ...e } : undefined;
+	}
+}
+
+export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
+	return {
+		content: [
+			{
+				type: "text",
+				text: [
+					`STILL RUNNING: the pi tool "${e.name}" has not finished yet.`,
+					`Call ${POLL_TOOL_NAME} with callId "${e.callId}" to get the result. Poll again if it still reports running; you may do other work between polls.`,
+					"This is not an error and nothing is lost: if you stop polling, the bridge re-delivers the result in a later turn.",
+				].join("\n"),
+			},
+		],
+		isError: false,
+	};
+}
+
+export function formatPollAnswer(callId: string, view: PollView | undefined): BridgeCallResultShape {
+	if (!view) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Error: no escalated bridge call "${callId}". It either finished within the first seconds (its result is in your original tool result) or the callId is wrong.`,
+				},
+			],
+			isError: true,
+		};
+	}
+	if (view.state === "running") {
+		return {
+			content: [{ type: "text", text: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Poll again later.` }],
+			isError: false,
+		};
+	}
+	if (view.state === "failed") {
+		return {
+			content: [{ type: "text", text: `Error: bridge call "${view.name}" (callId ${callId}) failed: ${view.reason}` }],
+			isError: true,
+		};
+	}
+	return {
+		content: [
+			...(view.images ?? []).map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+			{ type: "text", text: view.text || "(no output)" },
+		],
+		isError: view.isError ?? false,
+	};
+}
+
+interface PendingRoundTrip {
+	/** "bridge": parked MCP HTTP call; resolve() completes it.
+	 *  "rt": native re-exec / wrapper round-trip; pi already executed, the
+	 *  toolResult only confirms continuation, nothing remote to settle.
+	 *  "approval": parked approval gate decision; resolve() maps the shadow
+	 *  tool result to allow/deny and completes the /approval ticket. */
+	kind: "bridge" | "rt" | "approval";
+	name: string;
+	/** Approval entries only: the agy native tool this decision is for. */
+	nativeName?: string;
+	/** Approval entries only: park start, for the latency audit field. */
+	started?: number;
+	resolve?: (r: BridgeCallResultShape | BridgeEscalation) => void;
+	reject?: (e: Error) => void;
+	timer?: NodeJS.Timeout;
+	/** Set when the early-ack fired: the HTTP request was answered with a poll
+	 *  handle, so the settling value must go to the registry, not the socket. */
+	escalated?: boolean;
+	escalateTimer?: NodeJS.Timeout;
+	onAbort?: () => void;
+	signal?: AbortSignal;
+}
+
+/** Replay store for the display-only `antigravity` wrapper tool. The
+ *  provider records each mutating agy step's output before emitting the
+ *  toolUse; the wrapper tool's execute() returns it, so pi renders a real
+ *  toolCall/toolResult pair without re-running anything. */
+export class WrapperReplay {
+	#map = new Map<string, string>();
+	set(key: string, output: string): void {
+		this.#map.set(key, output);
+	}
+	get(key: string): string | undefined {
+		return this.#map.get(key);
+	}
+	/** Single-use consume: wrapper execute() takes the entry so stale outputs
+	 *  cannot be enumerated by later callers and the map cannot grow unbounded. */
+	take(key: string): string | undefined {
+		const v = this.#map.get(key);
+		this.#map.delete(key);
+		return v;
+	}
+	get size(): number {
+		return this.#map.size;
+	}
+}
+
+export class ToolRoundTrips {
+	#pending = new Map<string, PendingRoundTrip>();
+	/** Failed bridge parks: the pi tool keeps running and its toolResult will
+	 *  arrive with the park already gone. Bounded; consumed by the
+	 *  late-delivery path (see buildLateResultPrompt). */
+	#dead = new Map<string, { name: string; reason: string }>();
+	#escalations = new EscalationRegistry();
+	#escalateAfterMs: number;
+	#getDriver: () => TurnDriver;
+	#log: (s: string, d?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+	/** Approval park controls (mcp-server handle). Assigned by the extension
+	 *  only after at least one shadow tool is registered, so an approval
+	 *  toolUse can never dispatch to the REAL builtin and execute locally. */
+	#approvalPark?: ApprovalParkApi;
+
+	/** Accepts a driver or a getter: with two engines wired, the ACTIVE driver
+	 *  is resolved at call time from config (plan §9.5). */
+	constructor(
+		driver: TurnDriver | (() => TurnDriver),
+		log?: (s: string, d?: unknown, level?: "debug" | "info" | "warn" | "error") => void,
+		opts: { escalateAfterMs?: number } = {},
+	) {
+		this.#getDriver = typeof driver === "function" ? driver : () => driver;
+		this.#log = log ?? (() => {});
+		this.#escalateAfterMs = opts.escalateAfterMs ?? ESCALATE_AFTER_MS;
+	}
+
+	get pendingIds(): string[] {
+		return [...this.#pending.keys()];
+	}
+
+	/** Call ids whose park already failed (tombstones). */
+	get deadIds(): string[] {
+		return [...this.#dead.keys()];
+	}
+
+	/** Take and clear the tombstone for a failed park, if any. */
+	consumeDead(toolCallId: string): { name: string; reason: string } | undefined {
+		const dead = this.#dead.get(toolCallId);
+		if (!dead) return undefined;
+		this.#dead.delete(toolCallId);
+		return dead;
+	}
+
+	/** Poll view for an escalated call (undefined when the id never escalated:
+	 *  fast calls settle synchronously and need no handle). */
+	poll(callId: string): PollView | undefined {
+		return this.#escalations.poll(callId);
+	}
+
+	/** Wire the approval park (mcp-server handle.approvals). The extension
+	 *  assigns this AFTER the shadow tools are registered; see onApproval. */
+	set approvalPark(api: ApprovalParkApi | undefined) {
+		this.#approvalPark = api;
+	}
+
+	/** Approval gate (docs/TODO.md 2.5): a PreToolUse hook parked a native agy
+	 *  tool call. Interrupt the pi-side view of the still-running agy turn
+	 *  with a toolUse for the SHADOW tool (same bridge_call mechanism as G9,
+	 *  so both drivers pause their turn timers); pi's permission extensions
+	 *  gate it, the shadow execute() consults the fallback policy, and the
+	 *  arriving toolResult maps to the terminal decision (resolve()).
+	 *  Every failure path denies fail-closed: an approval must never be
+	 *  granted by accident. */
+	onApproval(ticket: string, payload: ApprovalPayload): void {
+		const deny = (reason: string): void => {
+			this.#log("approval-denied-pre-park", { ticket, reason });
+			this.#approvalPark?.resolve(ticket, { allow: false, reason });
+		};
+		if (!this.#approvalPark) return deny("shadow tools are not registered");
+		const native = payload?.toolCall?.name;
+		if (typeof native !== "string" || native.length === 0) return deny("approval payload has no tool name");
+		const handle = this.#getDriver().activeHandle;
+		if (!handle) return deny("no active antigravity turn");
+		const args = (payload.toolCall.args && typeof payload.toolCall.args === "object"
+			? payload.toolCall.args
+			: {}) as Record<string, unknown>;
+		const mapped = mapNativeToShadow(native, args);
+		if (!mapped) return deny(`tool ${native} is not in the approval matcher set`);
+		const entry: PendingRoundTrip = {
+			kind: "approval",
+			name: mapped.shadow,
+			nativeName: native,
+			started: Date.now(),
+			timer: setTimeout(() => {
+				this.#failApproval(
+					ticket,
+					`approval gate timed out after ${Math.round(APPROVAL_PARK_MS / 1000)}s`,
+					"timeout",
+				);
+			}, APPROVAL_PARK_MS),
+		};
+		this.#pending.set(ticket, entry);
+		handle.pushExternal({
+			type: "bridge_call",
+			callId: ticket,
+			name: mapped.shadow,
+			args: {
+				...mapped.input,
+				[GATE_MARKER]: true,
+				__agyTicket: ticket,
+				__agyTool: native,
+			},
+		});
+		this.#log("approval-parked", { ticket, native, shadow: mapped.shadow });
+	}
+
+	/** Settle a parked approval with a deny. Used by the park timeout and
+	 *  failAll; the ticket is answered (fail closed) and the pending entry
+	 *  dropped, so the late shadow tool result logs as approval-late. */
+	#failApproval(ticket: string, reason: string, cause: "timeout" | "shutdown"): void {
+		const entry = this.#pending.get(ticket);
+		this.#pending.delete(ticket);
+		if (entry?.timer) clearTimeout(entry.timer);
+		const resolved = this.#approvalPark?.resolve(ticket, { allow: false, reason }) ?? false;
+		this.#log(
+			resolved ? `approval-${cause}` : "approval-late",
+			{ ticket, native: entry?.nativeName, shadow: entry?.name, reason },
+			resolved && cause === "timeout" ? "warn" : "debug",
+		);
+		this.#getDriver().kickIdle();
+	}
+
+	/** Fail all pending calls (driver recycle/shutdown path). Escalated bridge
+	 *  calls are skipped: their HTTP request was already answered with a poll
+	 *  handle, and the agy turn ending does NOT make the still-running pi tool
+	 *  a failure. They settle through resolve(), their own 30m timer, or an
+	 *  abort signal on the pi tool call. */
+	failAll(reason: string): void {
+		for (const id of [...this.#pending.keys()]) {
+			const entry = this.#pending.get(id);
+			if (entry?.kind === "approval") {
+				this.#failApproval(id, reason, "shutdown");
+				continue;
+			}
+			if (entry?.kind === "bridge" && entry.escalated) continue;
+			this.#fail(id, reason);
+		}
+	}
+
+	#fail(callId: string, reason: string): void {
+		const entry = this.#pending.get(callId);
+		if (!entry) return;
+		if (entry.kind === "rt") {
+			// Nothing to reject, but the entry must not leak past turn death.
+			this.#pending.delete(callId);
+			return;
+		}
+		this.#pending.delete(callId);
+		clearTimeout(entry.timer);
+		if (entry.escalateTimer) clearTimeout(entry.escalateTimer);
+		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
+		this.#dead.set(callId, { name: entry.name, reason });
+		while (this.#dead.size > MAX_PARK_TOMBSTONES) {
+			const oldest = this.#dead.keys().next().value;
+			if (oldest === undefined) break;
+			this.#dead.delete(oldest);
+		}
+		if (entry.escalated) this.#escalations.settleFailed(callId, reason);
+		entry.reject!(new Error(reason));
+		this.#getDriver().kickIdle();
+		this.#log("round-trip-fail", { callId, name: entry.name, reason });
+	}
+
+	/** Park the MCP call: inject into the live agy turn. Fast calls settle
+	 *  with the real BridgeCallResultShape. Calls still running after
+	 *  escalateAfterMs settle with a BridgeEscalation sentinel instead: the
+	 *  bridge answers the HTTP request with a poll handle while pi keeps
+	 *  executing, so agy's ~180s request deadline is never hit. The real
+	 *  result reaches agy via bridge_poll_result, or via the late-delivery
+	 *  path if agy never polls. Fail-closed: timeout/abort still reject. */
+	onToolCall = (
+		callId: string,
+		name: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<BridgeCallResultShape | BridgeEscalation> => {
+		const handle = this.#getDriver().activeHandle;
+		if (!handle) {
+			return Promise.reject(
+				new Error(
+					"no active antigravity turn; the pi tool bridge only works while an antigravity model is streaming",
+				),
+			);
+		}
+		return new Promise<BridgeCallResultShape | BridgeEscalation>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.#fail(callId, `pi tool round-trip timed out after ${BRIDGE_TIMEOUT_MS / 1000}s`);
+			}, BRIDGE_TIMEOUT_MS);
+			const onAbort = () => this.#fail(callId, "agy disconnected before the tool result arrived");
+			signal.addEventListener("abort", onAbort, { once: true });
+			const entry: PendingRoundTrip = { kind: "bridge", name, resolve, reject, timer, onAbort, signal };
+			if (this.#escalateAfterMs > 0) {
+				entry.escalateTimer = setTimeout(() => {
+					const e = this.#pending.get(callId);
+					// Resolved (or failed) between arm and fire: nothing to escalate.
+					if (!e || e.kind !== "bridge") return;
+					e.escalated = true;
+					// Human-gated calls (commit previews, permission dialogs) can
+					// block far longer than the standard park TTL; re-arm generously.
+					if (e.timer) {
+						clearTimeout(e.timer);
+						e.timer = setTimeout(() => {
+							this.#fail(callId, `escalated bridge call timed out after ${ESCALATED_TIMEOUT_MS / 60_000} minutes`);
+						}, ESCALATED_TIMEOUT_MS);
+					}
+					this.#escalations.escalate(callId, e.name);
+					resolve({ escalated: true, callId, name: e.name });
+				}, this.#escalateAfterMs);
+			}
+			this.#pending.set(callId, entry);
+			// Strip the internal marker fields from model-supplied args (peer
+			// review 2026-09-07): a real bridge call must never arrive at the
+			// shadow's gate branch with a forged __agyGate/__agyTicket.
+			handle.pushExternal({ type: "bridge_call", callId, name, args: stripMarkerFields(args) });
+		});
+	};
+
+	/** Track a native re-exec or wrapper round-trip: pi executes the tool in
+	 *  its own loop; the arriving toolResult only confirms continuation. */
+	track(id: string, name: string): void {
+		this.#pending.set(id, { kind: "rt", name });
+	}
+
+	/** Complete a parked call from a pi toolResult message. Returns false when
+	 *  the id matches nothing pending. Image blocks ride the result on both
+	 *  engines (probe-verified on each); the late-delivery prompt stays
+	 *  text-only (see PI-BRIDGE-GAPS). */
+	resolve(
+		toolCallId: string,
+		text: string,
+		isError: boolean,
+		images: Array<{ data: string; mimeType: string }> = [],
+	): boolean {
+		const entry = this.#pending.get(toolCallId);
+		if (!entry) return false;
+		this.#pending.delete(toolCallId);
+		clearTimeout(entry.timer);
+		if (entry.escalateTimer) clearTimeout(entry.escalateTimer);
+		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
+		if (entry.kind === "rt") {
+			this.#log("round-trip-rt-done", { callId: toolCallId, name: entry.name, isError });
+			return true;
+		}
+		if (entry.kind === "approval") {
+			clearTimeout(entry.timer);
+			this.#pending.delete(toolCallId);
+			// Decision mapping (docs/TODO.md 2.5): block/error -> deny with the
+			// text (pi turns a tool_call block into an error tool result, so both
+			// paths land here); synthetic success -> allow.
+			const decision: ApprovalDecision = isError
+				? { allow: false, reason: text || `blocked by approval gate (${entry.nativeName})` }
+				: { allow: true };
+			const delivered = this.#approvalPark?.resolve(toolCallId, decision) ?? false;
+			// Audit trail (docs/TODO.md 2.7): decision, source, latency.
+			this.#log(
+				delivered ? "approval-decision" : "approval-late",
+				{
+					ticket: toolCallId,
+					native: entry.nativeName,
+					shadow: entry.name,
+					decision: decision.allow ? "allow" : "deny",
+					source: isError ? "extension-block" : "policy",
+					reason: decision.allow ? undefined : decision.reason,
+					latencyMs: Date.now() - (entry.started ?? 0),
+				},
+				delivered ? "info" : "debug",
+			);
+			this.#getDriver().kickIdle();
+			return true;
+		}
+		// Escalated call: the HTTP response already carried the poll handle, so
+		// the result lands in the registry for the next bridge_poll_result. The
+		// original promise settled with the sentinel; re-resolving is a silent
+		// no-op, so gate it to keep that explicit.
+		if (entry.escalated) {
+			this.#escalations.settleDone(toolCallId, text, isError, images);
+		} else {
+			entry.resolve!({
+				content: [
+					...images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+					{ type: "text", text },
+				],
+				isError,
+			});
+		}
+		this.#getDriver().kickIdle();
+		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
+		return true;
+	}
+}
+
+/** Image blocks of a tool result (pi's read on an image file, screenshots).
+ *  Forwarded to agy as MCP image content (see BridgeContentBlock) on both
+ *  engines. Size relies on pi's own inline-image resize cap upstream; no
+ *  second cap here. */
+function extractResultImages(content: unknown): Array<{ data: string; mimeType: string }> {
+	if (!Array.isArray(content)) return [];
+	return content
+		.filter(
+			(b): b is { type: "image"; data: string; mimeType: string } =>
+				typeof b === "object" && b !== null && (b as { type?: string }).type === "image",
+		)
+		.map((b) => ({ data: b.data, mimeType: b.mimeType }))
+		.filter((i) => typeof i.mimeType === "string" && typeof i.data === "string" && i.data.length > 0);
+}
+
+/** Extract toolResult messages whose toolCallId is still parked, as text plus
+ *  any image blocks (forwarded as MCP image content on both engines). */
+export function collectToolResults(
+	messages: Message[],
+	pendingIds: readonly string[],
+): Array<{ toolCallId: string; text: string; isError: boolean; images: Array<{ data: string; mimeType: string }> }> {
+	if (pendingIds.length === 0) return [];
+	const pending = new Set(pendingIds);
+	const out: Array<{ toolCallId: string; text: string; isError: boolean; images: Array<{ data: string; mimeType: string }> }> = [];
+	for (const m of messages) {
+		if (m.role !== "toolResult") continue;
+		const id = (m as { toolCallId?: string }).toolCallId;
+		if (!id || !pending.has(id)) continue;
+		out.push({
+			toolCallId: id,
+			text: blocksToText(m.content).trim(),
+			isError: m.isError === true,
+			images: extractResultImages(m.content),
+		});
+	}
+	return out;
+}
+
+export interface LateToolResult {
+	name: string;
+	reason: string;
+	text: string;
+	isError: boolean;
+}
+
+/** Frame late tool results so agy treats them as the results its bridge calls
+ *  never received (the round-trip died while the pi tool was still running,
+ *  e.g. agy's ~180s MCP client timeout on tools/call). */
+export function buildLateResultPrompt(late: LateToolResult[], userPrompt?: string): string {
+	const blocks = late.map((r) =>
+		[
+			`pi tool "${r.name}": the bridge round-trip expired before this result reached you (${r.reason}).`,
+			r.isError ? "The tool reported an error:" : "Result:",
+			r.text.trim() || "(no output)",
+		].join("\n"),
+	);
+	const header = "Late tool delivery: treat the following as the results of your earlier tool calls.";
+	const body = [header, ...blocks].join("\n\n");
+	return userPrompt ? `${body}\n\n${userPrompt}` : body;
+}
+
+// --- stream-json engine -------------------------------------------------------
+
+export interface DriverDeps {
+	driver: TurnDriver;
+	roundTrips: ToolRoundTrips;
+	replay?: WrapperReplay;
+	nativeActive?: (name: string) => boolean;
+	/** Active engine (config), for engine-scoped session keys. */
+	engine: "stream-json" | "acp";
+	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+}
+
+/** Map one DriverActivity onto the open pi stream. Returns "parked" when the
+ *  activity ended the pi call with a toolUse round-trip. */
+export interface ActivityFeatures {
+	replay?: WrapperReplay;
+	nativeActive?: (name: string) => boolean;
+	roundTrips?: ToolRoundTrips;
+	engine?: "stream-json" | "acp";
+}
+
+/** Process-wide counter: round-trip ids must never repeat across turns in
+ *  one session transcript. */
+let RT_SEQ = 0;
+function nextRtId(kind: "nat" | "wrap"): string {
+	return `${kind}-${++RT_SEQ}`;
+}
+
+/** Emit a complete toolCall block and end the pi call with toolUse.
+ *  pi 0.86 restricts ToolCall.arguments to JSON-compatible values. */
+function emitToolUse(
+	stream: AssistantMessageEventStream,
+	blocks: BlockState,
+	id: string,
+	name: string,
+	args: Record<string, JsonValue>,
+): void {
+	const partial = blocks.partial;
+	closeThinking(stream, blocks);
+	closeText(stream, blocks);
+	const toolCall = { type: "toolCall" as const, id, name, arguments: args };
+	partial.content.push(toolCall);
+	const contentIndex = partial.content.length - 1;
+	stream.push({ type: "toolcall_start", contentIndex, partial });
+	stream.push({ type: "toolcall_end", contentIndex, toolCall, partial });
+	partial.stopReason = "toolUse";
+	stream.push({ type: "done", reason: "toolUse", message: partial });
+	stream.end();
+}
+
+/** ACP edit-class tool names that carry a file-path arg and land the file on
+ *  disk (observed live: edit_file, create_file). Read/execute tools also
+ *  match the arg-shape heuristic but produce no diff (unchanged content), so
+ *  the gate avoids mislabeling them as edits. */
+const ACP_EDIT_TOOLS = new Set(["edit_file", "create_file", "write_to_file"]);
+
+export function consumeActivity(
+	stream: AssistantMessageEventStream,
+	blocks: BlockState,
+	activity: DriverActivity,
+	diffCtx: TurnDiffContext,
+	cwd: string,
+	feats: ActivityFeatures,
+): "parked" | "continue" {
+	const partial = blocks.partial;
+	switch (activity.type) {
+		case "text":
+			appendText(stream, blocks, activity.delta);
+			return "continue";
+		case "thought":
+			// Stream-json: token count only (no body). ACP: thought TEXT deltas —
+			// rendered through the same thinking block pipeline (9.2).
+			if (typeof activity.delta === "string" && activity.delta.length > 0) {
+				appendThinking(stream, blocks, activity.delta);
+			}
+			return "continue";
+		case "usage":
+			toPiUsage(activity.usage, partial.usage);
+			return "continue";
+		case "tool_start":
+			// Rendering happens on completion (output/diff available).
+			return "continue";
+/** File-path argument of an ACP edit tool (observed: `file_path`); other
+ *  tool kinds (execute, read) don't carry one. Returns undefined for
+ *  non-edit tools. */
+function acpEditFileArg(args: Record<string, unknown>): string | undefined {
+	for (const [k, v] of Object.entries(args)) {
+		if (typeof v === "string" && v.trim() && /file|path/i.test(k)) return v;
+	}
+	return undefined;
+}
+
+		case "tool_done": {
+			// Gate C (ACP): the server already executed the tool; nothing parks.
+			// Edit display has TWO paths on ACP:
+			//   a) native diff in tool_call content[] (future builds / the
+			//      permission-request flow carries it; phase-2 probe shape);
+			//   b) RC01 with the auto policy sends NO content: the file simply
+			//      lands on disk. Read it and diff against git HEAD - the same
+			//      output the stream-json engine produces, one readFileSync.
+			if (feats.engine === "acp") {
+				const d = activity.diff;
+				if (d) {
+					appendThinking(stream, blocks, `[agy edit: ${path.basename(d.path)}]\n`);
+					const diffText = formatInlineDiff(d.oldText ?? "", d.newText);
+					if (diffText) appendThinking(stream, blocks, `${diffText}\n`);
+					return "continue";
+				}
+				const editFile = ACP_EDIT_TOOLS.has(activity.name) ? acpEditFileArg(activity.args) : undefined;
+				if (editFile) {
+					const absFile = path.isAbsolute(editFile) ? editFile : path.resolve(cwd, editFile);
+					appendThinking(stream, blocks, `[agy edit: ${path.basename(absFile)}]\n`);
+					let disk = "";
+					try {
+						disk = fs.readFileSync(absFile, "utf8");
+					} catch {
+						/* deleted or unreadable: diffEdit degrades to a summary */
+					}
+					const outcome = diffCtx.diffEdit(absFile, disk);
+					if (outcome.text) appendThinking(stream, blocks, `${outcome.text}\n`);
+					return "continue";
+				}
+				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+				return "continue";
+			}
+			// G8 (stream-json): agy file edits surface a git-sourced diff in a
+			// thinking block. The server sends no diff here, so OLD comes from git.
+			let inputJson: string | undefined;
+			try {
+				inputJson = JSON.stringify(activity.args);
+			} catch {
+				inputJson = undefined;
+			}
+			const edit = inputJson ? parseEditToolInput(inputJson) : null;
+			if (edit) {
+				const absFile = path.isAbsolute(edit.file) ? edit.file : path.resolve(cwd, edit.file);
+				const outcome = diffCtx.diffEdit(absFile, edit.content);
+				const label = edit.description ?? path.basename(absFile);
+				appendThinking(stream, blocks, `[agy edit: ${label}]\n`);
+				if (outcome.text) appendThinking(stream, blocks, `${outcome.text}\n`);
+			} else {
+				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+			}
+			// Native re-exec: read-only agy tools re-run as REAL pi builtins so
+			// their cards render natively. Everything else replays through the
+			// display-only wrapper tool. Both end the pi call with toolUse and
+			// resume on the toolResult continuation. Without a replay store
+			// (feature off) keep the label-only behavior.
+			if (!feats.replay || !feats.roundTrips) return "continue";
+			const mapped = mapAgyToolToNative(activity.name, activity.args);
+			if (mapped && (!feats.nativeActive || feats.nativeActive(mapped.tool))) {
+				const id = nextRtId("nat");
+				feats.roundTrips.track(id, mapped.tool);
+				// pi requires a reasoning argument on read/edit-class builtin calls
+				// (validated against the wrapped schema); harmless where absent.
+				emitToolUse(stream, blocks, id, mapped.tool, {
+					reasoning: `re-exec of agy ${activity.name} for display`,
+					...mapped.args,
+				} as Record<string, JsonValue>);
+				return "parked";
+			}
+			{
+				const id = nextRtId("wrap");
+				feats.replay.set(id, activity.output ?? "(agy recorded no output)");
+				feats.roundTrips.track(id, activity.name);
+				emitToolUse(stream, blocks, id, "antigravity", { tool: activity.name, key: id });
+				return "parked";
+			}
+		}
+		case "tool_error":
+			appendThinking(stream, blocks, `[agy tool: ${activity.name} failed: ${activity.message}]\n`);
+			return "continue";
+		case "bridge_call": {
+			// Park the pi call: real tool name + args, toolUse stopReason. pi
+			// executes; the toolResult returns on the next stream call.
+			// Driver args are JSON-decoded off the agy wire, so the JsonValue
+			// cast is sound.
+			emitToolUse(stream, blocks, activity.callId, activity.name, activity.args as Record<string, JsonValue>);
+			return "parked";
+		}
+	}
+}
+
+/** The stream-json engine: persistent driver + toolUse round-trips. */
+async function runTurnDriver(
+	stream: AssistantMessageEventStream,
+	model: Model<Api>,
+	context: TranscriptContext,
+	options: SimpleStreamOptions | undefined,
+	entries: AgyModelEntry[],
+	store: SessionStore,
+	deps: DriverDeps,
+): Promise<void> {
+	const partial = newAssistant(model);
+	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+
+	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const key = sessionKey(options, cwd, deps.engine);
+	const existing = store.get(key);
+	const messageCount = context.messages.length;
+	const config = loadConfig();
+
+	// Continuation: resolve parked round-trips from pi's toolResult messages,
+	// then re-attach to the still-running agy turn. No new user event is sent:
+	// agy receives the result via the bridge's MCP HTTP response.
+	const results = collectToolResults(context.messages, deps.roundTrips.pendingIds);
+	const isContinuation = results.length > 0;
+	// Escalated calls answer through bridge_poll_result, not through an agy
+	// turn waiting on the park, so note them before resolving.
+	const escalatedNames = results
+		.map((r) => deps.roundTrips.poll(r.toolCallId)?.name)
+		.filter((n): n is string => Boolean(n));
+	// Images ride tool results on BOTH engines (ACP probe 2026-09-05;
+	// stream-json probe 2026-09-07: the CLI's MCP client delivers tool-result
+	// image content to the model — two-tone PNG named from the result alone,
+	// no decoders in the frame trail). The late-delivery prompt and the
+	// stream-json prompt attachments stay text-only by design.
+	for (const r of results)
+		deps.roundTrips.resolve(r.toolCallId, r.text, r.isError, r.images);
+
+	// Late delivery: a toolResult whose park already failed (the abort/timeout
+	// path failed the park while the pi tool kept running). The work is done,
+	// so re-route the result to agy as a new prompt in the same conversation
+	// instead of dropping it. Both drivers serialize run(), so delivery queues
+	// behind agy's own salvaged turn when one is still active.
+	// A pass that anchors a still-pending park (isContinuation) has nowhere to
+	// put a late result: it can neither ride the pending call's HTTP response
+	// nor start a new prompt. Leave the tombstone for the next fresh pass
+	// instead of consuming it blind.
+	const late: LateToolResult[] = [];
+	if (!isContinuation) {
+		for (const r of collectToolResults(context.messages, deps.roundTrips.deadIds)) {
+			const dead = deps.roundTrips.consumeDead(r.toolCallId);
+			if (dead) late.push({ name: dead.name, reason: dead.reason, text: r.text, isError: r.isError });
+		}
+		if (late.length > 0) {
+			deps.log?.("late-result", { tools: late.map((l) => l.name), freshConversation: !existing?.conversationId }, "info");
+		}
+	} else if (deps.roundTrips.deadIds.length > 0) {
+		deps.log?.("late-result-deferred", { count: deps.roundTrips.deadIds.length }, "info");
+	}
+
+	let handle: TurnHandle;
+	if (isContinuation) {
+		const active = deps.driver.reentry();
+		if (!active) {
+			// Escalated calls have no turn to re-enter BY DESIGN: agy already
+			// got the poll handle and the result lives in the registry. Settle
+			// quietly instead of erroring the turn.
+			if (escalatedNames.length > 0) {
+				appendText(stream, blocks, `[bridge] ${escalatedNames.join(", ")} finished; the result is available via ${POLL_TOOL_NAME}.`);
+				finalize(stream, blocks, "stop");
+				return;
+			}
+			deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
+			finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
+			return;
+		}
+		handle = active;
+	} else {
+		const prompt = extractUserPrompt(context);
+		const images = extractImages(context);
+		// An image-only message (no text) is valid on the ACP engine; only fail
+		// when there is nothing at all to send (no text, no images, no late
+		// tool results to deliver).
+		if (!prompt && images.length === 0 && late.length === 0) {
+			deps.log?.("turn-error", { reason: "no-user-message" }, "debug");
+			finalize(stream, blocks, "error", "No user message to send to agy.");
+			return;
+		}
+		const entry = entries.find((e) => e.id === model.id) ?? null;
+		const agyModel = entry?.full ?? model.id;
+		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
+		const watermark = existing?.lastMessageCount ?? 0;
+		// Late turns re-open the conversation with a synthetic prompt; the digest
+		// would re-send context agy already holds, so skip it.
+		const digest = config.digest && late.length === 0 ? buildContextDigest(context.messages, watermark) : "";
+		// G1 delivery per engine. stream-json: digest rides inline in the prompt
+		// (the CLI has no context channel). ACP: the server advertises
+		// `embeddedContext`, so the digest ships as a native resource block
+		// instead of prompt text (plan phase 3). The preamble framing goes INTO
+		// the block: an unlabeled blob of other-agent turns is a mild injection
+		// surface, and the model needs the use-for-continuity-only instruction.
+		// The uri is suffixed per turn so a deduping server cannot serve stale
+		// content on turn 2+.
+		const embeddedDigest = deps.engine === "acp" && digest ? digest : undefined;
+		// Fresh conversation only: agy stores the block in its own history, so
+		// re-sending it every turn would bloat each prompt and bust the cache.
+		const sysPrompt =
+			config.systemPrompt && !existing?.conversationId
+				? getCurrentSystemPrompt(context.messages) || undefined
+				: undefined;
+		const fullPrompt =
+			late.length > 0
+				? buildLateResultPrompt(late, prompt || undefined)
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
+		try {
+			handle = await deps.driver.run({
+				cwd,
+				model: agyModel,
+				effort,
+				mode: config.mode,
+				skipPermissions: config.skipPermissions,
+				timeoutMin: config.turnTimeoutMin,
+				inactivityMin: config.inactivityTimeoutMin,
+				conversationId: existing?.conversationId ?? null,
+				prompt: fullPrompt,
+				images: images.length > 0 ? images : undefined,
+				contextBlock: embeddedDigest
+					? {
+							uri: `urn:pi-bridge:context-digest/${messageCount}`,
+							text: `${DIGEST_PREAMBLE}\n\n${embeddedDigest}`,
+						}
+					: undefined,
+				signal: options?.signal,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
+			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
+			return;
+		}
+	}
+
+	ensureStarted(stream, blocks);
+	const diffCtx = new TurnDiffContext(createExecGitOps());
+	const feats: ActivityFeatures = {
+		replay: deps.replay,
+		nativeActive: deps.nativeActive,
+		roundTrips: deps.roundTrips,
+		engine: deps.engine,
+	};
+
+	for (;;) {
+		const activity = await handle.next();
+		if (!activity) break;
+		if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return;
+	}
+
+	const outcome = await handle.outcome;
+	if (outcome.conversationId) {
+		store.set(key, {
+			conversationId: outcome.conversationId,
+			lastStepIdx: -1,
+			lastMessageCount: messageCount,
+		});
+	}
+	if (outcome.aborted) {
+		finalize(stream, blocks, "aborted", "Operation aborted");
+		return;
+	}
+	if (outcome.status === "ERROR") {
+		finalize(stream, blocks, "error", outcome.error ?? "agy turn failed");
+		return;
+	}
+	if (blocks.textIdx === null && blocks.thinkingIdx === null && outcome.response) {
+		appendText(stream, blocks, outcome.response);
+	}
+	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
+		ensureTextOpen(stream, blocks);
+	}
+	finalize(stream, blocks, "stop");
+}
+
+/** Build the streamSimple closure. Captures the model catalog + session store
+ *  resolved at extension load. When a driver is provided, turns run on the
+ *  persistent stream-json engine (config.engine selects; stream remains as
+ *  fallback). */
+export function createStreamSimple(
+	deps: StreamSimpleDeps,
+): (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => AssistantMessageEventStream {
+	const { entries, store, roundTrips } = deps;
+
+	return function streamSimple(model, context, options) {
+		const stream = createAssistantMessageEventStream();
+		// Fire the async turn; return the stream synchronously per pi's contract.
+		// Engine selection: the latched load-time engine when the extension
+		// provides one, else the per-call config read (tests). One loadConfig()
+		// read per turn, shared with the session key below.
+		const config = loadConfig();
+		const engine = deps.engine ?? config.engine;
+		const selected = engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
+		// RC01: ACP modes are permission modes, there is no review-only plan.
+		// A plan turn on ACP would silently run non-plan; fail visibly instead.
+		if (selected === deps.acpDriver && config.mode === "plan") {
+			const partial = newAssistant(model);
+			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			deps.log?.("turn-error", { reason: "acp-plan-refused" }, "warn");
+			finalize(stream, blocks, "error", "ACP engine has no plan mode. /agy mode accept-edits, or /agy engine stream-json.");
+			return stream;
+		}
+		if (selected && roundTrips) {
+			void runTurnDriver(stream, model, context, options, entries, store, {
+				driver: selected,
+				roundTrips,
+				replay: deps.replay,
+				nativeActive: deps.nativeActive,
+				// Record the engine of the driver that will ACTUALLY run: if the
+				// ACP driver is absent, the config switch falls back to stream,
+				// and keying the session as @acp would store a stream
+				// conversationId under the wrong engine scope.
+				engine: selected === deps.acpDriver ? "acp" : "stream-json",
+				log: deps.log,
+			});
+		} else {
+			// Miswired extension: no driver means no engine. Fail the turn visibly
+			// instead of silently producing an empty assistant message.
+			const partial = newAssistant(model);
+			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			deps.log?.("turn-error", { reason: "driver-not-configured" }, "warn");
+			finalize(stream, blocks, "error", "antigravity driver not configured");
+		}
+		return stream;
+	};
+}
+
+/** Signal the start of the assistant turn exactly once. `start` is
+ *  turn-level (analogous to Anthropic's message_start), not per-block  -  the
+ *  per-block signals are text_start / thinking_start. */
+function ensureStarted(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.started) return;
+	b.started = true;
+	stream.push({ type: "start", partial: b.partial });
+}
+
+/** Append a text delta (opens the block on first use). Module-level so both
+ *  engines share it. */
+function appendText(stream: AssistantMessageEventStream, b: BlockState, delta: string): void {
+	ensureTextOpen(stream, b);
+	textAt(b.partial, b.textIdx!).text += delta;
+	stream.push({ type: "text_delta", contentIndex: b.textIdx!, delta, partial: b.partial });
+}
+
+/** Append a thinking delta (opens the block on first use). */
+function appendThinking(stream: AssistantMessageEventStream, b: BlockState, delta: string): void {
+	ensureThinkingOpen(stream, b);
+	thinkingAt(b.partial, b.thinkingIdx!).thinking += delta;
+	stream.push({ type: "thinking_delta", contentIndex: b.thinkingIdx!, delta, partial: b.partial });
+}
+
+/** Open the text block, closing the thinking block first if it's open. */
+function ensureTextOpen(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.textIdx !== null) return;
+	closeThinking(stream, b);
+	ensureStarted(stream, b);
+	b.partial.content.push({ type: "text", text: "" });
+	b.textIdx = b.partial.content.length - 1;
+	stream.push({ type: "text_start", contentIndex: b.textIdx, partial: b.partial });
+}
+
+/** Open the thinking block, closing the text block first if it's open. */
+function ensureThinkingOpen(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.thinkingIdx !== null) return;
+	closeText(stream, b);
+	ensureStarted(stream, b);
+	b.partial.content.push({ type: "thinking", thinking: "" });
+	b.thinkingIdx = b.partial.content.length - 1;
+	stream.push({ type: "thinking_start", contentIndex: b.thinkingIdx, partial: b.partial });
+}
+
+function closeText(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.textIdx === null) return;
+	const idx = b.textIdx;
+	b.textIdx = null;
+	stream.push({ type: "text_end", contentIndex: idx, content: textAt(b.partial, idx).text, partial: b.partial });
+}
+
+function closeThinking(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.thinkingIdx === null) return;
+	const idx = b.thinkingIdx;
+	b.thinkingIdx = null;
+	stream.push({ type: "thinking_end", contentIndex: idx, content: thinkingAt(b.partial, idx).thinking, partial: b.partial });
+}
+
+// Typed accessors: AssistantMessage.content is a discriminated union, but we
+// always know which slot holds which block (we just pushed it). The cast is
+// sound and keeps every mutation site free of scattered `as` expressions.
+function textAt(p: AssistantMessage, idx: number): { type: "text"; text: string } {
+	return p.content[idx] as { type: "text"; text: string };
+}
+
+function thinkingAt(p: AssistantMessage, idx: number): { type: "thinking"; thinking: string } {
+	return p.content[idx] as { type: "thinking"; thinking: string };
+}
+
+/** Close any open block and push the terminal event. */
+function finalize(
+	stream: AssistantMessageEventStream,
+	b: BlockState,
+	reason: "stop" | "error" | "aborted",
+	message?: string,
+): void {
+	closeText(stream, b);
+	closeThinking(stream, b);
+	if (reason === "stop") {
+		b.partial.stopReason = "stop";
+		stream.push({ type: "done", reason: "stop", message: b.partial });
+	} else {
+		b.partial.stopReason = reason;
+		if (message) b.partial.errorMessage = message;
+		stream.push({ type: "error", reason, error: b.partial });
+	}
+	stream.end();
+}
