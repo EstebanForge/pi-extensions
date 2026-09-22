@@ -28,7 +28,7 @@ Root owns the toolchain: one `tsconfig.json`, one `vitest.config.ts`, one devDep
 
 ## Rules
 
-- Versions are lockstep. Never edit a package version by hand; change the root version and run `npm run sync-versions`.
+- Versions are per-package: a package's version moves only when that package releases. `npm run rel <name> patch` bumps, commits, and tags one package; `npm run pub <name>` publishes it. The fleet stamp (`npm run release:patch`) adds one level to every package for mass changes. Never hand-edit a version.
 - Package names are a public contract with existing installs. Never rename or re-scope.
 - `files` must stay minimal: runtime only. Never ship `tests/`, configs, or docs in a tarball.
 - `pi.extensions` entrypoints are the install contract; do not move them.

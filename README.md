@@ -38,14 +38,17 @@ Layout: each package is uniform. `extensions/` holds the pi entrypoint declared 
 
 ## Versions and releases
 
-Lockstep: every package shares the root `package.json` version. `scripts/sync-versions.mjs` enforces it.
+Versions are per-package: a package's version moves only when that package releases. One-off fixes and tweaks release a single package. The fleet stamp exists for moments when everything moves at once (dependency bumps, mass changes): it adds one version level to every package from its own current version, so histories stay independent.
 
 ```bash
-npm run release:patch        # check, bump, sync, commit, tag
+npm run rel <name> patch     # release one package: check, bump, lockfile, commit, tag <name>-v<version>
+npm run pub <name>           # full check, then npm publish for that package only
+
+npm run release:patch        # fleet stamp: check, then +1 on every package, one commit, tag fleet-v<x.y.z>
 npm run publish              # full check, then npm publish for every package
 ```
 
-Publish always runs after a release bump: npm rejects republishing an identical version, and some packages already sit at the fleet version on the registry. Existing installs keep working: package names and entrypoints are unchanged by the monorepo migration.
+The registry holds different versions per package by design. Right after a fleet stamp every package has cleared its own registry version, so the blanket publish works; after individual releases, publish those packages individually. Existing installs keep working: package names and entrypoints are unchanged by the monorepo migration.
 
 ## License
 
