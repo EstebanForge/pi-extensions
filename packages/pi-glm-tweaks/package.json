@@ -1,0 +1,75 @@
+{
+  "name": "@estebanforge/pi-glm-tweaks",
+  "version": "1.7.1",
+  "description": "Pi-native tweaks for Z.AI's GLM coding models (glm-5.2, glm-5.3, glm-5.3-flash, and [1m] variants). Restricts the Pi thinking-level UI to the modes each model supports on the wire, wires the native thinkingFormat:\"zai\" translation, and auto-clamps hidden levels when the model is selected.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "zai",
+    "z-ai",
+    "glm",
+    "glm-5.2",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "thinking",
+    "reasoning_effort",
+    "thinking-mode",
+    "web-search",
+    "mcp"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@attitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-glm-tweaks.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-server": "^0.87.0",
+    "@earendil-works/pi-tui": "^0.87.0",
+    "@rolldown/binding-wasm32-wasi": "^1.2.4",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.7"
+  }
+}
