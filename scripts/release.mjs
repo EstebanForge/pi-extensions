@@ -3,7 +3,7 @@
 // version. For dependency bumps and mass changes. One-off fixes
 // release a single package instead: npm run rel <name> <level>
 // Publishing stays separate: npm run publish
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,7 @@ run("npm install --package-lock-only");
 
 run("git add package-lock.json package.json packages/*/package.json");
 const rootVersion = JSON.parse(readFileSync(rootPkgPath, "utf8")).version;
-execSync(`git commit -m "chore(release): fleet ${bump}" -m ${JSON.stringify(changes.join("\n"))}`, { stdio: "inherit" });
+// execFileSync keeps the multi-line body intact (no shell mangling)
+execFileSync("git", ["commit", "-m", `chore(release): fleet ${bump}`, "-m", changes.join("\n")], { stdio: "inherit" });
 run(`git tag fleet-v${rootVersion}`);
 console.log(`\nfleet ${bump} stamped. publish everything with: npm run publish, or one package with: npm run pub <name>`);
