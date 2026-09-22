@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-token-cost-ledger",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Token & cost ledger for Pi. Captures every assistant message to a per-day JSONL ledger and exposes a /usage command with by-model, by-period breakdowns (today/day/week/month/year/all) showing both real USD and API-equivalent USD.",
   "keywords": [
     "pi-package",

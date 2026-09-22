@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-glm-tweaks",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Pi-native tweaks for Z.AI's GLM coding models (glm-5.2, glm-5.3, glm-5.3-flash, and [1m] variants). Restricts the Pi thinking-level UI to the modes each model supports on the wire, wires the native thinkingFormat:\"zai\" translation, and auto-clamps hidden levels when the model is selected.",
   "keywords": [
     "pi-package",

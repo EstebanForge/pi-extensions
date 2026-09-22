@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-ask-codex",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Pi tool that delegates a self-contained sub-task to OpenAI's Codex CLI via `codex exec --json`. Streams structured events as partial output, returns the final agent message. Configurable default model + reasoning effort, with multi-turn session continuity via `codex exec resume`.",
   "keywords": [
     "pi-package",

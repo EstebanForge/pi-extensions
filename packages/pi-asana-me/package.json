@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-asana-me",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Asana Work Graph tool for Pi. Adds 19 LLM-callable tools (asana_*) that query the Asana REST API over plain HTTP. Mirrors a curated subset of the official Asana MCP tool set &mdash; no MCP server install required. Personal access token auth via ASANA_ACCESS_TOKEN.",
   "keywords": [
     "pi-package",

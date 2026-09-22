@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-hostname",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Hostname indicator for Pi. Shows the machine hostname as the first item in the footer status line (bottom left), so you always know which box a session runs on across remote machines.",
   "keywords": [
     "pi-package",
