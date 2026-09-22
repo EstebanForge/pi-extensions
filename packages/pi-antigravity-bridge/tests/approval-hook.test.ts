@@ -1,26 +1,31 @@
-// Pins for hooks.json staging (docs/TODO.md 2.8, staging task).
-// Merge-safety is the point: foreign hook groups survive, foreign files get
-// backed up before first modification, unparseable files are never touched.
+// Pins for approval-gate hooks.json staging (docs/TODO.md 2.8) and the
+// legacy workspace sweep (issue #5 isolation).
+//
+// Since the isolation fix, the gate group stages into the session-private
+// per-pid bridge dir (the extra --add-dir only this session's agy gets).
+// The private file is ours alone: plain atomic replace, no merge. The
+// sweep removes gate groups 1.6.x left in SHARED workspace files when
+// their owning session is dead; live and foreign groups stay.
 //
 // Run: npm test
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
 import {
-	GATE_GROUP_PREFIX,
 	buildGateGroup,
 	gateGroupKey,
+	gateHooksStaged,
 	hookScriptSource,
 	removeGateHooks,
 	stagedTimeoutSeconds,
 	stageGateHooks,
+	sweepWorkspaceGateGroups,
 } from "../src/approval-hook.js";
 
-function tmpWs() {
+function tmpDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "agy-stage-"));
 }
 const opts = {
@@ -30,12 +35,24 @@ const opts = {
 	parkBudgetMs: 480_000,
 };
 
-test("stages into a fresh workspace: group shape, matcher, generous timeout", () => {
-	const ws = tmpWs();
-	const res = stageGateHooks(ws, opts);
+function hooksFile(dir: string): string {
+	return path.join(dir, ".agents", "hooks.json");
+}
+
+function readJson(file: string): Record<string, unknown> {
+	return JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+}
+
+test("stages into the private dir: group shape, matcher, generous timeout", () => {
+	const dir = tmpDir();
+	const res = stageGateHooks(dir, opts);
 	assert.equal(res.wrote, true);
-	const parsed = JSON.parse(fs.readFileSync(path.join(ws, ".agents", "hooks.json"), "utf8"));
-	const group = parsed[gateGroupKey()];
+	assert.equal(gateHooksStaged(dir), true);
+	const parsed = readJson(hooksFile(dir));
+	const group = parsed[gateGroupKey()] as {
+		enabled: boolean;
+		PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string; timeout: number }> }>;
+	};
 	assert.equal(group.enabled, true);
 	const handler = group.PreToolUse[0].hooks[0];
 	assert.match(group.PreToolUse[0].matcher, /create_file/);
@@ -43,152 +60,118 @@ test("stages into a fresh workspace: group shape, matcher, generous timeout", ()
 	assert.equal(handler.command, 'node "/data/dir/approval-hook.mjs"');
 	// V3: timeout must exceed the park budget (soft-pass on timeout)
 	assert.ok(handler.timeout >= opts.parkBudgetMs / 1000);
-	fs.rmSync(ws, { recursive: true, force: true });
+	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("idempotent restage: no write, no backup", () => {
-	const ws = tmpWs();
-	stageGateHooks(ws, opts);
-	const res = stageGateHooks(ws, opts);
+test("staging owns the private file: stale content is replaced wholesale", () => {
+	const dir = tmpDir();
+	fs.mkdirSync(path.join(dir, ".agents"), { recursive: true });
+	fs.writeFileSync(hooksFile(dir), JSON.stringify({ "stale-leftover": { enabled: true } }));
+	const res = stageGateHooks(dir, opts);
+	assert.equal(res.wrote, true);
+	const parsed = readJson(hooksFile(dir));
+	assert.deepEqual(Object.keys(parsed), [gateGroupKey()], "only our group remains");
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("idempotent restage: no write", () => {
+	const dir = tmpDir();
+	stageGateHooks(dir, opts);
+	const before = fs.readFileSync(hooksFile(dir), "utf8");
+	const res = stageGateHooks(dir, opts);
 	assert.equal(res.wrote, false);
 	assert.equal(res.reason, "already staged");
-	assert.equal(res.backup, undefined);
-	fs.rmSync(ws, { recursive: true, force: true });
+	assert.equal(fs.readFileSync(hooksFile(dir), "utf8"), before);
+	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("foreign groups preserved; backup written before first modification", () => {
-	const ws = tmpWs();
-	const dir = path.join(ws, ".agents");
-	fs.mkdirSync(dir, { recursive: true });
-	const foreignFile = path.join(dir, "hooks.json");
-	fs.writeFileSync(foreignFile, JSON.stringify({ "user-linter": { PostToolUse: [{ matcher: "bash", hooks: [{ type: "command", command: "lint", timeout: 5 }] }] } }));
-	const res = stageGateHooks(ws, opts);
+test("removeGateHooks deletes the private file and reports absence", () => {
+	const dir = tmpDir();
+	assert.equal(removeGateHooks(dir).reason, "no hooks.json");
+	stageGateHooks(dir, opts);
+	const res = removeGateHooks(dir);
 	assert.equal(res.wrote, true);
-	assert.ok(res.backup, "backup expected for foreign file");
-	assert.ok(fs.existsSync(res.backup ?? ""), "backup exists");
-	const merged = JSON.parse(fs.readFileSync(foreignFile, "utf8"));
-	assert.ok(merged["user-linter"], "foreign group survived");
-	assert.ok(merged[gateGroupKey()], "gate group added");
-	// backup holds the pre-merge content
-	const backupContent = JSON.parse(fs.readFileSync(res.backup ?? "", "utf8"));
-	assert.equal(backupContent[gateGroupKey()], undefined);
-	fs.rmSync(ws, { recursive: true, force: true });
+	assert.equal(fs.existsSync(hooksFile(dir)), false);
+	assert.equal(gateHooksStaged(dir), false);
+	assert.equal(removeGateHooks(dir).reason, "no hooks.json");
+	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("unparseable hooks.json is never touched", () => {
-	const ws = tmpWs();
-	const file = path.join(ws, ".agents", "hooks.json");
-	fs.mkdirSync(path.dirname(file), { recursive: true });
-	fs.writeFileSync(file, "{broken");
-	const res = stageGateHooks(ws, opts);
-	assert.equal(res.wrote, false);
-	assert.match(res.reason ?? "", /refusing/);
-	assert.equal(fs.readFileSync(file, "utf8"), "{broken");
-	fs.rmSync(ws, { recursive: true, force: true });
-});
-
-test("symlinked hooks.json is refused, not followed", () => {
-	const ws = tmpWs();
-	const target = path.join(ws, "real-hooks.json");
-	fs.writeFileSync(target, JSON.stringify({ "user-linter": { PostToolUse: [] } }));
-	const dir = path.join(ws, ".agents");
-	fs.mkdirSync(dir, { recursive: true });
-	const link = path.join(dir, "hooks.json");
-	symlinkSync(target, link);
-	const res = stageGateHooks(ws, opts);
-	assert.equal(res.wrote, false);
-	assert.match(res.reason ?? "", /symlink/);
-	// target untouched
-	const targetNow = JSON.parse(fs.readFileSync(target, "utf8"));
-	assert.equal(targetNow[gateGroupKey()], undefined);
-	assert.equal(removeGateHooks(ws).reason, "hooks.json is a symlink; refusing to follow it");
-	fs.rmSync(ws, { recursive: true, force: true });
-});
-
-test("removeGateHooks strips only our group and reports absent/foreign safely", () => {
-	const ws = tmpWs();
-	assert.equal(removeGateHooks(ws).reason, "no hooks.json");
-	stageGateHooks(ws, opts);
-	const res = removeGateHooks(ws);
-	assert.equal(res.wrote, true);
-	const parsed = JSON.parse(fs.readFileSync(path.join(ws, ".agents", "hooks.json"), "utf8"));
-	assert.equal(parsed[gateGroupKey()], undefined);
-	assert.equal(removeGateHooks(ws).reason, "not staged");
-	fs.rmSync(ws, { recursive: true, force: true });
-});
-
-// --- per-pid ownership (audit 2026-09-07: concurrent sessions share the
-// workspace, so one session must never strip another's gate) -------------------
+// --- legacy workspace sweep (issue #5): 1.6.x staged gate groups into the
+// SHARED workspace hooks.json, where standalone sessions load them --------
 
 const foreignOpts = { ...opts, scriptPath: "/data/dir/approval-hook-1.js" };
 const deadOpts = { ...opts, scriptPath: "/data/dir/approval-hook-4194000.js" };
 
 function seedGroup(ws: string, key: string, groupOpts: typeof opts): void {
-	const file = path.join(ws, ".agents", "hooks.json");
+	const file = hooksFile(ws);
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	const current = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+	const current = fs.existsSync(file) ? readJson(file) : {};
 	current[key] = buildGateGroup(groupOpts);
 	fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
 }
 
 function readKeys(ws: string): string[] {
-	return Object.keys(JSON.parse(fs.readFileSync(path.join(ws, ".agents", "hooks.json"), "utf8")));
+	return Object.keys(readJson(hooksFile(ws)));
 }
 
-test("a live session's gate group is never touched by another session's staging", () => {
-	const ws = tmpWs();
-	// pid 1 is alive (init/systemd); its group must survive our staging.
-	seedGroup(ws, gateGroupKey(1), foreignOpts);
-	stageGateHooks(ws, opts);
-	const keys = readKeys(ws);
-	assert.ok(keys.includes(gateGroupKey(1)), "live foreign group preserved");
-	assert.ok(keys.includes(gateGroupKey()), "own group staged alongside");
-	fs.rmSync(ws, { recursive: true, force: true });
-});
-
-test("a dead session's gate group is swept by the next staging", () => {
-	const ws = tmpWs();
-	seedGroup(ws, gateGroupKey(4194000), deadOpts);
-	stageGateHooks(ws, opts);
+test("sweep removes dead sessions' groups, keeps live ones", () => {
+	const ws = tmpDir();
+	seedGroup(ws, gateGroupKey(4194000), deadOpts); // pid dead -> sweep
+	seedGroup(ws, gateGroupKey(1), foreignOpts); // pid 1 (init) alive -> keep
+	seedGroup(ws, "user-linter", {
+		...opts,
+		scriptPath: "/data/dir/approval-hook-4194000.js",
+	}); // foreign group, dead-looking -> never touched
+	const swept = sweepWorkspaceGateGroups(ws);
+	assert.equal(swept, 1);
 	const keys = readKeys(ws);
 	assert.equal(keys.includes(gateGroupKey(4194000)), false, "dead group swept");
-	assert.ok(keys.includes(gateGroupKey()), "own group staged");
+	assert.ok(keys.includes(gateGroupKey(1)), "live group kept");
+	assert.ok(keys.includes("user-linter"), "foreign group kept");
 	fs.rmSync(ws, { recursive: true, force: true });
 });
 
-test("the legacy shared key is swept when its session is dead, kept when live", () => {
-	const ws = tmpWs();
-	seedGroup(ws, GATE_GROUP_PREFIX, deadOpts); // legacy key, dead pid -> sweep
-	seedGroup(ws, `${GATE_GROUP_PREFIX}-999998`, foreignOpts); // live pid -> keep
-	stageGateHooks(ws, opts);
-	const keys = readKeys(ws);
-	assert.equal(keys.includes(GATE_GROUP_PREFIX), false, "legacy key with dead session swept");
-	assert.ok(keys.includes(`${GATE_GROUP_PREFIX}-999998`), "live session's group kept");
-	fs.rmSync(ws, { recursive: true, force: true });
-});
-
-test("an unattributable gate group is left alone (foreign format)", () => {
-	const ws = tmpWs();
-	const file = path.join(ws, ".agents", "hooks.json");
-	fs.mkdirSync(path.dirname(file), { recursive: true });
-	fs.writeFileSync(file, JSON.stringify({ "pi-bridge-gate-weird": { enabled: true } }));
-	stageGateHooks(ws, opts);
+test("sweep keeps unattributable gate groups (foreign format)", () => {
+	const ws = tmpDir();
+	// gate-prefixed keys whose group carries no approval-hook-<pid>.js path
+	// cannot be attributed to a session: never touched.
+	fs.mkdirSync(path.join(ws, ".agents"), { recursive: true });
+	fs.writeFileSync(
+		hooksFile(ws),
+		JSON.stringify({
+			"pi-bridge-gate-weird": buildGateGroup({ ...opts, scriptPath: "/data/dir/approval-hook.mjs" }),
+			"pi-bridge-gate-broken": { enabled: true },
+		}),
+	);
+	const swept = sweepWorkspaceGateGroups(ws);
+	assert.equal(swept, 0);
 	assert.ok(readKeys(ws).includes("pi-bridge-gate-weird"), "unattributable group preserved");
+	assert.ok(readKeys(ws).includes("pi-bridge-gate-broken"), "shapeless gate group preserved");
 	fs.rmSync(ws, { recursive: true, force: true });
 });
 
-test("removeGateHooks with an explicit pid removes only that pid's group", () => {
-	const ws = tmpWs();
-	seedGroup(ws, gateGroupKey(1), foreignOpts);
-	stageGateHooks(ws, opts);
-	// Session 1 (alive) shuts down: its own removal must not touch ours.
-	const res = removeGateHooks(ws, 1);
-	assert.equal(res.wrote, true);
-	const keys = readKeys(ws);
-	assert.equal(keys.includes(gateGroupKey(1)), false);
-	assert.ok(keys.includes(gateGroupKey()), "our group survived session 1's removal");
+test("sweep never touches unparseable or missing files", () => {
+	const ws = tmpDir();
+	assert.equal(sweepWorkspaceGateGroups(ws), 0, "missing file is a no-op");
+	fs.mkdirSync(path.join(ws, ".agents"), { recursive: true });
+	fs.writeFileSync(hooksFile(ws), "{broken");
+	assert.equal(sweepWorkspaceGateGroups(ws), 0);
+	assert.equal(fs.readFileSync(hooksFile(ws), "utf8"), "{broken");
 	fs.rmSync(ws, { recursive: true, force: true });
 });
+
+test("sweep with nothing to remove writes nothing", () => {
+	const ws = tmpDir();
+	seedGroup(ws, gateGroupKey(1), foreignOpts);
+	seedGroup(ws, "user-linter", opts);
+	const before = fs.readFileSync(hooksFile(ws), "utf8");
+	assert.equal(sweepWorkspaceGateGroups(ws), 0);
+	assert.equal(fs.readFileSync(hooksFile(ws), "utf8"), before);
+	fs.rmSync(ws, { recursive: true, force: true });
+});
+
+// --- generated script + group shape (unchanged by the isolation fix) ------
 
 test("hook script source: posts, polls, fails closed on deadline", () => {
 	const src = hookScriptSource({ port: 47881, token: "secret-token", deadlineMs: 540_000 });

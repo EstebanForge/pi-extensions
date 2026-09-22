@@ -58,7 +58,7 @@ import {
 	type GatePolicy,
 } from "../src/approval-gate.js";
 import { detectPermissionGateExtensions, resolveGateMode } from "../src/approval-detect.js";
-import { hookScriptSource, removeGateHooks, stageGateHooks } from "../src/approval-hook.js";
+import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
@@ -69,7 +69,7 @@ import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, sa
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
-import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
+import { bridgeMcpConfigDir, startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
 	healBridgeSuppression,
@@ -752,11 +752,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					// config value never lies silently.
 					fileLog.log("approval-dedicated-as-shadow", {}, "warn");
 				}
+				// Legacy cleanup (issue #5): 1.6.x staged the gate into the shared
+				// workspace hooks.json, where standalone IDE/CLI sessions load it.
+				// Staging now lives in the session-private add-dir; sweep groups left
+				// behind by dead sessions from the old scheme. Live sessions' and
+				// foreign groups are never touched.
+				const sweptLegacy = sweepWorkspaceGateGroups(process.cwd());
+				if (sweptLegacy > 0) fileLog.log("approval-workspace-swept", { swept: sweptLegacy }, "info");
 				if (mode === "off") {
-					// Gate off: remove ONLY this session's group. Other sessions'
-					// groups in a shared workspace are never touched - a gate-off
-					// session must not strip a gate-on session's matchers.
-					const unstaged = removeGateHooks(process.cwd());
+					// Gate off: drop this session's private hooks file. Other sessions
+					// own their own per-pid files; nothing shared to preserve.
+					const unstaged = removeGateHooks();
 					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
 				} else {
 					// Script: per-pid file; 0600 because the bridge token is
@@ -773,7 +779,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						{ mode: 0o600 },
 					);
 					gateScriptPath = scriptPath;
-					const staged = stageGateHooks(process.cwd(), {
+					// Private per-pid staging (issue #5 isolation): the gate group goes
+					// into the bridge add-dir that ONLY this session's agy receives.
+					// Standalone sessions in the workspace never load it.
+					const staged = stageGateHooks(bridgeMcpConfigDir(), {
 						port: r.handle.port,
 						token: r.handle.token,
 						scriptPath,
@@ -856,7 +865,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		unregisterBridgeServer(process.pid);
 		// Approval gate: unstage hooks and remove the per-pid script. Pending
 		// approvals already failed closed via handle close (bridge shutdown deny).
-		const unstaged = removeGateHooks(process.cwd());
+		const unstaged = removeGateHooks();
 		if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
 		if (gateScriptPath) {
 			try {
