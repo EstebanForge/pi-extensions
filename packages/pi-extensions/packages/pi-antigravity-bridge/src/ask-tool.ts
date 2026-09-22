@@ -1,0 +1,881 @@
+// The AskAntigravity tool: delegate a self-contained sub-task to Google
+// Antigravity's `agy` CLI. Ported from pi-ask-antigravity v1.1.0 so this
+// extension (pi-antigravity-bridge) provides BOTH the streaming provider AND
+// the one-shot delegation tool - the same shape as pi-claude-bridge.
+//
+// One self-contained tool. Spawns `agy -p`, streams its stdout as partial
+// output, returns the final response. agy runs its OWN tool loop (read,
+// write, edit, exec) inside the workspace.
+//
+// When both pi-antigravity-bridge and pi-ask-antigravity are installed, the
+// bridge wins: pi-ask-antigravity detects the bridge package and registers
+// nothing (see its defer guard). This module is the single source of truth.
+
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import {
+	CONVERSATIONS_DIR,
+	newConversationId,
+	snapshotConversations,
+} from "./discovery.js";
+import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
+import { acquireBridgeSuppression } from "./mcp-registration.js";
+import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
+
+// --- Constants -------------------------------------------------------------
+
+const DEFAULT_TIMEOUT_MIN = 10;
+const GRACE_AFTER_TIMEOUT_MS = 5000;
+const STATUS_INTERVAL_MS = 1000;
+const STATUS_TAIL_CHARS = 160;
+
+// renderCall / renderResult preview limits (match pi-claude-bridge).
+const PREVIEW_MAX_CHARS = 1000;
+const PREVIEW_MAX_LINES = 6;
+const DISCOVERY_POLL_ATTEMPTS = 5;
+const DISCOVERY_POLL_MS = 100;
+
+// Per-family fallback tier when none is specified and no config default.
+const FAMILY_DEFAULT_TIER: Record<Family, ThinkingTier> = {
+	flash: "medium",
+	pro: "high",
+	other: "medium",
+};
+
+const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
+
+// Static alias overlay for non-Gemini models agy may or may not surface.
+// Live catalog entries win on case-insensitive full-string equality; the
+// overlay resolves the alias when agy doesn't list it. Names are agy's stable
+// slugs (the same ids `agy models` prints and `--model` accepts).
+const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
+	{ full: "claude-sonnet-4-6", family: "other", version: null, tier: null },
+	{ full: "claude-opus-4-6-thinking", family: "other", version: null, tier: null },
+	{ full: "gpt-oss-120b-medium", family: "other", version: null, tier: null },
+];
+const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
+	["sonnet", "claude-sonnet-4-6"],
+	["opus", "claude-opus-4-6-thinking"],
+	["gpt-oss", "gpt-oss-120b-medium"],
+]);
+
+// agy conversation ids are UUID DB-stems. First char must be alphanumeric so a
+// leading-dash value can't misbind on agy's arg parser; hyphens allowed in the
+// body (real UUIDs contain them).
+const CONV_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
+
+const AGY_DESCRIPTION = `Delegate a self-contained sub-task to Google Antigravity. agy is the CLI for Gemini, so this tool is reached under three equivalent names the user may use interchangeably: **gemini**, **antigravity**, and **agy**. When the user says "ask gemini", "ask antigravity", "ask agy", or otherwise refers to any of these, call THIS tool. agy runs its OWN tool loop: it can read, write, edit, and execute inside the workspace, then returns its final answer. Use for a second opinion from a different model family, Gemini-specific reasoning, or isolated sub-tasks you do not need to drive step-by-step. Provide a complete, self-contained task description; agy will not see this conversation.
+
+TWO MODES (you choose):
+- **One-shot (isolated)**: omit conversationId. agy starts fresh with no memory of prior calls. Use for independent questions.
+- **Continued conversation**: pass the conversationId returned in the PREVIOUS call's details (details.conversationId). agy resumes that conversation with full context intact.
+
+EXECUTION MODES (param: mode):
+- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks.
+- **accept-edits** (default): agy applies edits directly inside the workspace.
+
+COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request compact digests instead of full file contents. Defaults on for plan, off for accept-edits.
+
+THINKING LEVEL (params: thinking, effort - SYNONYMS for one knob):
+- pi calls it thinking, agy calls it effort. Same thing. Pass ONE of the two.
+- Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to agy's low|medium|high; unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
+- An explicit level beats a tier embedded in model ("flash high") and the configured default. Omit both for the configured default.`;
+
+// --- Types -----------------------------------------------------------------
+
+type Family = "flash" | "pro" | "other";
+
+interface ModelEntry {
+	full: string; // exact agy slug, e.g. "gemini-3.6-flash-medium"
+	family: Family;
+	version: string | null; // "3.6"
+	tier: ThinkingTier | null;
+}
+
+/** Argv-facing model resolution: the exact --model slug plus an optional
+ *  --effort tier. Gemini bases split the tier out (the base slug alone is
+ *  invalid without --effort); fixed-thinking families keep agy's exact slug
+ *  and carry no effort. */
+interface ResolvedModel {
+	model: string;
+	effort?: ThinkingTier;
+}
+
+// --- Version helpers -------------------------------------------------------
+
+/** Descending numeric version compare (3.10 > 3.9, not lexical). */
+function compareVersionsDesc(a: string, b: string): number {
+	const pa = a.split(".").map(Number);
+	const pb = b.split(".").map(Number);
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const da = pa[i] ?? 0;
+		const db = pb[i] ?? 0;
+		if (da !== db) return db - da;
+	}
+	return 0;
+}
+
+// --- Model catalog ---------------------------------------------------------
+
+function mergeCatalog(live: ModelEntry[]): ModelEntry[] {
+	const seen = new Set(live.map((e) => e.full.toLowerCase()));
+	const merged = [...live];
+	for (const entry of STATIC_ALIAS_OVERLAY) {
+		if (!seen.has(entry.full.toLowerCase())) merged.push(entry);
+	}
+	return merged;
+}
+
+function parseModelLine(line: string): ModelEntry | null {
+	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
+	// slug (col 1), so split it off; the label is display-only and must never
+	// reach --model. A bare-slug line (no whitespace) splits to itself.
+	const full = line.trim().split(/\s+/)[0] ?? "";
+	if (!full) return null;
+	const lower = full.toLowerCase();
+	const family: Family = lower.includes("flash")
+		? "flash"
+		: lower.includes("pro")
+			? "pro"
+			: "other";
+	const versionMatch = lower.match(/(\d+\.\d+)/);
+	const version = versionMatch ? versionMatch[1] : null;
+	const tierMatch = lower.match(/-(low|medium|high)$/);
+	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
+	return { full, family, version, tier };
+}
+
+function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): ThinkingTier {
+	if (available.includes(preferred)) return preferred;
+	const sorted = [...available].sort((a, b) => {
+		const da = Math.abs(TIER_RANK[a] - TIER_RANK[preferred]);
+		const db = Math.abs(TIER_RANK[b] - TIER_RANK[preferred]);
+		return da !== db ? da - db : TIER_RANK[b] - TIER_RANK[a];
+	});
+	return sorted[0] ?? preferred;
+}
+
+/** Build the argv-facing resolution from a picked catalog entry. Gemini bases
+ *  (slugs starting "gemini-") accept a separate --effort, so split the tier
+ *  suffix out of the slug: the base alone (gemini-3.6-flash) is what --model
+ *  wants, and the tier goes to --effort. Fixed-thinking families keep agy's
+ *  exact slug even when it carries a -medium suffix (gpt-oss-120b-medium):
+ *  agy rejects --effort for them, so the suffix stays part of the slug. */
+function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
+	if (tier && full.toLowerCase().startsWith("gemini-")) {
+		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
+	}
+	return { model: full };
+}
+
+/** Resolve a friendly alias / partial name to an argv-facing {model, effort?}.
+ *  Returns null only when the family is unrecognized; the caller then passes
+ *  the raw input straight to agy. */
+export function resolveModel(
+	input: string,
+	entries: ModelEntry[],
+	defaultThinking: ThinkingTier,
+	/** Explicit thinking param (thinking/effort). Beats a tier embedded in
+	 *  the alias ("flash high") and the configured default; clamped to the
+	 *  family's real tiers, ignored for fixed-thinking families. */
+	preferredTier?: ThinkingTier,
+): ResolvedModel | null {
+	const lower = input.toLowerCase().trim();
+
+	const exact = entries.find((e) => e.full.toLowerCase() === lower);
+	if (exact) return toResolved(exact.full, exact.tier);
+
+	if (STATIC_SHORT_ALIAS.has(lower)) {
+		const target = STATIC_SHORT_ALIAS.get(lower) as string;
+		const fromCatalog = entries.find((e) => e.full.toLowerCase() === target.toLowerCase());
+		return toResolved(fromCatalog?.full ?? target, fromCatalog?.tier ?? null);
+	}
+
+	let family: Family | null = lower.includes("flash")
+		? "flash"
+		: lower.includes("pro")
+			? "pro"
+			: null;
+	const versionMatch = lower.match(/(\d+\.\d+)/);
+	const version = versionMatch ? versionMatch[1] : null;
+	const tierMatch = lower.match(/\b(low|medium|high)\b/);
+	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
+
+	if (!family && (/gemini/.test(lower) || lower === "" || lower === "default")) {
+		family = "flash";
+	}
+	if (!family) return null;
+
+	let candidates = entries.filter((e) => e.family === family);
+	if (candidates.length === 0) return null;
+
+	if (version) {
+		const versioned = candidates.filter((e) => e.version === version);
+		if (versioned.length > 0) candidates = versioned;
+	} else {
+		const aliases = candidates.filter((e) => e.version === null);
+		if (aliases.length > 0) {
+			candidates = aliases;
+		} else {
+			const versions = candidates
+				.map((e) => e.version)
+				.filter((v): v is string => v !== null)
+				.sort(compareVersionsDesc);
+			if (versions.length > 0) {
+				const top = versions[0];
+				const latest = candidates.filter((e) => e.version === top);
+				if (latest.length > 0) candidates = latest;
+			}
+		}
+	}
+
+	const familyTiers = new Set(
+		candidates.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null),
+	);
+	if (familyTiers.size === 0) return toResolved(candidates[0].full, null);
+
+	const preferred =
+		preferredTier ??
+		tier ??
+		(familyTiers.has(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER[family]);
+	const chosenTier = nearestTier([...familyTiers], preferred);
+	const picked = candidates.find((e) => e.tier === chosenTier) ?? candidates[0];
+	return toResolved(picked.full, picked.tier);
+}
+
+/** Parse raw `agy models` text into tool-catalog entries (all families, plus
+ *  the static sonnet/opus/gpt-oss overlay). Pure: no spawn. */
+export function toolModelsFromRaw(raw: string): ModelEntry[] {
+	return mergeCatalog(
+		raw.split("\n").map(parseModelLine).filter((e): e is ModelEntry => e !== null),
+	);
+}
+
+/** Query `agy models` and return tool-catalog entries. Returns [] on failure.
+ *  Kept for standalone use; the extension entry spawns once and parses via
+ *  toolModelsFromRaw to avoid a second `agy models` invocation. */
+export async function discoverToolModels(binary: string): Promise<ModelEntry[]> {
+	return toolModelsFromRaw(await spawnAgyModelsRaw(binary));
+}
+
+function extraArgs(): string[] {
+	const raw = process.env.AGY_EXTRA_ARGS;
+	return raw ? raw.split(/\s+/).filter((s) => s.length > 0) : [];
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// --- Registration ----------------------------------------------------------
+
+/** Register the AskAntigravity tool. Call once from the extension entry.
+ *  `entries` is the merged live+overlay catalog discovered at load. */
+export async function registerAskAntigravityTool(
+	pi: ExtensionAPI,
+	entries: ModelEntry[],
+	/** Daily file log sink (src/daily-log.ts). Records lifecycle, never
+	 *  prompt text. Level matches DailyLogger: debug is the AGY_DEBUG-only
+	 *  verbose tier; info/warn/error always land. */
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void,
+): Promise<void> {
+	pi.registerTool({
+		name: "AskAntigravity",
+		label: "Ask Antigravity",
+		description: AGY_DESCRIPTION,
+		parameters: Type.Object({
+			prompt: Type.String({
+				description:
+					"Self-contained task for agy. Include all context agy needs; it cannot see this conversation.",
+			}),
+			cwd: Type.Optional(
+				Type.String({
+					description: "Absolute workspace path agy runs in. Defaults to the current project root.",
+				}),
+			),
+			model: Type.Optional(
+				Type.String({
+					description:
+						"Model alias or exact id. Friendly: 'flash', 'pro', 'gemini'. Add a tier: 'flash high'. Pin a version: '3.5 flash'. Exact: 'gemini-3.6-flash-medium'. Omit for the configured default.",
+				}),
+			),
+			thinking: Type.Optional(
+				Type.String({
+					description:
+						"Thinking level (= agy effort tier). pi vocabulary: minimal|low|medium|high|xhigh|max, clamped to agy's low|medium|high (unknown values fall back to low). Overrides a tier embedded in `model`. Omit for the configured default.",
+				}),
+			),
+			effort: Type.Optional(
+				Type.String({
+					description:
+						"Alias for `thinking` (agy's own name for the same knob). Pass ONE of the two; different values on both is an error.",
+				}),
+			),
+			mode: Type.Optional(
+				Type.Union([Type.Literal("plan"), Type.Literal("accept-edits")], {
+					description:
+						"agy execution mode. 'plan' = review-only. 'accept-edits' = agy applies edits (default).",
+					default: "accept-edits",
+				}),
+			),
+			digest: Type.Optional(
+				Type.Boolean({
+					description:
+						"Request compact digests instead of full file contents. Defaults on for plan, off for accept-edits.",
+				}),
+			),
+			conversationId: Type.Optional(
+				Type.String({
+					description:
+						"Omit for a one-shot. To CONTINUE a previous agy conversation, pass the conversationId returned in that call's details.",
+				}),
+			),
+			timeoutMinutes: Type.Optional(
+				Type.Number({ description: `Hard cap on the agy run in minutes. Default ${DEFAULT_TIMEOUT_MIN}.` }),
+			),
+			includeContext: Type.Optional(
+				Type.Boolean({
+					description:
+						"When true, export the current pi conversation (resolved, as markdown) to a temp file inside the workspace and tell agy to read it first. Default false (isolated one-shot). Opt in only when the user explicitly wants agy to see the full conversation; it costs agy tokens to read.",
+				}),
+			),
+		}),
+		renderCall(args, theme, _context) {
+			// Show RESOLVED model/thinking/mode (config defaults applied) so the
+			// row identifies what will actually run, not just explicit args.
+			const cfg = loadConfig();
+			const requestedModel = (args.model as string | undefined)?.trim() || cfg.defaultModel;
+			const thinkingArg = (args.thinking as string | undefined) ?? (args.effort as string | undefined);
+			const resolved =
+				resolveModel(
+					requestedModel,
+					entries,
+					cfg.defaultThinking,
+					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER) : undefined,
+				) ?? { model: requestedModel };
+			const thinking: ThinkingTier = resolved.effort ?? cfg.defaultThinking;
+			const mode: AgyMode = (args.mode as AgyMode | undefined) ?? "accept-edits";
+			const useDigest = typeof args.digest === "boolean" ? args.digest : mode === "plan";
+			const isContinue =
+				typeof args.conversationId === "string" && CONV_ID_RE.test(args.conversationId);
+
+			const tags: string[] = [`model=${resolved.model}`, `thinking=${thinking}`];
+			if (mode !== "accept-edits") tags.push(`mode=${mode}`);
+			if (useDigest) tags.push("digest");
+			if (isContinue) tags.push("continue");
+			if (args.includeContext) tags.push("context=full");
+
+			let text = theme.fg("mdLink", theme.bold("AskAntigravity "));
+			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
+
+			const prompt = String(args.prompt ?? "");
+			const truncated = prompt.length > PREVIEW_MAX_CHARS ? prompt.slice(0, PREVIEW_MAX_CHARS) : prompt;
+			const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
+			text += theme.fg("muted", `"${lines.join("\n")}"`);
+			if (prompt.length > PREVIEW_MAX_CHARS || prompt.split("\n").length > PREVIEW_MAX_LINES) {
+				text += theme.fg("dim", " …");
+			}
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			const d = result.details as AgyDetails | undefined;
+			if (isPartial) {
+				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
+				return new Text(theme.fg("mdLink", "◉ AskAntigravity ") + theme.fg("muted", status), 0, 0);
+			}
+
+			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const errored = d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut;
+
+			let text = errored
+				? theme.fg("error", "✗ AskAntigravity error")
+				: theme.fg("mdLink", "✓ AskAntigravity");
+
+			const rTags: string[] = [];
+			if (d?.resolvedModel || d?.model) rTags.push(`model=${d?.resolvedModel ?? d?.model}`);
+			if (d?.thinking) rTags.push(`thinking=${d.thinking}`);
+			if (d?.mode && d.mode !== "accept-edits") rTags.push(`mode=${d.mode}`);
+			if (d?.includeContext) rTags.push("context=full");
+			if (rTags.length) text += ` ${theme.fg("accent", `[${rTags.join(", ")}]`)}`;
+			if (d?.durationMs) text += ` ${theme.fg("dim", `${(d.durationMs / 1000).toFixed(1)}s`)}`;
+
+			if (expanded) {
+				if (body) text += `\n${theme.fg("toolOutput", body)}`;
+			} else {
+				const truncated = body.length > PREVIEW_MAX_CHARS ? body.slice(0, PREVIEW_MAX_CHARS) : body;
+				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
+				if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
+				if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) {
+					text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+				}
+			}
+			return new Text(text, 0, 0);
+		},
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			// Circular-delegation guard: refuse if already running through the
+			// antigravity provider.
+			if (ctx.model?.provider === "antigravity" || ctx.model?.provider === "agy") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Error: AskAntigravity cannot be used when the active provider is already antigravity - you're already running through it.",
+						},
+					],
+					details: emptyDetails(),
+				};
+			}
+
+			const config = loadConfig();
+			const requestedModel = (params.model as string | undefined) ?? config.defaultModel;
+			if (typeof params.model === "string" && params.model.trim().startsWith("-")) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `model value "${params.model}" starts with "-" - not a valid model id.`,
+						},
+					],
+					details: emptyDetails(requestedModel),
+				};
+			}
+			if (
+				typeof params.thinking === "string" &&
+				typeof params.effort === "string" &&
+				params.thinking !== params.effort
+			) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "thinking and effort are synonyms for the same knob - pass one, not both with different values.",
+						},
+					],
+					details: emptyDetails(requestedModel),
+				};
+			}
+			const thinkingArg = (params.thinking as string | undefined) ?? (params.effort as string | undefined);
+			const preferredTier = thinkingArg
+				? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER)
+				: undefined;
+			const resolved =
+				resolveModel(requestedModel, entries, config.defaultThinking, preferredTier) ?? {
+					model: requestedModel,
+				};
+
+			const start = Date.now();
+			const cwd = params.cwd || ctx.cwd || process.cwd();
+			try {
+				const stat = fs.statSync(cwd);
+				if (!stat.isDirectory()) {
+					return {
+						content: [{ type: "text", text: `cwd is not a directory: ${cwd}` }],
+						details: emptyDetails(requestedModel, resolved.model),
+					};
+				}
+			} catch {
+				return {
+					content: [{ type: "text", text: `cwd does not exist: ${cwd}` }],
+					details: emptyDetails(requestedModel, resolved.model),
+				};
+			}
+
+			const timeoutMin = params.timeoutMinutes ?? DEFAULT_TIMEOUT_MIN;
+
+			const rawConvId = params.conversationId;
+			const isContinuation =
+				typeof rawConvId === "string" && rawConvId.length > 0 && CONV_ID_RE.test(rawConvId);
+			const snapshot = isContinuation ? null : snapshotConversations();
+
+			const mode: AgyMode = (params.mode as AgyMode | undefined) ?? "accept-edits";
+			const useDigest: boolean =
+				typeof params.digest === "boolean" ? params.digest : mode === "plan";
+			const finalPrompt: string = useDigest
+				? `(Use compact digests, not full file contents.)\n${params.prompt}`
+				: params.prompt;
+
+			// Opt-in full-context export (isolated stays the default).
+			let contextFile: string | null = null;
+			if (params.includeContext) {
+				try {
+					const { messages } = buildSessionContext(ctx.sessionManager.getBranch());
+					if (messages.length) {
+						const md = renderAgentMessagesMarkdown(messages);
+						const ctxDir = askContextDir();
+						fs.mkdirSync(ctxDir, { recursive: true });
+						contextFile = path.join(
+							ctxDir,
+							`.ask-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`,
+						);
+						fs.writeFileSync(contextFile, md, { mode: 0o600 });
+					}
+				} catch {
+					contextFile = null;
+				}
+			}
+			const effectivePrompt = contextFile
+				? `The full pi conversation context (as markdown) is at: ${contextFile}\nRead that file first for context, then do the task below.\n\n---\n\n${finalPrompt}`
+				: finalPrompt;
+
+			const args: string[] = ["--add-dir", cwd];
+			log?.(
+				"ask-start",
+				{ model: resolved.model, thinking: resolved.effort ?? config.defaultThinking, mode, digest: useDigest, continue: isContinuation, timeoutMin },
+				"info",
+			);
+			const extra = extraArgs();
+			if (extra.length) args.push(...extra);
+			if (resolved.model) args.push("--model", resolved.model);
+			if (resolved.effort) args.push("--effort", resolved.effort);
+			args.push("--mode", mode);
+			// Honor the shared permissions setting (same knob as the provider). Non-
+			// interactive -p can't answer a permission prompt, so when this is off
+			// any run_command will hang - but the setting must mean what it says.
+			if (config.skipPermissions !== false) args.push("--dangerously-skip-permissions");
+			if (isContinuation) args.push("--conversation", rawConvId as string);
+			args.push("--print-timeout", `${timeoutMin}m`);
+			if (contextFile) args.push("--add-dir", askContextDir());
+			args.push("-p", effectivePrompt);
+
+			const details: AgyDetails = {
+				model: requestedModel,
+				resolvedModel: resolved.model,
+				thinking: resolved.effort ?? config.defaultThinking,
+				mode,
+				digest: useDigest,
+				conversationId: isContinuation ? (rawConvId as string) : null,
+				includeContext: contextFile !== null,
+				exitCode: 0,
+				aborted: false,
+				timedOut: false,
+				durationMs: 0,
+				stderr: "",
+			};
+
+			const binary = process.env.AGY_BIN || "agy";
+			let out = "";
+
+			// Delegation isolation: any agy on this machine discovers MCP servers
+			// from the global mcp_config.json, so this spawned `agy -p` would find
+			// live pi-bridge-* entries and call tools the host bridge cannot serve
+			// outside a live provider turn ("no active antigravity turn"). agy also
+			// WATCHES that file (ReloadMcpConfig): re-enabling mid-run pokes the live
+			// delegation to reconnect. The old 5s grace timer did exactly that -
+			// observed live 2026-09-09 as a call-tool-fail ~50s into a delegation -
+			// so the entries now stay hidden for the WHOLE delegated run. The release
+			// fires only on process close/error (cleanup + finally below); if pi
+			// itself dies first, session start heals the file
+			// (healBridgeSuppression in extensions/index.ts, marker-aware). Cross-
+			// process coordination rides the suppression marker in mcp-registration.
+			// Refcounted, so overlapping delegations in this process cannot release
+			// each other's window early. A refused config fail-opens to the status quo.
+			const restoreBridge = acquireBridgeSuppression();
+
+			const statusInterval = onUpdate
+				? setInterval(() => {
+						const elapsed = Math.floor((Date.now() - start) / 1000);
+						const tail = out.slice(-STATUS_TAIL_CHARS);
+						const text = tail ? `(running ${elapsed}s)\n…${tail}` : `(running ${elapsed}s)`;
+						onUpdate({
+							content: [{ type: "text", text }],
+							details: { ...details, durationMs: Date.now() - start },
+						});
+					}, STATUS_INTERVAL_MS)
+				: null;
+
+			try {
+				// Bind the conversation id DURING the run (agy is alive then) so the
+				// pid-based /proc FD resolver can disambiguate when a concurrent agy
+				// also drops a new .db. Awaited after the run; the post-exit loop
+				// below is the fallback for runs that exit before the poll binds.
+				let bindDuringRun: Promise<void> = Promise.resolve();
+				const outcome = await new Promise<{
+					exitCode: number;
+					aborted: boolean;
+					timedOut: boolean;
+				}>((resolveP, rejectP) => {
+					const proc = spawn(binary, args, {
+						cwd,
+						stdio: ["ignore", "pipe", "pipe"],
+						shell: false,
+						detached: true,
+					});
+					proc.stdout?.setEncoding("utf8");
+					proc.stderr?.setEncoding("utf8");
+					proc.stdout?.on("data", (d: string) => (out += d));
+					proc.stderr?.on("data", (d: string) => (details.stderr += d));
+
+					// Concurrent bind: poll for the new id while agy is alive. The FD
+					// resolver needs a live process tree, so this stops (and the post-
+					// exit fallback below takes over) once agy has exited.
+					if (!isContinuation && snapshot && proc.pid) {
+						bindDuringRun = (async () => {
+							for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
+								if (details.conversationId) return;
+								if (proc.exitCode !== null) return; // agy gone: scan useless now
+								const found = newConversationId(CONVERSATIONS_DIR, snapshot, {
+									pid: proc.pid,
+								});
+								if (found) {
+									details.conversationId = found;
+									return;
+								}
+								await sleep(DISCOVERY_POLL_MS);
+							}
+						})().catch(() => {
+							/* best-effort: a bind error must never fail an otherwise-OK turn */
+						});
+					}
+
+					let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+					let watchdog: ReturnType<typeof setTimeout> | undefined;
+					let settled = false;
+					let timedOut = false;
+
+					const killTree = () => {
+						try {
+							if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+						} catch {
+							/* process group already gone */
+						}
+						if (!sigkillTimer) {
+							sigkillTimer = setTimeout(() => {
+								try {
+									if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+								} catch {
+									/* give up */
+								}
+							}, GRACE_AFTER_TIMEOUT_MS);
+						}
+					};
+
+					const cleanup = () => {
+						if (watchdog) clearTimeout(watchdog);
+						if (sigkillTimer) clearTimeout(sigkillTimer);
+						if (signal) signal.removeEventListener("abort", onAbort);
+						restoreBridge();
+					};
+					const onAbort = () => killTree();
+
+					watchdog = setTimeout(() => {
+						timedOut = true;
+						killTree();
+					}, timeoutMin * 60_000);
+
+					if (signal) {
+						if (signal.aborted) killTree();
+						else signal.addEventListener("abort", onAbort, { once: true });
+					}
+
+					const finish = (code: number | null) => {
+						if (settled) return;
+						settled = true;
+						cleanup();
+						resolveP({
+							exitCode: code ?? 0,
+							aborted: !!signal?.aborted,
+							timedOut,
+						});
+					};
+
+					proc.on("error", (err) => {
+						cleanup();
+						rejectP(err);
+					});
+					proc.on("close", finish);
+					proc.on("exit", finish);
+				});
+
+				if (statusInterval) clearInterval(statusInterval);
+
+				// Let the during-run bind poll finish (it bails immediately once agy
+				// has exited, so this rarely blocks).
+				await bindDuringRun;
+
+				details.exitCode = outcome.exitCode;
+				details.aborted = outcome.aborted;
+				details.timedOut = outcome.timedOut;
+				details.durationMs = Date.now() - start;
+				log?.(
+					"ask-end",
+					{ exitCode: outcome.exitCode, aborted: outcome.aborted, timedOut: outcome.timedOut, durationMs: details.durationMs, conversationId: details.conversationId },
+					outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut ? "warn" : "info",
+				);
+
+				if (!isContinuation && !details.conversationId && snapshot) {
+					for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
+						const found = newConversationId(CONVERSATIONS_DIR, snapshot);
+						if (found) {
+							details.conversationId = found;
+							break;
+						}
+						await sleep(DISCOVERY_POLL_MS);
+					}
+				}
+
+				const text = out.trim();
+
+				if (outcome.aborted) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: text
+									? `agy was aborted. Partial output:\n\n${text}`
+									: "agy was aborted before producing output.",
+							},
+						],
+						details,
+					};
+				}
+
+				if (outcome.timedOut) {
+					const note = `agy exceeded the ${timeoutMin}m timeout and was killed`;
+					return {
+						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
+						details,
+					};
+				}
+
+				if (outcome.exitCode !== 0) {
+					const note = details.stderr.trim()
+						? `agy exited with status ${outcome.exitCode}: ${details.stderr.trim()}`
+						: `agy exited with status ${outcome.exitCode}`;
+					return {
+						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
+						details,
+					};
+				}
+
+				onUpdate?.({ content: [{ type: "text", text: "" }], details: { ...details } });
+				const footer = details.conversationId
+					? `\n\n[agy conversationId: ${details.conversationId} - pass as conversationId to continue this conversation]`
+					: "";
+				return { content: [{ type: "text", text: text + footer }], details };
+			} catch (err) {
+				if (statusInterval) clearInterval(statusInterval);
+				details.durationMs = Date.now() - start;
+				const msg = err instanceof Error ? err.message : String(err);
+				log?.("ask-fail", { error: msg, durationMs: details.durationMs }, "error");
+				return { content: [{ type: "text", text: `failed to run agy: ${msg}` }], details };
+			}
+			finally {
+				// Belt and braces: cleanup() already restores on close/error; this
+				// covers paths that never reached the process (sync spawn throw).
+				restoreBridge();
+				if (contextFile) {
+					try {
+						fs.unlinkSync(contextFile);
+					} catch {}
+				}
+			}
+		},
+	});
+}
+
+// --- Full-context export (opt-in includeContext) --------------------------
+// NOTE: duplicated per pi-ask-* / bridge package (each is self-contained).
+// Duck-typed over role/content to tolerate AgentMessage's union + custom types.
+
+// Tool-call inputs and tool-result bodies are clamped so the exported
+// transcript stays reviewable; the agent can re-read any source file by path.
+// User/assistant prose is kept in full (that IS the conversation).
+const CONTEXT_BLOCK_MAX_CHARS = 2000;
+
+function clampBlock(text: unknown, limit = CONTEXT_BLOCK_MAX_CHARS): string {
+	const t = String(text ?? "");
+	return t.length > limit ? `${t.slice(0, limit)}\n…[truncated, ${t.length - limit} more chars]` : t;
+}
+
+/** Render resolved pi AgentMessages to a readable markdown transcript.
+ *  Pure: no IO. Caller writes the returned string to a temp file. */
+function renderAgentMessagesMarkdown(messages: readonly unknown[]): string {
+	const lines: string[] = [
+		"# Pi conversation context",
+		"",
+		`_Exported for full-context delegation. ${messages.length} message(s)._`,
+		"",
+	];
+	for (const raw of messages) {
+		const m = raw as { role?: string; content?: unknown };
+		const role = m.role ?? "message";
+		const content = m.content;
+		if (role === "assistant") {
+			const blocks = (Array.isArray(content) ? content : []) as ReadonlyArray<{
+				type: string;
+				text?: string;
+				name?: string;
+				input?: unknown;
+			}>;
+			const text = blocks
+				.filter((b) => b.type === "text")
+				.map((b) => b.text ?? "")
+				.join("\n");
+			if (text.trim()) lines.push("## Assistant", "", text, "");
+			for (const b of blocks) {
+				if (b.type === "toolCall" || b.type === "tool_use") {
+					const input = clampBlock(
+						typeof b.input === "string" ? b.input : JSON.stringify(b.input ?? ""),
+						500,
+					);
+					lines.push(`> tool call: ${b.name ?? "(unknown)"}(${input})`, "");
+				}
+			}
+		} else if (role === "toolResult" || role === "tool_result" || role === "tool") {
+			const text = contentText(content as any);
+			if (text.trim()) lines.push("## Tool result", "", clampBlock(text), "");
+		} else {
+			const text = contentText(content as any);
+			if (text.trim()) lines.push(`## ${role}`, "", clampBlock(text), "");
+		}
+	}
+	return lines.join("\n");
+}
+
+/** Centralized scratch dir for full-context exports, following the
+ *  ~/.pi/extensions-data/<author>/<extension>/ convention (see pi-token-cost-ledger).
+ *  Derived from getAgentDir() so rebranded distros resolve correctly. */
+function askContextDir(): string {
+	return path.join(path.dirname(getAgentDir()), "extensions-data", "estebanforge", "pi-antigravity-bridge");
+}
+
+interface AgyDetails {
+	model: string | null;
+	resolvedModel: string | null;
+	thinking: ThinkingTier | null;
+	mode: AgyMode;
+	digest: boolean;
+	conversationId: string | null;
+	includeContext: boolean;
+	exitCode: number;
+	aborted: boolean;
+	timedOut: boolean;
+	durationMs: number;
+	stderr: string;
+}
+
+function emptyDetails(
+	model: string | null = null,
+	resolvedModel: string | null = null,
+	thinking: ThinkingTier | null = null,
+	includeContext: boolean = false,
+): AgyDetails {
+	return {
+		model,
+		resolvedModel,
+		thinking,
+		mode: "accept-edits",
+		digest: false,
+		includeContext,
+		conversationId: null,
+		exitCode: 0,
+		aborted: false,
+		timedOut: false,
+		durationMs: 0,
+		stderr: "",
+	};
+}
