@@ -25,21 +25,18 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EstebanForge/pi-glm-tweaks.git"
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git"
   },
   "publishConfig": {
     "access": "public"
   },
   "type": "module",
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "prepublishOnly": "npm run typecheck && npm test"
-  },
   "files": [
     "extensions",
     "lib",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
@@ -61,15 +58,5 @@
     "typebox": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.0",
-    "@earendil-works/pi-server": "^0.87.0",
-    "@earendil-works/pi-tui": "^0.87.0",
-    "@rolldown/binding-wasm32-wasi": "^1.2.4",
-    "@types/node": "^22.0.0",
-    "typescript": "^5.8.0",
-    "vitest": "^4.1.7"
   }
 }

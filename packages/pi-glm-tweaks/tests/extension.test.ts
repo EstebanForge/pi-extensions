@@ -62,7 +62,7 @@ describe("pi-glm-tweaks extension entry", () => {
 
 	it("registers the glm-tweaks command", async () => {
 		const { pi, commands } = makePi([]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		expect(commands).toContain("glm-tweaks");
 	});
 
@@ -72,7 +72,7 @@ describe("pi-glm-tweaks extension entry", () => {
 			{ provider: "zai", id: "glm-5.3" },
 			{ provider: "zai", id: "glm-4.7" },
 		]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const { registered } = state;
@@ -102,20 +102,20 @@ describe("pi-glm-tweaks extension entry", () => {
 
 	it("does not re-register when no targeted model is present", async () => {
 		const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-4.7" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 		expect(state.registered).toBeUndefined();
 	});
 
 	it("rewrites rejected thinking.type=disabled to enabled+low on glm-5.3, leaves glm-5.2 alone", async () => {
 		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 
 		const run = (model: { provider: string; id: string }, payload: Record<string, unknown>) => {
 			const evt = { payload: JSON.parse(JSON.stringify(payload)) };
 			// ctx is a shared mutable object; swap the model for this call.
 			(ctx as { model: unknown }).model = model;
-			return handlers.before_provider_request(evt, ctx) as Record<string, unknown>;
+			return handlers.before_provider_request(evt, ctx) as unknown as Record<string, unknown>;
 		};
 
 		// Pi's zai branch with level "off": thinking disabled, no effort.
@@ -150,7 +150,7 @@ describe("pi-glm-tweaks extension entry", () => {
 			{ provider: "zai", id: "glm-5.3-flash" },
 			{ provider: "zai", id: "glm-5.3-flash[1m]" },
 		]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -180,7 +180,7 @@ describe("pi-glm-tweaks extension entry", () => {
 		// flash — it accepts it and runs lightweight thinking anyway (billed
 		// reasoning tokens appeared). The guard must make the wire explicit.
 		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3-flash" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 
 		const evt = { payload: { thinking: { type: "disabled", clear_thinking: false } } };
 		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;
@@ -190,7 +190,7 @@ describe("pi-glm-tweaks extension entry", () => {
 
 	it("applies the flash fallback to unknown glm-5.4-flash, preserving vision input", async () => {
 		const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-5.4-flash" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -203,7 +203,7 @@ describe("pi-glm-tweaks extension entry", () => {
 			{ provider: "zai", id: "glm-5.2" },
 			{ provider: "zai", id: "glm-5.3" },
 		]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -223,7 +223,7 @@ describe("pi-glm-tweaks extension entry", () => {
 			{ provider: "zai", id: "glm-5.3" },
 			{ provider: "zai", id: "glm-5.3-flash" },
 		]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, any>> }).models;
@@ -239,7 +239,7 @@ describe("pi-glm-tweaks extension entry", () => {
 			{ provider: "zai", id: "glm-5.4[1m]" },
 			{ provider: "zai", id: "glm-5.1" },
 		]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -269,7 +269,7 @@ describe("pi-glm-tweaks extension entry", () => {
 			...pi,
 			getThinkingLevel: () => "xhigh",
 			setThinkingLevel: (l: string) => void set.push(l),
-		} as unknown as TestPi;
+		} as unknown as Parameters<typeof factory>[0];
 		(ctx as { ui: { notify: (m: string) => void } }).ui = {
 			notify: (m: string) => void notes.push(m),
 		};
@@ -289,20 +289,20 @@ describe("zai_web_search tool registration", () => {
 
 	it("registers the tool by default (undefined flag = default ON)", async () => {
 		const { pi, tools } = makePi([]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		expect(tools.map(toolName)).toContain("zai_web_search");
 	});
 
 	it("does not register the tool when glm-web-search is opted out", async () => {
 		const { pi, tools } = makePi([]);
 		const optedOut = { ...pi, getFlag: (name: string) => (name === "glm-web-search" ? false : undefined) };
-		await factory(optedOut as unknown as TestPi);
+		await factory(optedOut as unknown as Parameters<typeof factory>[0]);
 		expect(tools.map(toolName)).not.toContain("zai_web_search");
 	});
 
 	it("fails visibly with the opt-out hint when no Z.AI key exists anywhere", async () => {
 		const { pi, tools, ctx } = makePi([]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		const tool = tools.find((t) => toolName(t) === "zai_web_search") as {
 			execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) => Promise<unknown>;
 		};
@@ -344,7 +344,7 @@ describe("glm-api-route setting", () => {
 	it("registers anthropic route models against api.z.ai/api/anthropic with pinned compat", async () => {
 		withRouteSetting("anthropic");
 		const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -366,7 +366,7 @@ describe("glm-api-route setting", () => {
 		// fail whenever the host install has glm-api-route=anthropic.
 		withRouteSetting("coding");
 		const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -380,7 +380,7 @@ describe("glm-api-route setting", () => {
 	it("api route (standard z.ai platform API) registers against api.z.ai/api/paas/v4 with the OpenAI shape", async () => {
 		withRouteSetting("api");
 		const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 		await handlers.session_start(undefined, ctx);
 
 		const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
@@ -403,7 +403,7 @@ describe("glm-api-route setting", () => {
 		for (const [persisted, expectedBaseUrl] of cases) {
 			withRouteSetting(persisted);
 			const { pi, handlers, state, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-			await factory(pi as unknown as TestPi);
+			await factory(pi as unknown as Parameters<typeof factory>[0]);
 			await handlers.session_start(undefined, ctx);
 			const models = (state.registered!.def as { models: Array<Record<string, unknown>> }).models;
 			const glm53 = models.find((m) => m.id === "glm-5.3") as Record<string, any>;
@@ -414,11 +414,11 @@ describe("glm-api-route setting", () => {
 	it("anthropic route replaces Pi's budget-based thinking with enabled+reasoning_effort", async () => {
 		withRouteSetting("anthropic");
 		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		const pi2 = { ...pi, getThinkingLevel: () => "max" } as unknown as TestPi;
+		const pi2 = { ...pi, getThinkingLevel: () => "max" } as unknown as Parameters<typeof factory>[0];
 		await factory(pi2);
 		// The branch keys off the REGISTERED model's api field, mirroring
 		// what session_start built from the persisted route.
-		(ctx as { model: { api?: string } }).model = { provider: "zai", id: "glm-5.3", api: "anthropic-messages" };
+		(ctx as { model: Record<string, string> }).model = { provider: "zai", id: "glm-5.3", api: "anthropic-messages" };
 
 		// Pi's anthropic provider emits budget-based thinking; the route
 		// branch must REPLACE the object, not merge into it.
@@ -436,9 +436,9 @@ describe("glm-api-route setting", () => {
 		// Level "off" maps to null in the 5.3 map: the branch must fall
 		// back to the lightest legal effort, NOT pass a disabled shape
 		// through (z.ai ignores it and bills max-depth thinking anyway).
-		const pi2 = { ...pi, getThinkingLevel: () => "off" } as unknown as TestPi;
+		const pi2 = { ...pi, getThinkingLevel: () => "off" } as unknown as Parameters<typeof factory>[0];
 		await factory(pi2);
-		(ctx as { model: { api?: string } }).model = { provider: "zai", id: "glm-5.3", api: "anthropic-messages" };
+		(ctx as { model: Record<string, string> }).model = { provider: "zai", id: "glm-5.3", api: "anthropic-messages" };
 
 		const evt = { payload: { thinking: { type: "disabled" } } };
 		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;
@@ -452,9 +452,9 @@ describe("glm-api-route setting", () => {
 		// be spec-aware: 5.2 → high, 5.3 → low.
 		withRouteSetting("anthropic");
 		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.2" }]);
-		const pi2 = { ...pi, getThinkingLevel: () => "off" } as unknown as TestPi;
+		const pi2 = { ...pi, getThinkingLevel: () => "off" } as unknown as Parameters<typeof factory>[0];
 		await factory(pi2);
-		(ctx as { model: { api?: string } }).model = { provider: "zai", id: "glm-5.2", api: "anthropic-messages" };
+		(ctx as { model: Record<string, string> }).model = { provider: "zai", id: "glm-5.2", api: "anthropic-messages" };
 
 		const evt = { payload: { thinking: { type: "enabled", budget_tokens: 4096 } } };
 		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;
@@ -463,7 +463,7 @@ describe("glm-api-route setting", () => {
 
 	it("coding route is untouched by the anthropic branch (disabled rewrite still OpenAI-shaped)", async () => {
 		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		await factory(pi as unknown as TestPi);
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
 
 		const evt = { payload: { thinking: { type: "disabled", clear_thinking: false } } };
 		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;
@@ -478,8 +478,8 @@ describe("glm-api-route setting", () => {
 		// ctx.model.api, so B's next request keeps the coding shape.
 		withRouteSetting("anthropic");
 		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
-		await factory(pi as unknown as TestPi);
-		(ctx as { model: { api?: string } }).model = { provider: "zai", id: "glm-5.3", api: "openai-completions" };
+		await factory(pi as unknown as Parameters<typeof factory>[0]);
+		(ctx as { model: Record<string, string> }).model = { provider: "zai", id: "glm-5.3", api: "openai-completions" };
 
 		const evt = { payload: { thinking: { type: "disabled", clear_thinking: false } } };
 		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;

@@ -38,7 +38,7 @@ describe("isServerHealthy", () => {
     let i = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => {
+      vi.fn(async (_url: unknown, _init?: unknown) => {
         const r = responses[i++];
         if (r instanceof Error) throw r;
         return r;
@@ -108,7 +108,7 @@ describe("status bar resilience", () => {
 
   function stubFetchQueue(responses: Array<Response | Error>) {
     let i = 0;
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (_url: unknown, _init?: unknown) => {
       const r = responses[i++];
       if (r instanceof Error) throw r;
       return r;
@@ -235,7 +235,7 @@ describe("observation retry queue", () => {
 
   function stubFetchQueue(responses: Array<Response | Error>) {
     let i = 0;
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (_url: unknown, _init?: unknown) => {
       const r = responses[i++];
       if (r instanceof Error) throw r;
       return r;

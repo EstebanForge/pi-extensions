@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-show-me-the-meat",
-  "version": "1.0.1",
+  "version": "1.7.1",
   "description": "Reading-diff tool for Pi. Reduces a git diff to the lines that carry the change (the meat) by spawning an isolated sub-agent that selects which original diff lines to keep, then a deterministic compiler projects exactly those lines. Inspired by meat (https://github.com/boldsoftware/meat). Uses your configured Pi model, so it works with any provider.",
   "keywords": [
     "pi-package",
@@ -21,17 +21,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EstebanForge/pi-show-me-the-meat.git"
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git"
   },
   "publishConfig": {
     "access": "public"
   },
   "type": "module",
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "prepublishOnly": "npm run typecheck && npm run test"
-  },
   "files": [
     "extensions",
     "README.md",
@@ -62,15 +57,5 @@
     "typebox": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.0",
-    "@earendil-works/pi-server": "^0.87.0",
-    "@earendil-works/pi-tui": "^0.87.0",
-    "@types/node": "^22.0.0",
-    "typebox": "*",
-    "typescript": "^5.8.0",
-    "vitest": "^4.1.7"
   }
 }

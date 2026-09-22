@@ -390,7 +390,10 @@ process.exit(0);
 	return p;
 }
 
-function callExecute(tool: any, overrides: Record<string, unknown> = {}) {
+function callExecute(
+	tool: any,
+	overrides: { params?: Record<string, unknown>; ctx?: Record<string, unknown> } = {},
+) {
 	return tool.execute(
 		"t",
 		{ prompt: "hi", mode: "read", ...overrides.params },

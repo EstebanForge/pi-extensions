@@ -33,5 +33,5 @@ Root owns the toolchain: one `tsconfig.json`, one `vitest.config.ts`, one devDep
 - `files` must stay minimal: runtime only. Never ship `tests/`, configs, or docs in a tarball.
 - `pi.extensions` entrypoints are the install contract; do not move them.
 - New shared helpers across two or more packages go in a `packages/shared`-style library, not copy-paste.
+- This repo is the single source of truth. The pre-migration per-extension repos are deleted; all history lives here.
 - Conventional Commits; body explains why, not what.
-- `pi-antigravity-bridge` was imported at its committed HEAD while a fix was in flight in the old checkout; sync it via `git subtree pull` when the fix lands.

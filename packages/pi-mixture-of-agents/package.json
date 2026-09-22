@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-mixture-of-agents",
-  "version": "1.0.2",
+  "version": "1.7.1",
   "description": "Mixture of Agents for Pi. Registers a virtual `moa` provider (presets selectable in /model) and a `/moa` command that runs one-shot passes plus a drill-down preset menu. Each preset fans out N reference models in parallel over a trimmed transcript, an aggregator synthesizes their outputs into guidance appended at the tail, and the aggregator becomes the acting model with the full tool schema intact.",
   "keywords": [
     "pi-package",
@@ -22,7 +22,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EstebanForge/pi-mixture-of-agents.git"
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git"
   },
   "publishConfig": {
     "access": "public"
@@ -31,7 +31,9 @@
   "files": [
     "extensions",
     "lib",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
@@ -57,20 +59,5 @@
     "typebox": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.0",
-    "@earendil-works/pi-server": "^0.87.0",
-    "@earendil-works/pi-tui": "^0.87.0",
-    "@types/node": "^22.0.0",
-    "typebox": "*",
-    "typescript": "^5.8.0",
-    "vitest": "^4.1.9"
-  },
-  "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm test"
   }
 }
