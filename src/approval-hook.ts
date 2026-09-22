@@ -85,6 +85,10 @@ export function hookScriptSource(opts: { port: number; token: string; deadlineMs
 const PORT = ${opts.port};
 const TOKEN = ${JSON.stringify(opts.token)};
 const DEADLINE = Date.now() + ${opts.deadlineMs};
+// Per-fetch abort: a hung fetch must never outlive the park deadline. A hook
+// killed by agy's staged timeout soft-passes (V3), so the script itself must
+// always reach a printed deny.
+const POST_TIMEOUT_MS = Math.min(10_000, ${opts.deadlineMs});
 let body = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) body += chunk;
@@ -94,14 +98,15 @@ try {
 		method: "POST",
 		headers: { "content-type": "application/json", "x-bridge-token": TOKEN },
 		body,
+		signal: AbortSignal.timeout(POST_TIMEOUT_MS),
 	});
 	const json = await res.json();
 	// Ungated payloads get a terminal decision right on the POST (no park).
-	if (json && typeof json === "object" && "decision" in json) {
-		console.log(JSON.stringify(json.decision));
+	if (json && typeof json === "object" && typeof json.decision === "string") {
+		console.log(JSON.stringify(json));
 		process.exit(0);
 	}
-	ticket = json.ticket ?? "";
+	ticket = json?.ticket ?? "";
 } catch {}
 if (!ticket) {
 	console.log(JSON.stringify({ decision: "deny", reason: "approval gate unreachable (bridge down?)" }));
@@ -112,10 +117,17 @@ while (Date.now() < DEADLINE) {
 	try {
 		const res = await fetch(\`http://127.0.0.1:\${PORT}/approval/\${encodeURIComponent(ticket)}\`, {
 			headers: { "x-bridge-token": TOKEN },
+			// Bounded by the remaining park budget: an aborted poll falls through
+			// to the loop condition and lands on the deadline deny.
+			signal: AbortSignal.timeout(Math.max(1, DEADLINE - Date.now())),
 		});
 		const json = await res.json();
-		if (json.status !== "pending") {
-			console.log(JSON.stringify(json.decision ?? { decision: "deny", reason: "gate returned no decision" }));
+		if (json?.status !== "pending") {
+			if (json && typeof json === "object" && typeof json.decision === "string") {
+				console.log(JSON.stringify(json));
+			} else {
+				console.log(JSON.stringify({ decision: "deny", reason: "gate returned no decision" }));
+			}
 			process.exit(0);
 		}
 	} catch {}
