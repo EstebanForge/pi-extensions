@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-git-me",
-  "version": "1.7.1",
+  "version": "1.3.1",
   "description": "Git + GitHub PR tools for Pi that act as YOU. Reads git status/diff/log and the current PR via gh CLI; generates commit messages, PR titles/bodies, and PR review comments with an editable preview dialog before anything touches git or the PR. Model picks the wording; you stay in control.",
   "keywords": [
     "pi-package",

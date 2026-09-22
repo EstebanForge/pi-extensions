@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-zendesk-me",
-  "version": "1.7.1",
+  "version": "1.0.0",
   "description": "Zendesk Support read tools for Pi. Adds 7 LLM-callable tools (zendesk_*) that query the Zendesk Support API v2 over HTTPS: fetch a ticket (by id or agent URL), read the comment thread, search tickets, look up users and organizations, download attachments for viewing, and list tickets in a saved view (filter). OAuth client-credentials auth via ZENDESK_SUBDOMAIN / ZENDESK_CLIENT_ID / ZENDESK_CLIENT_SECRET - no API tokens (deprecated by Zendesk), no MCP server install.",
   "keywords": [
     "pi-package",

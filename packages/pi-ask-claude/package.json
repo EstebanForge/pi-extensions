@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-ask-claude",
-  "version": "1.7.1",
+  "version": "1.0.2",
   "description": "Pi tool that delegates a self-contained sub-task to the Claude Code CLI via `claude -p --output-format stream-json`. Streams structured events as partial output, returns the final agent message. Configurable default model + effort + permission mode, with multi-turn session continuity via `--resume`. Self-disables when pi-claude-bridge is installed, enabled, and has its own AskClaude enabled, to avoid a duplicate-tool conflict.",
   "keywords": [
     "pi-package",

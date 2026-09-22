@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-deepwiki",
-  "version": "1.7.1",
+  "version": "1.0.1",
   "description": "DeepWiki (deepwiki.com) docs tool for Pi. Adds deepwiki_wiki_structure and deepwiki_ask_question tools that query the hosted DeepWiki MCP service over plain HTTP. No MCP adapter required. AI-powered documentation for any public GitHub repository.",
   "keywords": [
     "pi-package",

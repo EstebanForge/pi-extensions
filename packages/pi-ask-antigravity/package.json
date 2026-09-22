@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-ask-antigravity",
-  "version": "1.7.1",
+  "version": "1.2.5",
   "description": "Pi tool that delegates a self-contained sub-task to Google Antigravity's agy CLI (the CLI for Gemini). Friendly model aliases (flash/pro/gemini), configurable default model + thinking, and the AskAntigravity delegation tool.",
   "keywords": [
     "pi-package",
