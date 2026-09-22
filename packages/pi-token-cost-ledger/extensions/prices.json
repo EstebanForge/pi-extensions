@@ -1,0 +1,52 @@
+{
+  "_doc": "API prices per 1M tokens (input / cache-read / output). Source: models.dev catalog.json (canonical first-party providers: zai, anthropic, minimax, google, openai). Fetched 2026-07-22. cacheWrite omitted (0) unless a provider charges for it. Tier notes: models with context-tier pricing use the DEFAULT tier (<200K or <512K context), which covers normal coding sessions. Bundled DEFAULT; overridden at runtime by ~/.pi/extensions-data/estebanforge/pi-token-cost-ledger/prices.json if present. To refresh: curl https://models.dev/catalog.json and re-extract first-party costs.",
+  "_refresh": "jq -rc '.providers | to_entries[] | .key as $p | select($p|test(\"^(zai|anthropic|minimax|google|openai)$\")) | .value.models // {} | to_entries[] | select(.value.cost != null) | {provider:$p, model:.key, cost:.value.cost, name:.value.name}' ~/tmp/models-dev-catalog.json",
+  "_intro_pricing": "claude-sonnet-5 shows intro $2/$10 (through ~Aug 2026); standard $3/$15 applies after. Reflects current published rate.",
+
+  "glm-5.3-flash":  {"i": 0.15, "c": 0.03, "o": 0.5, "_tier_note": "z.ai pricing page 2026-08-26; list rates; 50% launch promo to 2026-09-09"},
+  "glm-5.3":         {"i": 1.4,  "c": 0.26,  "o": 4.4},
+  "glm-5.2":         {"i": 1.4,  "c": 0.26,  "o": 4.4},
+  "glm-5.1":         {"i": 1.4,  "c": 0.26,  "o": 4.4},
+  "glm-5":           {"i": 1.0,  "c": 0.20,  "o": 3.2},
+  "glm-5-turbo":     {"i": 1.2,  "c": 0.24,  "o": 4.0},
+  "glm-4.7":         {"i": 0.6,  "c": 0.11,  "o": 2.2},
+  "glm-4.6":         {"i": 0.6,  "c": 0.11,  "o": 2.2},
+
+  "claude-sonnet-5":   {"i": 2.0,  "c": 0.20, "o": 10},
+  "claude-sonnet-4-6": {"i": 3.0,  "c": 0.30, "o": 15},
+  "claude-sonnet-4-5": {"i": 3.0,  "c": 0.30, "o": 15},
+  "claude-sonnet-4":   {"i": 3.0,  "c": 0.30, "o": 15},
+  "claude-opus-5":     {"i": 5.0,  "c": 0.50, "o": 25},
+  "claude-opus-4-8":   {"i": 5.0,  "c": 0.50, "o": 25},
+  "claude-opus-4-7":   {"i": 5.0,  "c": 0.50, "o": 25},
+  "claude-opus-4-6":   {"i": 5.0,  "c": 0.50, "o": 25},
+  "claude-haiku-4-5":  {"i": 1.0,  "c": 0.10, "o": 5},
+
+  "MiniMax-M3":      {"i": 0.3,  "c": 0.06,  "o": 1.2,  "_tier_note": "base <512K context; doubles to 0.6/0.12/2.4 over 512K"},
+
+  "gemini-3.1-pro-preview": {"i": 2.0,  "c": 0.20,  "o": 12, "_tier_note": "<200K context; 4/0.4/18 over 200K"},
+  "gemini-3.5-flash":      {"i": 1.5,  "c": 0.15,  "o": 9},
+  "gemini-flash-latest":   {"i": 1.5,  "c": 0.15,  "o": 9},
+  "gemini-2.5-pro":        {"i": 1.25, "c": 0.125, "o": 10, "_tier_note": "<200K context; 2.5/0.25/15 over 200K"},
+  "gemini-2.5-flash":      {"i": 0.3,  "c": 0.03,  "o": 2.5},
+
+  "gpt-5.6-terra":   {"i": 2.5,  "c": 0.25, "o": 15, "_tier_note": "<272K context; 5/0.5/22.5 over 272K"},
+  "gpt-5.6-luna":    {"i": 1.0,  "c": 0.10, "o": 6},
+  "gpt-5.6-sol":     {"i": 5.0,  "c": 0.50, "o": 30},
+  "gpt-5.5":         {"i": 5.0,  "c": 0.50, "o": 30, "_tier_note": "<272K context; 10/1/45 over 272K"},
+  "gpt-5.5-pro":     {"i": 30,   "c": 0,    "o": 180, "_tier_note": "no cache_read published; <272K tier; 60/0/270 over 272K"},
+  "gpt-5.4":         {"i": 2.5,  "c": 0.25, "o": 15},
+  "gpt-5.4-nano":    {"i": 0.2,  "c": 0.02, "o": 1.25},
+
+  "grok-4.5":        {"i": 2.0,  "c": 0.30, "o": 6, "_tier_note": "<200K context; 4/1/12 over 200K"},
+
+  "deepseek-v4-pro":   {"i": 0.435, "c": 0.003625, "o": 0.87},
+  "deepseek-v4-flash": {"i": 0.14,  "c": 0.0028,   "o": 0.28},
+
+  "mimo-v2.5-pro":           {"i": 0.435, "c": 0.0036, "o": 0.87},
+  "mimo-v2.5-pro-ultraspeed": {"i": 1.305, "c": 0.0108, "o": 2.61},
+  "mimo-v2.5":               {"i": 0.14,  "c": 0.0028, "o": 0.28},
+  "mimo-v2-pro":             {"i": 0.435, "c": 0.0036, "o": 0.87},
+  "mimo-v2-flash":           {"i": 0.14,  "c": 0.0028, "o": 0.28},
+  "mimo-v2-omni":            {"i": 0.14,  "c": 0.0028, "o": 0.28}
+}
