@@ -11,10 +11,20 @@ if (!bump || !/^(patch|minor|major|\d+\.\d+\.\d+)$/.test(bump)) {
 }
 
 const run = (cmd) => execSync(cmd, { stdio: "inherit" });
+
+// refuse to release from a dirty tree, and gate the tag on a green check
+if (execSync("git status --porcelain", { encoding: "utf8" }).trim()) {
+  console.error("refusing to release: working tree is dirty");
+  process.exit(1);
+}
+run("npm run check");
+
 run(`npm version ${bump} --no-git-tag-version`);
 run("node scripts/sync-versions.mjs");
+// root version and synced workspace versions both live in the lockfile
+run("npm install --package-lock-only");
 const { version } = JSON.parse(readFileSync("package.json", "utf8"));
-run("git add package.json packages/*/package.json");
+run("git add package.json package-lock.json packages/*/package.json");
 run(`git commit -m "chore(release): ${version}"`);
 run(`git tag v${version}`);
 console.log(`\nreleased v${version}. publish with: npm run publish`);

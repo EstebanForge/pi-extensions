@@ -2,3 +2,12 @@ node_modules/
 *.tsbuildinfo
 .vitest/
 .pi/
+.codegraph/
+.claude/
+probe-logs/
+coverage/
+.DS_Store
+*.tgz
+*.log
+.env*
+PLAN.md

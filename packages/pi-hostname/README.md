@@ -31,8 +31,8 @@ Two smaller decisions while we're here:
 
 ## Develop
 
-```
+```bash
+# from the monorepo root
 npm install
-npm run typecheck
-npm test
+npm run check
 ```

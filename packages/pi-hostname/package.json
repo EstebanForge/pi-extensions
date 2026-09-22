@@ -17,7 +17,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EstebanForge/pi-extensions.git"
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-hostname"
   },
   "publishConfig": {
     "access": "public"

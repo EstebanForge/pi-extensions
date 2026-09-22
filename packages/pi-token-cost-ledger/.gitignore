@@ -1,8 +1,0 @@
-node_modules/
-*.tsbuildinfo
-
-# npm publish artifacts
-*.tgz
-
-# OS
-.DS_Store

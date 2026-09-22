@@ -86,10 +86,9 @@ No browser approval step, no user account to pick. The client-credentials token 
 ## Development
 
 ```bash
+# from the monorepo root
 npm install
-npm run typecheck   # tsc --noEmit
-npm test            # vitest run
-npm run test:watch
+npm run check   # tsc --noEmit, then vitest run
 ```
 
 ## License

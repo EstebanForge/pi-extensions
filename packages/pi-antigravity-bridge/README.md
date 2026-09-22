@@ -13,7 +13,7 @@ A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](ht
 </p>
 
 
-If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
+If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-extensions/tree/main/packages/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
 
 ## What it does
 

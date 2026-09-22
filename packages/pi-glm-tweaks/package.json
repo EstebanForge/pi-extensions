@@ -25,7 +25,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EstebanForge/pi-extensions.git"
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-glm-tweaks"
   },
   "publishConfig": {
     "access": "public"

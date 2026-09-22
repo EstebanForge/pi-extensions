@@ -16,6 +16,7 @@
     "packages/*/extensions/**/*.ts",
     "packages/*/lib/**/*.ts",
     "packages/*/src/**/*.ts",
-    "packages/*/tests/**/*.ts"
+    "packages/*/tests/**/*.ts",
+    "packages/*/scripts/**/*.ts"
   ]
 }

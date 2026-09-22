@@ -6,7 +6,7 @@ Monorepo for the 16 `@estebanforge/pi-*` Pi Coding Agent extensions. npm workspa
 
 ```
 packages/<name>/
-  extensions/<name>/   # pi entrypoint (published, loaded by Pi)
+  extensions/          # pi entrypoint (published, loaded by Pi)
   lib/                 # package-internal helpers (published, only where present)
   tests/               # all tests, one location per package
   package.json         # uniform manifest: name, version, files, pi, peerDependencies

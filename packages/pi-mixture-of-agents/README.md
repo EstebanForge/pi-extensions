@@ -2,7 +2,7 @@
 
 **Mixture of Agents** for Pi. Registers a virtual `moa` provider (presets selectable in `/model`) and a single `/moa` command that both runs one-shot passes and manages presets through a drill-down menu. Each preset fans out N reference models in parallel over a trimmed transcript, an aggregator synthesizes their outputs into private guidance appended at the message tail, and the aggregator becomes the acting model with the full tool schema intact.
 
-![MoA in Pi](https://github.com/EstebanForge/pi-mixture-of-agents/raw/main/docs/screenshot.png)
+![MoA in Pi](https://github.com/EstebanForge/pi-extensions/raw/main/packages/pi-mixture-of-agents/docs/screenshot.png)
 
 Ports the MoA technique from [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`agent/moa_loop.py`). Not an LLM; an orchestration layer over models you already have configured.
 
