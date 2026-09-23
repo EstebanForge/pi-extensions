@@ -2,30 +2,135 @@
 
 Sixteen [Pi Coding Agent](https://github.com/earendil-works/pi) extensions in one npm workspace. Install only what you need; each package publishes and installs on its own under the `@estebanforge` scope.
 
+## Extensions
+
+### [pi-agentmemory](packages/pi-agentmemory)
+
+Cross-session memory via the agentmemory REST API.
+
 ```bash
 pi install npm:@estebanforge/pi-agentmemory
 ```
 
-## Packages
+### [pi-antigravity-bridge](packages/pi-antigravity-bridge)
 
-| Package | Role |
-| --- | --- |
-| [`pi-agentmemory`](packages/pi-agentmemory) | Cross-session memory via the agentmemory REST API |
-| [`pi-antigravity-bridge`](packages/pi-antigravity-bridge) | Bridge Pi to Google Antigravity: ACP driver, approval gates, ask tool |
-| [`pi-asana-me`](packages/pi-asana-me) | Asana tasks, projects, and comments |
-| [`pi-ask-antigravity`](packages/pi-ask-antigravity) | One-shot delegation to Antigravity |
-| [`pi-ask-claude`](packages/pi-ask-claude) | One-shot delegation to Claude Code |
-| [`pi-ask-codex`](packages/pi-ask-codex) | One-shot delegation to OpenAI Codex |
-| [`pi-codegraph-enhanced`](packages/pi-codegraph-enhanced) | CodeGraph code intelligence tools |
-| [`pi-deepwiki`](packages/pi-deepwiki) | DeepWiki repository research |
-| [`pi-git-me`](packages/pi-git-me) | git + GitHub write policy tools |
-| [`pi-glm-tweaks`](packages/pi-glm-tweaks) | Z.ai GLM provider tuning |
-| [`pi-hostname`](packages/pi-hostname) | Hostname indicator |
-| [`pi-mixture-of-agents`](packages/pi-mixture-of-agents) | Second-opinion reference models over transcripts |
-| [`pi-show-me-the-meat`](packages/pi-show-me-the-meat) | Reading-diff tool: reduces a git diff to the lines that carry the change |
-| [`pi-slack-me`](packages/pi-slack-me) | Slack read and post tools |
-| [`pi-token-cost-ledger`](packages/pi-token-cost-ledger) | Per-session token cost ledger |
-| [`pi-zendesk-me`](packages/pi-zendesk-me) | Zendesk ticket tools |
+Bridge Pi to Google Antigravity: ACP driver, approval gates, ask tool.
+
+```bash
+pi install npm:@estebanforge/pi-antigravity-bridge
+```
+
+### [pi-asana-me](packages/pi-asana-me)
+
+Asana tasks, projects, and comments.
+
+```bash
+pi install npm:@estebanforge/pi-asana-me
+```
+
+### [pi-ask-antigravity](packages/pi-ask-antigravity)
+
+One-shot delegation to Antigravity.
+
+```bash
+pi install npm:@estebanforge/pi-ask-antigravity
+```
+
+### [pi-ask-claude](packages/pi-ask-claude)
+
+One-shot delegation to Claude Code.
+
+```bash
+pi install npm:@estebanforge/pi-ask-claude
+```
+
+### [pi-ask-codex](packages/pi-ask-codex)
+
+One-shot delegation to OpenAI Codex.
+
+```bash
+pi install npm:@estebanforge/pi-ask-codex
+```
+
+### [pi-codegraph-enhanced](packages/pi-codegraph-enhanced)
+
+CodeGraph code intelligence tools.
+
+```bash
+pi install npm:@estebanforge/pi-codegraph-enhanced
+```
+
+### [pi-deepwiki](packages/pi-deepwiki)
+
+DeepWiki repository research.
+
+```bash
+pi install npm:@estebanforge/pi-deepwiki
+```
+
+### [pi-git-me](packages/pi-git-me)
+
+git + GitHub write policy tools.
+
+```bash
+pi install npm:@estebanforge/pi-git-me
+```
+
+### [pi-glm-tweaks](packages/pi-glm-tweaks)
+
+Z.ai GLM provider tuning.
+
+```bash
+pi install npm:@estebanforge/pi-glm-tweaks
+```
+
+### [pi-hostname](packages/pi-hostname)
+
+Hostname indicator.
+
+```bash
+pi install npm:@estebanforge/pi-hostname
+```
+
+### [pi-mixture-of-agents](packages/pi-mixture-of-agents)
+
+Second-opinion reference models over transcripts.
+
+```bash
+pi install npm:@estebanforge/pi-mixture-of-agents
+```
+
+### [pi-show-me-the-meat](packages/pi-show-me-the-meat)
+
+Reading-diff tool: reduces a git diff to the lines that carry the change.
+
+```bash
+pi install npm:@estebanforge/pi-show-me-the-meat
+```
+
+### [pi-slack-me](packages/pi-slack-me)
+
+Slack read and post tools.
+
+```bash
+pi install npm:@estebanforge/pi-slack-me
+```
+
+### [pi-token-cost-ledger](packages/pi-token-cost-ledger)
+
+Per-session token cost ledger.
+
+```bash
+pi install npm:@estebanforge/pi-token-cost-ledger
+```
+
+### [pi-zendesk-me](packages/pi-zendesk-me)
+
+Zendesk ticket tools.
+
+```bash
+pi install npm:@estebanforge/pi-zendesk-me
+```
 
 ## Development
 
