@@ -2,6 +2,7 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { runGit, requireGitRepo, GitMeEnvError } from "../auth";
+import { gitCommitWebUrl } from "../git";
 import { confirmWrite } from "../confirm";
 import { formatCommitMessage, oneLine, repoContextLabel } from "../format";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
@@ -130,7 +131,13 @@ export const commitTool: ToolDefinition<typeof Params, GitDetails> = {
       // it so the echo (when there is one) does not add a blank last line.
       const finalMessage = message.trimEnd();
       const { extraText, details } = postedContentExtras(finalMessage, decision.edited ?? false);
-      return toToolResult(`${verb} message.${extraText}`, details);
+      // Web URL for the new commit, derived from the configured remote. Only
+      // added when the repo has a parseable remote; otherwise the line is
+      // omitted (local-only repos, unusual remotes).
+      const sha = runGit(["rev-parse", "HEAD"], cwd);
+      const url = sha.exitCode === 0 ? gitCommitWebUrl(cwd, sha.stdout.trim()) : null;
+      const urlLine = url ? `\n  url: ${url}` : "";
+      return toToolResult(`${verb} message.${urlLine}${extraText}`, details);
     } catch (err) {
       return toToolResult(errorText(err));
     }

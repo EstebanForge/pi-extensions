@@ -317,6 +317,41 @@ describe("git_pr_comment - gate wiring", () => {
       edited: true,
     });
   });
+
+  it("surfaces the comment URL gh prints on stdout", async () => {
+    const commentUrl = "https://github.com/octo/repo/pull/42#issuecomment-777";
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "comment", result: () => ({ stdout: `${commentUrl}\n`, stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "ship it" });
+    const result = await invokeWithCtx(
+      prCommentTool,
+      { body: "ship it", pr: 42 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain(`  url: ${commentUrl}`);
+  });
+
+  it("falls back to the branch-resolved PR url when stdout has none", async () => {
+    const prJson = JSON.stringify({
+      number: 7, title: "t", body: "", state: "OPEN",
+      url: "https://github.com/o/r/pull/7", baseRefName: "main",
+      headRefName: "feat", isDraft: false,
+    });
+    setupRoutes([
+      // gh pr comment succeeded but printed no URL (unusual gh versions).
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "comment", result: () => ({ stdout: "", stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: prJson, stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "ship it" });
+    const result = await invokeWithCtx(
+      prCommentTool,
+      { body: "ship it" }, // pr omitted -> resolved from the current branch
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("Posted comment on PR #7");
+    expect(firstText(result)).toContain("  url: https://github.com/o/r/pull/7");
+  });
 });
 
 // -------------------------------------------------- git_issue_comment ------
@@ -367,6 +402,20 @@ describe("git_issue_comment - gate wiring", () => {
     expect(call).toBeDefined();
     expect(call!.args).toEqual(["issue", "comment", "7", "--body", "triaged"]);
     expect(firstText(result)).toContain("Posted comment on issue #7");
+  });
+
+  it("surfaces the comment URL gh prints on stdout", async () => {
+    const commentUrl = "https://github.com/octo/repo/issues/7#issuecomment-888";
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "issue" && a[1] === "comment", result: () => ({ stdout: `${commentUrl}\n`, stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "triaged" });
+    const result = await invokeWithCtx(
+      issueCommentTool,
+      { number: 7, body: "triaged" },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain(`  url: ${commentUrl}`);
   });
 });
 
@@ -739,6 +788,38 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
     );
     const call = findCall("gh", ["pr", "review"]);
     expect(call!.args).toEqual(["pr", "review", "3", "--comment", "--body", "nit: typo"]);
+  });
+
+  it("surfaces the PR url after the review posts (gh pr review prints none)", async () => {
+    setupRoutes([
+      // ghPrUrlByNumber addresses the PR by number: `gh pr view 42 --json url`.
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "42", result: () => ({ stdout: JSON.stringify({ url: "https://github.com/o/r/pull/42" }), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "lgtm" });
+    const result = await invokeWithCtx(
+      prReviewTool,
+      { body: "lgtm", pr: 42, event: "APPROVE" },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("Approved PR #42");
+    expect(firstText(result)).toContain("  url: https://github.com/o/r/pull/42");
+  });
+
+  it("branch-resolved PR: reuses the lookup url without a second gh call", async () => {
+    const prJson = JSON.stringify({
+      number: 9, title: "t", body: "", state: "OPEN",
+      url: "https://github.com/o/r/pull/9", baseRefName: "main",
+      headRefName: "feat", isDraft: false,
+    });
+    setupRoutes([
+      // Branch lookup only. No by-number route exists: if the tool wrongly
+      // called ghPrUrlByNumber it would get null and drop the url line.
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "--json", result: () => ({ stdout: prJson, stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "lgtm" });
+    const result = await invokeWithCtx(prReviewTool, { body: "lgtm" }, makeCtx(ui));
+    expect(firstText(result)).toContain("Posted review comment on PR #9");
+    expect(firstText(result)).toContain("  url: https://github.com/o/r/pull/9");
   });
 });
 

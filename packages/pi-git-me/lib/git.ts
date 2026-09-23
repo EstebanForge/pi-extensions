@@ -178,6 +178,116 @@ export function ghPrForCurrentBranch(
   return parseGhPr(result.stdout);
 }
 
+// -------------------------------------------------- web URLs ---------------
+// The gh-backed write tools surface the URL gh/API reports for the artifact
+// they just created (create/edit/GraphQL responses carry it; `gh pr comment`
+// and `gh issue comment` print the new comment URL on stdout). The commit
+// tool has no such source, so its web URL is derived from the configured
+// remote, host-aware (GitHub, GitLab, Bitbucket, Gitea/Codeberg, and a
+// generic fallback). Every helper fails soft: null -> callers omit the url
+// line instead of erroring.
+
+/**
+ * Convert a git remote URL into the repo's web (browser) base URL, e.g.
+ * "git@github.com:octo/repo.git" -> "https://github.com/octo/repo". Handles
+ * https/http, ssh/git schemes, scp-like syntax, and strips .git. GitLab
+ * nested groups pass through unchanged. A custom port is kept for http(s)
+ * (the web UI usually lives there) and dropped for ssh (the web UI lives on
+ * the standard port even when ssh does not). Returns null when the remote
+ * cannot be parsed into a host + path (e.g. a local filesystem path).
+ */
+export function remoteWebBase(raw: string): string | null {
+  const trimmed = raw.trim();
+  let host = "";
+  let path = "";
+  let scheme = "https";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    let u: URL;
+    try { u = new URL(trimmed); } catch { return null; }
+    // Web UIs live on the standard port even when the ssh remote points at a
+    // custom one; keep a non-default port only for http(s). Plain-http hosts
+    // (self-hosted Gitea on a LAN) keep their scheme too.
+    const isHttp = /^https?:$/i.test(u.protocol);
+    host = isHttp ? u.host : u.hostname;
+    path = u.pathname;
+    scheme = u.protocol === "http:" ? "http" : "https";
+  } else {
+    // Windows drive paths are local filesystem remotes, not scp hosts
+    // (the scp regex below would otherwise read "C:" as the host).
+    if (/^[a-zA-Z]:[/\\]/.test(trimmed)) return null;
+    // scp-like: [user@]host:path (no scheme). The host part cannot contain
+    // ":" or "/", so local filesystem paths never match; bracketed IPv6
+    // literals ([2001:db8::1]) are allowed as hosts.
+    const scp = trimmed.match(/^(?:[^@/]+@)?(\[[0-9a-fA-F:]+\]|[^:/]+):(.+)$/);
+    if (!scp) return null;
+    host = scp[1];
+    path = scp[2];
+  }
+  // Trim slashes around the path, strip a trailing .git, trim again (a path
+  // like octo/.git/ leaves a dangling slash after the strip).
+  path = path.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
+  if (!host || !path) return null;
+  return `${scheme}://${host}/${encodeURI(path)}`;
+}
+
+/**
+ * Commit web URL from a repo web base + sha. bitbucket.org serves commits
+ * under /commits/<sha>; GitHub, GitLab, Gitea/Codeberg (and most other
+ * forge software) serve /commit/<sha>.
+ */
+export function commitUrlFromBase(base: string, sha: string): string {
+  let host = "";
+  try { host = new URL(base).hostname; } catch { /* unknown host -> generic path */ }
+  const seg = host === "bitbucket.org" ? "commits" : "commit";
+  return `${base.replace(/\/+$/, "")}/${seg}/${sha}`;
+}
+
+/**
+ * Web URL for a commit in the repo at cwd, derived from the configured
+ * remote (origin first, else the first listed remote). null when there is
+ * no remote, it cannot be parsed, or the sha is empty - callers omit the
+ * url line rather than erroring.
+ */
+export function gitCommitWebUrl(cwd: string, sha: string): string | null {
+  if (!sha) return null;
+  let remote = runGit(["remote", "get-url", "origin"], cwd);
+  if (remote.exitCode !== 0) {
+    const list = runGit(["remote"], cwd);
+    if (list.exitCode !== 0) return null;
+    const first = list.stdout.trim().split("\n")[0]?.trim() ?? "";
+    if (!first) return null;
+    remote = runGit(["remote", "get-url", first], cwd);
+  }
+  if (remote.exitCode !== 0) return null;
+  const base = remoteWebBase(remote.stdout);
+  return base === null ? null : commitUrlFromBase(base, sha);
+}
+
+/**
+ * First http(s) URL in gh stdout, e.g. the comment URL `gh pr comment`
+ * prints after a successful post. Trailing sentence punctuation is trimmed
+ * so a URL embedded in prose still opens. null when stdout carries no URL.
+ */
+export function extractUrl(stdout: string): string | null {
+  const m = stdout.match(/https?:\/\/\S+/);
+  return m ? m[0].replace(/[.,:;!?)'\"]+$/, "") : null;
+}
+
+/**
+ * Web URL for a PR by number (`gh pr view <n> --json url`). null on any
+ * failure - callers omit the url line rather than erroring.
+ */
+export function ghPrUrlByNumber(number: number, cwd: string): string | null {
+  const result = runGh(["pr", "view", String(number), "--json", "url"], cwd);
+  if (result.exitCode !== 0) return null;
+  try {
+    const url = (JSON.parse(result.stdout) as { url?: unknown }).url;
+    return typeof url === "string" && url ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 // -------------------------------------------------- gh JSON parsing --------
 
 // Narrow gh's JSON envelope before casting to the typed shape. gh's output is

@@ -3,7 +3,8 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeReviewPayload, repoContextLabel } from "../format";
-import { ghPrForCurrentBranch } from "../git";
+import { ghPrForCurrentBranch, ghPrUrlByNumber } from "../git";
+import type { GhPullRequest } from "../types";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   PR_REVIEW_TITLE,
@@ -75,16 +76,20 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
 
     const event = parseReviewEvent(params.event);
 
-    // Resolve PR number: explicit > current-branch PR > fail closed.
+    // Resolve PR number: explicit > current-branch PR > fail closed. The
+    // branch-resolved PR's url is kept so the result can show it without a
+    // second gh call; an explicit `pr` param resolves the url after the
+    // review posts (gh pr review prints nothing itself).
     let prNumber = params.pr;
+    let resolved: GhPullRequest | null = null;
     if (prNumber === undefined) {
-      const current = ghPrForCurrentBranch(cwd);
-      if (current === null) {
+      resolved = ghPrForCurrentBranch(cwd);
+      if (resolved === null) {
         return toToolResult(
           "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
         );
       }
-      prNumber = current.number;
+      prNumber = resolved.number;
     }
 
     const eventLabel =
@@ -146,8 +151,13 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
           : event === "REQUEST_CHANGES"
             ? "Requested changes on"
             : "Posted review comment on";
+      // gh pr review prints nothing on success; resolve the PR url ourselves
+      // (free when the branch lookup above already has it, one cheap gh call
+      // otherwise).
+      const url = resolved?.url ?? ghPrUrlByNumber(prNumber, cwd);
+      const urlLine = url ? `\n  url: ${url}` : "";
       const { extraText, details } = postedContentExtras(body, decision.edited ?? false);
-      return toToolResult(`${verb} PR #${prNumber}.${extraText}`, details);
+      return toToolResult(`${verb} PR #${prNumber}.${urlLine}${extraText}`, details);
     } catch (err) {
       return toToolResult(errorText(err));
     }

@@ -4,7 +4,14 @@
 import { describe, expect, it } from "vitest";
 import { parseDiffTarget } from "../lib/tools/diff";
 import { parseReviewEvent } from "../lib/tools/pr-review";
-import { parseGhFiles, parseGhPr, parseGitLog } from "../lib/git";
+import {
+  commitUrlFromBase,
+  extractUrl,
+  parseGhFiles,
+  parseGhPr,
+  parseGitLog,
+  remoteWebBase,
+} from "../lib/git";
 
 describe("parseDiffTarget", () => {
   it("accepts every documented target", () => {
@@ -158,5 +165,96 @@ describe("parseGitLog", () => {
   it("does not emit a phantom entry for the trailing record separator", () => {
     const stdout = `h1${F}d1${F}A1${F}s1${F}${R}${R}`;
     expect(parseGitLog(stdout)).toHaveLength(1);
+  });
+});
+
+describe("remoteWebBase", () => {
+  it("parses scp-like remotes and strips .git", () => {
+    expect(remoteWebBase("git@github.com:octo/repo.git")).toBe("https://github.com/octo/repo");
+    expect(remoteWebBase("esteban@bitbucket.org:ws/repo.git")).toBe("https://bitbucket.org/ws/repo");
+  });
+
+  it("parses https and http remotes", () => {
+    expect(remoteWebBase("https://github.com/octo/repo.git")).toBe("https://github.com/octo/repo");
+    expect(remoteWebBase("https://github.com/octo/repo")).toBe("https://github.com/octo/repo");
+    expect(remoteWebBase("http://gitea.local:3000/octo/repo.git")).toBe("http://gitea.local:3000/octo/repo");
+  });
+
+  it("parses ssh/git scheme remotes and keeps nested groups", () => {
+    expect(remoteWebBase("ssh://git@gitlab.com/group/sub/repo.git")).toBe("https://gitlab.com/group/sub/repo");
+    expect(remoteWebBase("git://github.com/octo/repo.git")).toBe("https://github.com/octo/repo");
+  });
+
+  it("drops a custom port on ssh but keeps it on http(s)", () => {
+    // Web UIs live on the standard port even when ssh does not.
+    expect(remoteWebBase("ssh://git@git.example.com:2222/octo/repo.git")).toBe("https://git.example.com/octo/repo");
+    expect(remoteWebBase("https://git.example.com:8443/octo/repo.git")).toBe("https://git.example.com:8443/octo/repo");
+  });
+
+  it("returns null on unparseable remotes", () => {
+    expect(remoteWebBase("")).toBeNull();
+    expect(remoteWebBase("/srv/git/repo")) // local filesystem path
+      .toBeNull();
+    expect(remoteWebBase("file:///srv/git/repo")) // URL without a host part
+      .toBeNull();
+    expect(remoteWebBase("git@github.com:")) // host with empty path
+      .toBeNull();
+    expect(remoteWebBase("C:/repo")) // Windows drive path, not a host
+      .toBeNull();
+    expect(remoteWebBase("C:\\repo.git")).toBeNull();
+  });
+
+  it("handles bracketed IPv6 scp hosts", () => {
+    expect(remoteWebBase("git@[2001:db8::1]:octo/repo.git")).toBe("https://[2001:db8::1]/octo/repo");
+    expect(remoteWebBase("git@[::1]:r.git")).toBe("https://[::1]/r");
+  });
+
+  it("drops credentials from https remotes", () => {
+    expect(remoteWebBase("https://user:pass@github.com/octo/repo.git")).toBe("https://github.com/octo/repo");
+  });
+
+  it("keeps nested groups on scp-like remotes and encodes spaces", () => {
+    expect(remoteWebBase("git@gitlab.com:group/sub/repo.git")).toBe("https://gitlab.com/group/sub/repo");
+    expect(remoteWebBase("git@host:octo/my repo.git")).toBe("https://host/octo/my%20repo");
+  });
+});
+
+describe("commitUrlFromBase", () => {
+  const SHA = "abc1234def";
+
+  it("uses /commit/<sha> for github, gitlab, gitea, and unknown hosts", () => {
+    expect(commitUrlFromBase("https://github.com/octo/repo", SHA)).toBe(`https://github.com/octo/repo/commit/${SHA}`);
+    expect(commitUrlFromBase("https://gitlab.com/g/r", SHA)).toBe(`https://gitlab.com/g/r/commit/${SHA}`);
+    expect(commitUrlFromBase("https://codeberg.org/o/r", SHA)).toBe(`https://codeberg.org/o/r/commit/${SHA}`);
+    expect(commitUrlFromBase("https://git.self-hosted.dev/o/r", SHA)).toBe(`https://git.self-hosted.dev/o/r/commit/${SHA}`);
+  });
+
+  it("uses /commits/<sha> (plural) for bitbucket.org", () => {
+    expect(commitUrlFromBase("https://bitbucket.org/ws/repo", SHA)).toBe(`https://bitbucket.org/ws/repo/commits/${SHA}`);
+  });
+
+  it("tolerates a trailing slash on the base", () => {
+    expect(commitUrlFromBase("https://github.com/octo/repo/", SHA)).toBe(`https://github.com/octo/repo/commit/${SHA}`);
+  });
+});
+
+describe("extractUrl", () => {
+  it("returns the first http(s) URL in gh stdout", () => {
+    expect(extractUrl("https://github.com/octo/repo/pull/15#issuecomment-123\n")).toBe(
+      "https://github.com/octo/repo/pull/15#issuecomment-123",
+    );
+  });
+
+  it("returns null when stdout carries no URL", () => {
+    expect(extractUrl("")).toBeNull();
+    expect(extractUrl("no url here\n")).toBeNull();
+  });
+
+  it("trims trailing sentence punctuation from embedded URLs", () => {
+    expect(extractUrl("Posted at https://github.com/o/r/pull/1#issuecomment-2.")).toBe(
+      "https://github.com/o/r/pull/1#issuecomment-2",
+    );
+    expect(extractUrl("(https://github.com/o/r/pull/1)"))
+      .toBe("https://github.com/o/r/pull/1");
   });
 });

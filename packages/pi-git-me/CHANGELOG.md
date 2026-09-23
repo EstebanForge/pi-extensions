@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Write-tool results now include the web URL of what they created** (a `  url: ` line under the success message), so the user knows where to look without leaving the terminal. Coverage: `git_commit` (URL derived from the configured remote, which may be scp-like, https, http, ssh, or git; host-aware path: `bitbucket.org` serves `/commits/<sha>`, GitHub / GitLab / Gitea / Codeberg and unknown hosts serve `/commit/<sha>`), `git_pr_comment` and `git_issue_comment` (the comment URL `gh` prints on stdout, falling back to the branch-resolved PR url), and `git_pr_review` (resolved from the PR lookup; `gh pr review` prints nothing itself). The already-URLed tools (`git_pr_upsert`, `git_issue_create`, `git_discussion_create`, `git_discussion_comment`) are unchanged. Every source fails soft: no remote, an unparseable one (e.g. a local filesystem path), or a gh call that yields no URL simply omits the line.
+- `lib/git.ts` web-URL helpers: `remoteWebBase` (remote URL -> web base; nested GitLab groups pass through, custom ports kept on http(s) and dropped on ssh), `commitUrlFromBase`, `gitCommitWebUrl`, `extractUrl` (first http(s) URL in gh stdout), `ghPrUrlByNumber`.
+
+### Tests
+
+- 128 -> 147. New: the remote/URL parser matrix in `tests/parse.test.ts`, url-line coverage for the three comment/review tools in `tests/tools.test.ts`, and a `git_commit` success-path suite in `tests/commit-url.test.ts` (the async `spawn` mock that tools.test.ts deliberately stubs to throw), covering GitHub / Bitbucket / plain-http remotes, origin-absent fallback to the first remote, and url-line omission for remoteless and unparseable remotes.
+
 ## 1.3.1 — 2026-09-10
 
 ### Fixed

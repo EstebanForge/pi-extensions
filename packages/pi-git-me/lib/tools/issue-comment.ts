@@ -3,6 +3,7 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeReviewPayload, repoContextLabel } from "../format";
+import { extractUrl } from "../git";
 import { ghRepoView } from "../github";
 import {
   validateAttachmentPaths,
@@ -136,8 +137,11 @@ export const issueCommentTool: ToolDefinition<typeof Params, GitDetails> = {
         );
       }
       const attachPart = uploaded.length > 0 ? ` Attached ${uploaded.length} image(s).` : "";
+      // gh prints the new comment URL on stdout; no url line when it does not.
+      const url = extractUrl(result.stdout);
+      const urlLine = url ? `\n  url: ${url}` : "";
       const { extraText, details } = postedContentExtras(body, decision.edited ?? false);
-      return toToolResult(`Posted comment on issue #${params.number}.${attachPart}${extraText}`, details);
+      return toToolResult(`Posted comment on issue #${params.number}.${attachPart}${urlLine}${extraText}`, details);
     } catch (err) {
       return toToolResult(errorText(err));
     }

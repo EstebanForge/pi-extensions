@@ -3,7 +3,8 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeReviewPayload, repoContextLabel } from "../format";
-import { ghPrForCurrentBranch } from "../git";
+import { ghPrForCurrentBranch, extractUrl } from "../git";
+import type { GhPullRequest } from "../types";
 import { ghRepoView } from "../github";
 import {
   validateAttachmentPaths,
@@ -69,16 +70,20 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
       throw err;
     }
 
-    // Resolve PR number: explicit > current-branch PR > fail closed.
+    // Resolve PR number: explicit > current-branch PR > fail closed. The
+    // branch-resolved PR's url is kept as a fallback for the result's url
+    // line (the comment URL gh prints on stdout is preferred - it is more
+    // precise - but that stdout can be empty on unusual gh versions).
     let prNumber = params.pr;
+    let resolved: GhPullRequest | null = null;
     if (prNumber === undefined) {
-      const current = ghPrForCurrentBranch(cwd);
-      if (current === null) {
+      resolved = ghPrForCurrentBranch(cwd);
+      if (resolved === null) {
         return toToolResult(
           "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
         );
       }
-      prNumber = current.number;
+      prNumber = resolved.number;
     }
 
     // Fail fast on bad attachment paths BEFORE the review dialog: stat +
@@ -154,8 +159,12 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
         );
       }
       const attachPart = uploaded.length > 0 ? ` Attached ${uploaded.length} image(s).` : "";
+      // gh prints the new comment URL on stdout; fall back to the PR url we
+      // resolved earlier when stdout carries none.
+      const url = extractUrl(result.stdout) ?? resolved?.url;
+      const urlLine = url ? `\n  url: ${url}` : "";
       const { extraText, details } = postedContentExtras(body, decision.edited ?? false);
-      return toToolResult(`Posted comment on PR #${prNumber}.${attachPart}${extraText}`, details);
+      return toToolResult(`Posted comment on PR #${prNumber}.${attachPart}${urlLine}${extraText}`, details);
     } catch (err) {
       return toToolResult(errorText(err));
     }
