@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.1] - 2026-09-23
+
+### Fixed
+
+- **Subprocess stderr can no longer leak secrets into logs or the chat.** The `agy` CLI can print auth material (API keys, OAuth tokens, credential headers) to stderr, and six surfaces carried that text verbatim: the daily support log users attach to bug reports, the stream-json turn-failure error, the ACP connection-exit rejection reasons and `/agy doctor` tail, the web tools' failure note, and the AskAntigravity delegation exit note. A key in an auth error therefore landed on disk and in the transcript unchanged. Redaction now runs on the reassembled stderr tail at exit and getter boundaries - never per chunk - so a token split across two pipe events still matches, and the raw tail stays internal. New `redactText()` scrubs four secret-shaped pattern classes (API-key prefixes, OAuth tokens, credential headers, token-ish JSON fields), anchored with a word boundary so ordinary text like `desk-123456789012` survives, and carries no length cap because callers already bound their own output sizes. The daily log scrubber additionally scans string values, not just secret-shaped keys, and routes `Error.message` through the same pass; values are scanned before truncation so a cut token cannot lose the characters a pattern needs. Best-effort by design: a last line against leak paths, not a sandbox. Ten new tests pin the behavior, two of them spawning real processes (a secret-bearing crash and a token split across stderr chunks). 1200 tests, tsc clean.
+
 ## [1.7.0] - 2026-09-23
 
 ### Added
