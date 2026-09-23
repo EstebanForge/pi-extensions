@@ -1,10 +1,8 @@
 # @estebanforge/pi-ask-antigravity
 
-A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that exposes the **`AskAntigravity`** tool: delegate a self-contained sub-task to Google Antigravity's `agy` CLI and stream its response back into the Pi session.
+A [Pi](https://github.com/earendil-works/pi) extension that exposes the **`AskAntigravity`** tool: delegate a self-contained sub-task to Google Antigravity's `agy` CLI and stream its response back into the Pi session.
 
-It is the `AskClaude`-style delegation pattern (from pi-claude-bride extension), pointed at Gemini via `agy`. The tool answers to three names the CLI is known by — **gemini**, **antigravity**, and **agy** — surfaced in its description so the model maps any of them to this single tool.
-
-<img width="1512" height="845" alt="image" src="https://github.com/user-attachments/assets/3e1a8f19-64d2-43ab-a30f-47f39daa151d" />
+It is the `AskClaude`-style delegation pattern (from pi-claude-bridge extension), pointed at Gemini via `agy`. The tool answers to three names the CLI is known by — **gemini**, **antigravity**, and **agy** — surfaced in its description so the model maps any of them to this single tool.
 
 ## Install
 

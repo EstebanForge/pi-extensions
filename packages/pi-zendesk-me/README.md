@@ -1,6 +1,6 @@
 # @estebanforge/pi-zendesk-me
 
-Zendesk Support read tools for [pi](https://github.com/earendil-works/pi-coding-agent) that act on **your** Zendesk tenant.
+Zendesk Support read tools for [pi](https://github.com/earendil-works/pi) that act on **your** Zendesk tenant.
 
 The extension adds 7 LLM-callable tools that query the Zendesk Support API v2 over HTTPS: fetch a ticket (by id or a pasted agent URL), read the full comment thread, search, look up users and organizations, download attachments (images included) to a temp file for viewing, and list the tickets in a saved view (filter). Read-only: no ticket can be created, edited, or commented on from here. No MCP server install required.
 

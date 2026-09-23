@@ -1,10 +1,8 @@
 # @estebanforge/pi-ask-codex
 
-A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that exposes the **`AskCodex`** tool: delegate a self-contained sub-task to OpenAI's [Codex CLI](https://github.com/openai/codex) and stream its structured progress back into the Pi session.
+A [Pi](https://github.com/earendil-works/pi) extension that exposes the **`AskCodex`** tool: delegate a self-contained sub-task to OpenAI's [Codex CLI](https://github.com/openai/codex) and stream its structured progress back into the Pi session.
 
 It is the `AskClaude`-style delegation pattern (from pi-claude-bridge), pointed at GPT via `codex exec`. The tool answers to three names the CLI is known by — **codex**, **openai**, and **gpt** — surfaced in its description so the model maps any of them to this single tool.
-
-<img width="1506" height="885" alt="image" src="https://github.com/user-attachments/assets/4e6b7ced-13e2-4388-953e-0643223049ee" />
 
 ## Install
 

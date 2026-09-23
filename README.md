@@ -1,6 +1,6 @@
 # pi-extensions
 
-Sixteen [Pi Coding Agent](https://github.com/earendil-works) extensions in one npm workspace. Install only what you need; each package publishes and installs on its own under the `@estebanforge` scope.
+Sixteen [Pi Coding Agent](https://github.com/earendil-works/pi) extensions in one npm workspace. Install only what you need; each package publishes and installs on its own under the `@estebanforge` scope.
 
 ```bash
 pi install npm:@estebanforge/pi-agentmemory

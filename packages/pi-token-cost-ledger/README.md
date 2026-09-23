@@ -1,6 +1,6 @@
 # @estebanforge/pi-token-cost-ledger
 
-Token & cost ledger for [Pi](https://github.com/earendil-works/pi-coding-agent). Captures every assistant message to a per-day JSONL ledger and exposes a `/token-usage` command with by-model and by-period breakdowns showing **both** real USD and API-equivalent USD.
+Token & cost ledger for [Pi](https://github.com/earendil-works/pi). Captures every assistant message to a per-day JSONL ledger and exposes a `/token-usage` command with by-model and by-period breakdowns showing **both** real USD and API-equivalent USD.
 
 ## Why two dollar figures
 

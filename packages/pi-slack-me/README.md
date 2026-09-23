@@ -1,6 +1,6 @@
 # @estebanforge/pi-slack-me
 
-Slack tools for [pi](https://github.com/earendil-works/pi-coding-agent) that act as **you**, not as a bot.
+Slack tools for [pi](https://github.com/earendil-works/pi) that act as **you**, not as a bot.
 
 The extension adds 8 LLM-callable tools that read and write Slack using a **user token** (`xoxp-`). There is no bot to invite into channels and no visible footprint in the workspace: the Slack app inherits *your* membership and access, so the agent sees (and posts as) exactly what you do - public channels, private channels you're in, your DMs, and group DMs.
 

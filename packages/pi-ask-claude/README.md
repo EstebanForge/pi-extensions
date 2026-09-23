@@ -1,6 +1,6 @@
 # @estebanforge/pi-ask-claude
 
-A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that exposes the **`AskClaude`** tool: delegate a self-contained sub-task to the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI and stream its structured progress back into the Pi session.
+A [Pi](https://github.com/earendil-works/pi) extension that exposes the **`AskClaude`** tool: delegate a self-contained sub-task to the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI and stream its structured progress back into the Pi session.
 
 It is the `AskCodex` / `AskAntigravity` delegation pattern, pointed at Claude via `claude -p --output-format stream-json`. The tool answers to the names the CLI is known by — **claude** and **claude code** — surfaced in its description so the model maps "ask claude" to this single tool.
 
