@@ -21,6 +21,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import os from "node:os";
 import path from "node:path";
 import { Type } from "typebox";
+import { redactText } from "./redact.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const WEB_AGENT_PREFIX = "pi-bridge-web-";
@@ -178,7 +179,7 @@ export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 			child.once("close", resolve);
 		});
 		if (!failed && opts.signal?.aborted) failed = "web run aborted";
-		if (!failed && code !== 0) failed = `agy exited with code ${code}${stderrTail ? `: ${stderrTail.trim().slice(-300)}` : ""}`;
+		if (!failed && code !== 0) failed = `agy exited with code ${code}${stderrTail ? `: ${redactText(stderrTail.trim()).slice(-300)}` : ""}`;
 		if (!failed && !allowedToolUsed) failed = `Antigravity returned an answer without an observed ${opts.gatedTool} step; refusing it as unverified`;
 		if (!failed && response === "") failed = "Antigravity web run produced no answer";
 		if (failed) {

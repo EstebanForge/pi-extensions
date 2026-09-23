@@ -84,6 +84,29 @@ test("daily log: prunes files older than retention, keeps others", async () => {
 	);
 });
 
+test("daily log: redacts secrets embedded in string VALUES, not just keys", async () => {
+	// Regression (peer review 2026-09): scrub() matched key names only, so a
+	// token inside an unredacted value (proc stderr tails, error messages)
+	// reached disk verbatim.
+	const dir = tmpDir();
+	const log = createDailyLogger({ dir, debug: true, now: () => new Date(2026, 1, 5) });
+	log.log("proc-stderr", { stderr: "boom google key AIzaSyA-1234567890abcdefghijklmnopqrstu end" }, "error");
+	log.log("plain-value", "oauth failure for ya29.a0AfB_by-abcdef123456", "error");
+	log.log("error-instance", new Error("ACP auth required: ya29.a0AfB_by-abcdef999999"), "error");
+	await log.flush();
+
+	const lines = readLines(dir, "2026-02-05.ndjson");
+	const stderrLine = JSON.stringify(lines[0]);
+	assert.ok(stderrLine.includes("<redacted>"), "stderr value redacted");
+	assert.equal(stderrLine.includes("AIzaSyA"), false);
+	const plainLine = JSON.stringify(lines[1]);
+	assert.ok(plainLine.includes("<redacted>"), "plain string value redacted");
+	assert.equal(plainLine.includes("ya29"), false);
+	const errLine = JSON.stringify(lines[2]);
+	assert.ok(errLine.includes("<redacted>"), "Error.message redacted");
+	assert.equal(errLine.includes("ya29"), false);
+});
+
 test("daily log: redacts secret-shaped keys and truncates long strings", async () => {
 	const dir = tmpDir();
 	const log = createDailyLogger({ dir, debug: true, now: () => new Date(2026, 1, 5) });

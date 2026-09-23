@@ -4,6 +4,14 @@
 # simulating a pipe boundary landing mid-line.
 read -r _line
 case "$_line" in
+  *STDERR-LEAK*)
+    # Secret-bearing stderr crash (redaction tests): the exit path feeds
+    # stderrTail straight into the turn-failure message.
+    printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-leak"}}'
+    sleep 0.1
+    echo 'boom google key AIzaSyA-1234567890abcdefghijklmnopqrstu' >&2
+    exit 3
+    ;;
   *HANG*)
     # Deterministic hang for mid-turn close tests: init, then never finish.
     printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-hang"}}'

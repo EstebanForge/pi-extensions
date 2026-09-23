@@ -123,3 +123,28 @@ describe("stream-json driver zero timeouts disable both caps", () => {
 		assert.equal(outcome.status, "ERROR");
 	});
 });
+
+describe("stream-json driver stderr redaction", () => {
+	// Regression (peer review 2026-09): the raw stderr tail rode verbatim into
+	// the turn-failure message (user transcript + daily log). A secret agy
+	// printed to stderr must come out redacted.
+	test("a secret in agy stderr never reaches the turn error", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "STDERR-LEAK",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.ok(outcome.error);
+		assert.equal(outcome.error.includes("AIzaSyA"), false, "raw secret absent");
+		assert.ok(outcome.error.includes("<redacted>"), "secret is redacted");
+		await driver.close("shutdown");
+	});
+});

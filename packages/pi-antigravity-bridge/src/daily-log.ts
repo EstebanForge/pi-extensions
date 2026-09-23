@@ -12,7 +12,9 @@
 //   - One appendFile per record: O_APPEND keeps single-line writes atomic,
 //     so two pi tabs sharing the dir stay line-consistent.
 //   - No secrets, no prompt content: values of secret-shaped keys are
-//     redacted and long strings are truncated before they reach disk.
+//     redacted wholesale, secret-shaped material inside string values
+//     (stderr tails, error messages) is scrubbed, and long strings are
+//     truncated before they reach disk.
 //   - Retention: files older than `retentionDays` are pruned once per
 //     process, so the dir cannot grow unbounded.
 //   - Volume tiers: default installs write ONLY errors — routine logging
@@ -22,6 +24,7 @@
 
 import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { redactText } from "./redact.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -63,14 +66,24 @@ const MAX_RECORD = 4000;
 // lives in `value`, which a name-only regex would miss.
 const SECRET_KEY = /token|secret|password|passphrase|authorization|api[-_]?key|cookie|headers/i;
 
-/** Redact secret-shaped values and cap runaway strings before disk. */
+/** Redact secret-shaped keys wholesale, scrub secrets embedded in string
+ *  values, and cap runaway strings before disk. */
 function scrub(value: unknown, depth: number): unknown {
 	if (value === null || value === undefined) return value;
 	if (value instanceof Error) {
-		return { name: value.name, message: value.message, stack: scrub(value.stack, depth) };
+		// message goes through the string branch: errors are the main carrier of
+		// subprocess stderr text (the exact leak class this scrubber exists for).
+		return {
+			name: value.name,
+			message: scrub(value.message, depth),
+			stack: scrub(value.stack, depth),
+		};
 	}
 	if (typeof value === "string") {
-		return value.length > MAX_STRING ? value.slice(0, MAX_STRING) + "…(truncated)" : value;
+		// Value scan first, truncate second: a cut token could lose the tail
+		// characters the pattern needs to match.
+		const clean = redactText(value);
+		return clean.length > MAX_STRING ? clean.slice(0, MAX_STRING) + "…(truncated)" : clean;
 	}
 	if (typeof value === "number" || typeof value === "boolean") return value;
 	if (depth >= MAX_DEPTH) return "(depth limit)";

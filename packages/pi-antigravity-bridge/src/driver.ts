@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { parseAgyLine } from "./stream-events.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
 import { gateHooksStaged } from "./approval-hook.js";
+import { redactText } from "./redact.js";
 import type {
 	AgyUsage,
 	DriverActivity,
@@ -403,7 +404,9 @@ export class StreamDriver implements TurnDriver {
 				} else {
 					this.#failTurn(
 						turn,
-						this.#stderrTail.trim() || `agy exited with status ${code ?? "signal"}`,
+						// agy stderr can carry auth material; the tail becomes the
+						// user-facing error and a daily-log value.
+						redactText(this.#stderrTail.trim()) || `agy exited with status ${code ?? "signal"}`,
 					);
 				}
 			}

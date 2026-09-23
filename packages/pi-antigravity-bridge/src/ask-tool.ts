@@ -25,6 +25,7 @@ import {
 	snapshotConversations,
 } from "./discovery.js";
 import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
+import { redactText } from "./redact.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
 import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
 
@@ -742,8 +743,10 @@ export async function registerAskAntigravityTool(
 				}
 
 				if (outcome.exitCode !== 0) {
-					const note = details.stderr.trim()
-						? `agy exited with status ${outcome.exitCode}: ${details.stderr.trim()}`
+					// stderr can carry auth material; the note is chat-visible.
+					const stderr = redactText(details.stderr.trim());
+					const note = stderr
+						? `agy exited with status ${outcome.exitCode}: ${stderr}`
 						: `agy exited with status ${outcome.exitCode}`;
 					return {
 						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],

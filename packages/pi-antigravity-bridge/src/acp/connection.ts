@@ -26,6 +26,7 @@ import path from "node:path";
 import { parseAuthPort, readLastUrl } from "./browser-capture.js";
 import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
+import { redactText } from "../redact.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
 
 export interface AcpMcpServer {
@@ -110,7 +111,9 @@ export class AcpConnection {
 	}
 
 	get stderrTail(): string {
-		return this.#stderrTail;
+		// Redacted at the boundary: the raw tail stays internal, every consumer
+		// (doctor display, driver exit logs, failure messages) sees redacted text.
+		return redactText(this.#stderrTail);
 	}
 
 	/** Gate B watch: latched true once any session/update frame carried
@@ -152,8 +155,8 @@ export class AcpConnection {
 		// try/catch in #write cannot see them. Without this listener an EPIPE
 		// (server died mid-handshake) is uncaught and kills pi.
 		child.stdin?.on("error", (err) => {
-			this.#opts.log("stdin-error", { message: err.message });
-			if (!this.#exited && !this.#killed) this.#finish(err.message);
+			this.#opts.log("stdin-error", { message: redactText(err.message) });
+			if (!this.#exited && !this.#killed) this.#finish(redactText(err.message));
 		});
 
 		const rpc = new JsonRpcSession({
@@ -169,12 +172,14 @@ export class AcpConnection {
 			this.#stderrTail = (this.#stderrTail + chunk).slice(-8192);
 		});
 		child.on("error", (err) => {
-			this.#opts.log("spawn-error", { message: err.message });
-			this.#finish(err.message);
+			this.#opts.log("spawn-error", { message: redactText(err.message) });
+			this.#finish(redactText(err.message));
 		});
 		child.on("exit", (code, signal) => {
 			this.#opts.log("exit", { code: code ?? signal ?? "?" });
-			this.#finish(this.#stderrTail.trim());
+			// The reason rides into pending-request rejections, so it must be
+			// redacted here (server stderr can carry auth material).
+			this.#finish(redactText(this.#stderrTail.trim()));
 		});
 
 		const result = (await this.request(
@@ -444,7 +449,7 @@ export class AcpConnection {
 		this.#authUrlWatcher?.close();
 		this.#authUrlWatcher = undefined;
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
-		this.#opts.onExit({ code: null, signal: null, stderrTail: this.#stderrTail });
+		this.#opts.onExit({ code: null, signal: null, stderrTail: redactText(this.#stderrTail) });
 	}
 }
 
