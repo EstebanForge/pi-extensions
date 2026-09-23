@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Single-package release: bump one package version, commit, tag.
 // Publishing stays separate: npm run pub <name>
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
