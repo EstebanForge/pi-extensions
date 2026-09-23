@@ -22,6 +22,8 @@ export interface UsageEstimateInput {
 	mode: UsageEstimate;
 	/** Full outgoing prompt text (input side; always regex-estimated). */
 	prompt: string;
+	/** Cached estimate for repeated live updates during the same turn. */
+	inputTokens?: number;
 	/** ACP embeddedContext resource text (G1 digest): also reaches the model. */
 	contextText?: string;
 	/** Per-delta token sums (mode "estimate"). Summing per delta, like
@@ -38,7 +40,7 @@ export interface UsageEstimateInput {
  *  reporting (mode off, or a turn with no prompt and no output). */
 export function synthesizeUsage(input: UsageEstimateInput): AgyUsage | undefined {
 	if (input.mode === "off") return undefined;
-	const inputTokens = estimateTokens(
+	const inputTokens = input.inputTokens ?? estimateTokens(
 		input.contextText ? `${input.prompt}\n${input.contextText}` : input.prompt,
 	);
 	const thoughtTokens =

@@ -16,7 +16,7 @@ Multi-turn works. The provider binds a pi session to an agy conversation id (per
 Turns run through one of two engines behind the same provider surface (`config.engine`, default `stream-json`):
 
 - **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
-- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display shows client-side ESTIMATES until Google ships usage; `acp.usageEstimate` off to keep zeros) and no cancel (abort tears the server down and reloads it next turn).
+- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
 
 The choice of engine is left to the user, with the trade-offs explained in the tool: a first-run picker modal asks once on a fresh install (stream-json preselected; `esc` defers, and the modal reappears next start), and `/agy engine` with no arguments reopens it anytime. An `acp` pick downloads the ~1.5 GB server binary and starts the Google sign-in immediately; a restart applies the engine. With stream-json active and the `agy` binary missing, pi warns on every start until the binary is found.
 
@@ -38,7 +38,7 @@ Residual limits (with or without the bridge):
 
 While agy is the active model it normally cannot see pi's universe of extensions: agentmemory, codegraph, web search, slack/asana, the `Ask*` delegations, and any other installed pi tool. This extension optionally bridges that gap.
 
-The bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and a `tools/call` routes into pi's own tool loop via the round-trip described below. Discovery has two layers. The provider's agy gets a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the driver passes that dir as an extra `--add-dir` when it spawns agy. A per-pid entry (`pi-bridge-<pid>`) is also registered in the user's global agy config (`~/.gemini/config/mcp_config.json`; foreign servers preserved, stale entries swept at start), so agy builds that read only the global config still find the bridge.
+The bridge starts a localhost MCP server inside pi's process. The exposed catalog is computed live from pi's active tools on every `tools/list` and re-checked immediately before every `tools/call`: the `bridgeTools` mode, the session's `/agy tools` hidden set, and the bridge's own internal tools (`AskAntigravity`, the display-only `antigravity` wrapper, `activate_skill`, `bridge_poll_result`, the `agy_web_search`/`agy_read_url` wrappers) are filtered each time, and a call for anything outside the fresh set is rejected - a cached MCP catalog is not authorization. A call that passes routes into pi's own tool loop via the round-trip described below. Discovery has two layers. The provider's agy gets a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the driver passes that dir as an extra `--add-dir` when it spawns agy. A per-pid entry (`pi-bridge-<pid>`) is also registered in the user's global agy config (`~/.gemini/config/mcp_config.json`; foreign servers preserved, stale entries swept at start), so agy builds that read only the global config still find the bridge.
 
 **No patch required.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call. This is the same mechanism tianzuo/pi-antigravity uses; upstream pi APIs only.
 
@@ -46,7 +46,7 @@ The bridge starts a localhost MCP server inside pi's process. `tools/list` retur
 
 **Recursion safety.** Only the provider's agy receives the extra `--add-dir`. `AskAntigravity` is also filtered from the exposed tool list. Its delegated `agy -p` spawns with just the workspace, and for the whole delegated run the bridge hides its global per-pid entries: disabled before the spawn, released only on process close or error - agy watches the config and hot-reloads MCP servers on file changes, so a mid-run re-enable would poke the live delegation back into pi. A cross-process marker (`suppression.json` in the bridge's extensions-data dir) coordinates concurrent delegations: entries come back only when no live delegation remains, a session starting mid-delegation registers its own entry disabled, and the session-start heal re-enables only once the last delegator is gone (dead entries pruned by pid liveness with a 24h age bound). The inner agy therefore sees no bridge and cannot re-enter pi. Foreign servers in the global config are never touched.
 
-**Cost / fan-out.** Every registered pi tool except builtins (and `AskAntigravity`) is exposed, including other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a new cost/time fan-out vector that did not exist before this feature.
+**Cost / fan-out.** Every registered pi tool except builtins and the bridge's own internal tools is exposed (respecting the `bridgeTools` mode and any `/agy tools` hides), including other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a new cost/time fan-out vector that did not exist before this feature.
 
 **Security.** The MCP server binds to `127.0.0.1` only and requires a per-session shared-secret header (`x-bridge-token`) that agy sends from the bridge config; browsers cannot set custom headers on a simple cross-origin POST, so this blocks web CSRF against the loopback server. Request bodies are size-capped. This is intended for single-user developer machines: any local process running as the same user can read the token from the per-pid config and call the exposed tools, so do not run it on a shared host where you do not trust other same-user processes.
 
@@ -64,6 +64,12 @@ When the bridge is on, agy also gets one `activate_skill` tool whose enum is
 your pi Agent Skills catalog; calling it returns the SKILL.md body. The bridge
 answers it directly, no pi round-trip. `/agy doctor` prints driver counters,
 bridge port, and the last lifecycle events without spending tokens.
+
+On the ACP engine there is no re-exec: agy's own native tool steps render as
+display-only cards in pi instead - a status icon plus the file path with
+colored diff lines, the command line, or the captured output - streamed as the
+steps start and complete. The stream-json engine keeps its native re-exec
+cards for read-only steps.
 
 ## Approval gate (agy native tools)
 
@@ -110,13 +116,14 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 | Key | Values | Default |
 | --- | --- | --- |
 | `askTool` | `on` (register the AskAntigravity delegation tool), `off` (no delegation tool; provider and models only) | `on` |
+| `webTools` | `off` (no web tools), `on` (register `agy_web_search` + `agy_read_url` as Pi tools, usable by ANY provider's model). Each call spawns a one-shot search-only `agy` agent (plan mode, bridge MCP inheritance off), gates the answer on an observed native `search_web`/`read_url_content` step, and spends Antigravity quota. Off by default: Antigravity sessions already have native web tools on both engines; these serve other providers | `off` |
 | `bridgeTools` | `none` (bridge off), `all` (every non-builtin tool, incl. other `Ask*` delegations), `mcp` (pi-mcp-adapter tools + skills bridge only) | `all` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 | `systemPrompt` | `on` (prepend pi's system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` - to the first prompt of each new agy conversation, plus a tool-priority note: Pi Bridge tools win over agy's native interactive ones, which never reach the user) or `off` (agy-native behavior) | `on` |
 | `turnTimeoutMin` | Overall cap on ONE agy turn, minutes, both engines. When it fires, the bridge kills the agy process mid-task ("ACP turn exceeded the 10m deadline" / "agy exceeded the 10m turn timeout") - it is a bridge cap, not a Google server limit. Default is TTY-aware: `0` (no cap) on an interactive pi - you are the backstop with Esc; `20` headless, where nobody can abort and one runaway turn blocks the serialized turn queue. Opt into a gate with 1-1440 (free type via `config.json` or `/agy timeout <1-1440|off>`, or the `/agy` picker's preset list); `0` disables explicitly; anything else falls back to the TTY-aware default. The 5m inactivity stall guard always still bounds a hung server | `0` TTY / `20` headless |
 | `inactivityTimeoutMin` | Silence cap, minutes, both engines: no stream-json stdout / no ACP session/update for this long fails the turn as a stall. `0` disables the guard | `5` |
 
-Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_ASK_TOOL`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`, `AGY_TURN_TIMEOUT_MIN`, `AGY_INACTIVITY_TIMEOUT_MIN`. Env wins over the file, so while `AGY_DIGEST` or `AGY_SYSTEM_PROMPT` is set, the matching `/agy digest` or `/agy system-prompt` toggle persists a value that never takes effect.
+Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_ASK_TOOL`, `AGY_WEB_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`, `AGY_TURN_TIMEOUT_MIN`, `AGY_INACTIVITY_TIMEOUT_MIN`. Env wins over the file, so while `AGY_DIGEST` or `AGY_SYSTEM_PROMPT` is set, the matching `/agy digest` or `/agy system-prompt` toggle persists a value that never takes effect.
 
 The `activate_skill` catalog mirrors pi's directory-based skill discovery: the two global dirs plus project dirs, the latter only when pi has trusted the project (same gate pi itself applies). Pi's other skill sources - the `skills` settings array, `package.json` entries, and `--skill` CLI paths - are not mirrored and won't appear in the catalog.
 
@@ -137,7 +144,9 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy thinking low|medium|high fallback thinking tier for the AskAntigravity tool; callers may override per call
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
 /agy system-prompt on|off send pi's system prompt + AGENTS.md + the Pi Bridge tool-priority note to new agy conversations (default on)
-/agy bridge all|mcp|none  which pi tools the MCP bridge exposes to agy (default all; none = bridge off)
+/agy bridge all|mcp|none  which pi tools the MCP bridge exposes to agy (default all; none = bridge off; a running server picks up the new catalog immediately, a stopped one on the next start)
+/agy tools [hide|show <name>|reset]   session-only bridge-catalog hides (multi-word names OK; reset restores the full set; bare lists exposed + hidden; never touches saved config)
+/agy web on|off            register the agy_web_search + agy_read_url pi tools for ANY provider's model (default off; applies on the next pi start or /reload; every call spawns agy and spends Antigravity quota)
 /agy acp-bin <path|auto>  point the ACP engine at a specific server binary (auto = setup installs, or AGY_ACP_BIN; applies on the next ACP turn)
 /agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp is beta and runs self-service setup: binary install + auth bootstrap). No arguments opens the engine picker modal (TUI)
 /agy auth-manual             manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
@@ -170,9 +179,12 @@ For isolation when running any agent that executes commands without a confirmati
 | `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
 | `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
 | `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
+| `AGY_USAGE_ESTIMATE` | ACP token display: `estimate` (default; live client-side per-delta estimates), `direct` (pass through the server's own per-delta counts when it sends them), `off` (no usage display). Anything else falls back to `estimate`. Wins over the config file. |
 | `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |
 | `AGY_DEFAULT_THINKING` | Default thinking tier for the `AskAntigravity` tool: `low`/`medium`/`high`. Anything else falls back to `medium`. Wins over the config file. |
 | `AGY_DEBUG` | `1`/`true`/`on` writes the full trail to the daily log (driver lifecycle, raw bridge traffic). Default off: **only `error` records land on disk** - routine disk writes are zero for regular users, and warnings surface as UI toasts instead. |
+| `AGY_APPROVALS` | Approval gate mode: `auto` (default; gate on only when a pi permission extension is detected), `shadow` (force the shadow-tool gate on), `dedicated`, `off`. Unknown values fall back to `auto`, so a typo can never force the gate on. Wins over `config.approvals.gateMode`. |
+| `AGY_APPROVALS_MODE` | Fallback decision when no permission extension answers a gated call: `ask` (interactive prompt), `allow`, `deny` (headless default). Wins over `config.approvals.mode`. |
 
 ## Debug logs
 

@@ -73,6 +73,8 @@ interface ActiveTurn {
 	thoughtTokens: number;
 	textDeltas: number;
 	thoughtDeltas: number;
+	/** Estimated once, not re-tokenized for every streaming delta. */
+	estimatedInputTokens: number;
 	sawResult: boolean;
 	/** True once the prompt RPC was issued. Abort before this point has
 	 *  nothing to cancel: probing would risk a success-as-noop answer from a
@@ -89,12 +91,7 @@ interface ActiveTurn {
 	idleTimer?: ReturnType<typeof setTimeout>;
 	/** toolCallId → tool name + args + optional native diff (diff rides on
 	 *  the pending tool_call frame; updates don't repeat it). */
-	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff }>;
-	/** Last pending native tool seen. The supersede quirk (run 6, finding 7)
-	 *  means the executing call can arrive under a DIFFERENT id than the
-	 *  approved one; unknown-id updates adopt this so the diff and name are
-	 *  not lost. */
-	lastNativeTool?: { name: string; args: Record<string, unknown>; diff?: AcpEditDiff };
+	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }>;
 }
 
 /** Recombine the provider's (base slug, effort) into the FULL ACP model slug.
@@ -309,6 +306,10 @@ export class AcpDriver implements TurnDriver {
 		// Timers: overall (turn deadline, pause-aware) + idle (inactivity).
 		this.#armOverall(turn);
 		this.#armIdle(turn);
+		// Live usage is explicitly an estimate: ACP 1.1.1 does not forward the
+		// SDK's exact usage_metadata onto the ACP wire. Emit input first; output
+		// estimates advance with each text/thought delta below.
+		this.#emitLiveEstimate(turn);
 
 		// Prompt. Updates stream through the connection's onUpdate callback.
 		try {
@@ -317,11 +318,15 @@ export class AcpDriver implements TurnDriver {
 			const result = await conn.prompt(turn.sessionId, request.prompt, request.images, request.contextBlock);
 			if (turn.closed) return;
 			turn.sawResult = true;
+			// When a future server fills ACP PromptResponse.usage, exact counts
+			// supersede every partial estimate at the end of the turn.
+			if (result.usage) this.#emit(turn, { type: "usage", usage: result.usage });
 			const mapped = mapStopReason(result.stopReason);
 			this.#settle(turn, {
 				conversationId: turn.sessionId,
 				status: mapped.status,
 				response: turn.response.text,
+				usage: result.usage,
 				error: mapped.error,
 				finished: true,
 				aborted: mapped.aborted,
@@ -376,42 +381,49 @@ export class AcpDriver implements TurnDriver {
 				if (emit) {
 					turn.textDeltas += 1;
 					turn.textTokens += estimateTokens(emit);
+					this.#emitLiveEstimate(turn);
 					this.#emit(turn, { type: "text", delta: emit });
 				}
 				return;
 			}
 			case "thought": {
+				if (!mapped.delta) return;
 				turn.thoughtDeltas += 1;
 				turn.thoughtTokens += estimateTokens(mapped.delta);
+				this.#emitLiveEstimate(turn);
 				this.#emit(turn, { type: "thought", delta: mapped.delta });
 				return;
 			}
 			case "tool_start": {
-				const entry = { name: mapped.name, args: mapped.args, diff: mapped.diff };
+				const entry = { name: mapped.name, args: mapped.args, diff: mapped.diff, mcpServer: mapped.mcpServer };
 				turn.toolCalls.set(mapped.toolCallId, entry);
-				turn.lastNativeTool = { ...entry };
-				this.#emit(turn, { type: "tool_start", name: mapped.name, args: mapped.args });
+				this.#emit(turn, { type: "tool_start", name: mapped.name, args: mapped.args, mcpServer: mapped.mcpServer });
 				return;
 			}
 			case "tool_done": {
 				let entry = turn.toolCalls.get(mapped.toolCallId);
-				if (!entry && turn.lastNativeTool) {
-					// Unknown id with a recent native tool: adopt it (supersede).
-					entry = { ...turn.lastNativeTool };
-					turn.toolCalls.set(mapped.toolCallId, entry);
-					turn.lastNativeTool = undefined;
+				if (!entry && turn.toolCalls.size === 1) {
+					// The server can finish an approved tool under a different id.
+					// Adopt only when exactly one call is pending: with concurrent
+					// tools, guessing would attach an edit diff to the wrong file.
+					// Residual: an unrelated done with an unknown id still pairs
+					// with the pending entry; strictly better than guessing ANY id.
+					entry = turn.toolCalls.values().next().value;
+					turn.toolCalls.clear();
 				}
+				turn.toolCalls.delete(mapped.toolCallId);
 				const name = entry?.name ?? "tool";
 				const args = entry?.args ?? {};
 				// Native diff from the stored tool_call frame; the update's own
 				// diff (future builds) wins when present.
-				this.#emit(turn, { type: "tool_done", name, args, output: mapped.output, diff: mapped.diff ?? entry?.diff });
+				this.#emit(turn, { type: "tool_done", name, args, output: mapped.output, diff: mapped.diff ?? entry?.diff, mcpServer: mapped.mcpServer ?? entry?.mcpServer });
 				return;
 			}
 			case "tool_error": {
 				const entry = turn.toolCalls.get(mapped.toolCallId);
+				turn.toolCalls.delete(mapped.toolCallId);
 				const name = entry?.name ?? "tool";
-				this.#emit(turn, { type: "tool_error", name, message: mapped.message });
+				this.#emit(turn, { type: "tool_error", name, message: mapped.message, mcpServer: mapped.mcpServer ?? entry?.mcpServer });
 				return;
 			}
 			case "replay_user":
@@ -567,6 +579,7 @@ export class AcpDriver implements TurnDriver {
 			thoughtTokens: 0,
 			textDeltas: 0,
 			thoughtDeltas: 0,
+			estimatedInputTokens: estimateTokens(request.contextBlock?.text ? `${request.prompt}\n${request.contextBlock.text}` : request.prompt),
 			sawResult: false,
 		promptStarted: false,
 			aborted: false,
@@ -717,16 +730,26 @@ export class AcpDriver implements TurnDriver {
 		return (typeof opt === "function" ? opt() : opt) ?? "estimate";
 	}
 
+	/** Update Pi's partial usage before the next visible text/thought delta.
+	 *  This is not provider-reported billing or an exact context-window count. */
+	#emitLiveEstimate(turn: ActiveTurn): void {
+		const usage = this.#syntheticUsage(turn);
+		if (usage) this.#emit(turn, { type: "usage", usage });
+	}
+
 	#syntheticUsage(turn: ActiveTurn): AgyUsage | undefined {
 		const mode = this.#usageMode();
 		if (mode === "off") return undefined;
-		// Gate B latch: any server frame with usage/token keys means real
-		// usage exists upstream; estimates must never shadow it.
-		if (this.#conn?.usageSeen) return undefined;
+		// Superseded only by EXACT PromptResponse.usage. Diagnostic usage-shaped
+		// frames (context windows, occupancy) must not silence the estimates:
+		// the connection outlives turns and no exact data ever replaces them
+		// on ACP 1.1.1 (peer review 2026-09-23).
+		if (this.#conn?.exactUsageSeen) return undefined;
 		return synthesizeUsage({
 			mode,
 			prompt: turn.request.prompt,
 			contextText: turn.request.contextBlock?.text,
+			inputTokens: turn.estimatedInputTokens,
 			textTokens: turn.textTokens,
 			thoughtTokens: turn.thoughtTokens,
 			textDeltas: turn.textDeltas,

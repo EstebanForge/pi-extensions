@@ -174,6 +174,8 @@ async function handle(msg) {
 
     case "session/prompt": {
       pendingPromptId = id;
+      // Multi-turn: each new prompt replays the scenario's frames again.
+      streaming = false;
       if (scenario === "tool-diff") {
         // Run-6 wire shapes verbatim: diff on the PENDING tool_call, the
         // completed update carries only rawOutput under a DIFFERENT id

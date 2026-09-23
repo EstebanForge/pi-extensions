@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-09-23
+
+### Added
+
+- **Opt-in web tools for any provider's model** (`agy_web_search`, `agy_read_url`). Pi ships no web tools and no MCP by default, so sessions driven by non-Antigravity models had no way to search or fetch. With `webTools: on` (`AGY_WEB_TOOLS`, `/agy web on`; off by default because Antigravity sessions already have native web tools on both engines), each call spawns a one-shot search-only `agy` agent (`--mode plan`, bridge MCP inheritance off, per-call agent dir under `~/.gemini/config/agents/pi-bridge-web-*` removed in `finally`), enforces a 120 s deadline and a 2 MiB output cap, tolerates agy's `OK`/`SUCCESS` result-status drift, requires an observed native `search_web`/`read_url_content` step before trusting the answer, and refuses the call if the agent touches any disallowed tool - the init frame advertises a broad tool list regardless of the agent's `tools:` restriction, so the response-side gate is the real anti-hallucination device. Stale agent dirs from crashed calls are swept by pid liveness at registration (marker-less dirs after a 24 h grace); dir names carry a random nonce so same-millisecond parallel calls cannot collide. URLs are scheme-allowlisted (http/https); queries cap at 2000 chars. Every call spends Antigravity subscription quota.
+- **ACP native tool display cards.** The ACP engine had no card story: agy's own tool steps surfaced only as thinking-stream labels. agy's tool events now render as display-only pi entries (status icon plus the file path with colored diff lines, the first command line, or the captured output; persisted content bounded at 4000/12000/500 chars), streamed as steps start and complete. Events attributed to `mcpServer: "pi-bridge"` are filtered out, so bridge round-trips that already produce genuine pi tool cards never double-render. Stream-json keeps its stronger native re-exec cards.
+- **Live ACP usage estimates.** The ACP engine showed zeros until a turn settled (Gate B). Estimates now stream live: the turn's prompt is tokenized once, each text/thought delta updates the running counts, and an `ACP ≈ X in / Y out` status line tracks the turn (suppressed when `acp.usageEstimate` is `off`). Estimates are superseded only by a real `PromptResponse.usage` the day the server sends one; diagnostic usage-shaped frames (context windows, occupancy) never disable them.
+- **`/agy tools` session-only catalog control.** `hide <name>` / `show <name>` / `reset` filter the bridge catalog for the current session only (multi-word names OK; names validated against pi's registered tools; saved config never touched). Bare `/agy tools` lists exposed and hidden tools.
+
+### Changed
+
+- **The bridge catalog is computed live and guarded at dispatch.** The exposed set used to be computed once at registration; `/mcp` or `pi.setActiveTools()` changes mid-session left stale tools callable. The catalog is now derived from pi's live active set on every `tools/list` AND re-checked immediately before every `tools/call` - a call for anything outside the fresh set is rejected (`a cached MCP catalog is not authorization`). The bridge's own internal tools (AskAntigravity, the display-only `antigravity` wrapper, `activate_skill`, `bridge_poll_result`, `agy_web_search`/`agy_read_url`) are excluded from the catalog, closing a gap where the wrapper tool was exposed. `/agy bridge` mode changes apply to a running server immediately; a stopped one picks them up on the next start.
+- **Global MCP registration is stream-json-only; hygiene is universal.** Registering and unregistering the bridge's per-pid entry in `~/.gemini/config/mcp_config.json` now happens only for the stream-json engine (ACP supplies the bridge per-session and never touches the global config), while the stale-entry sweep and the stuck-suppression heal run for BOTH engines - an ACP-only session no longer leaves dead entries or a stuck suppression flag behind by a crashed stream-json session.
+
+### Fixed
+
+- **Concurrent native tool results no longer cross-pair on ACP.** When several of agy's tools ran at once, a completed event for one could attach its diff/output to a different pending call. Adoption now happens only when exactly one call is pending, finished and errored ids leave the tracking map, and a known-acceptable residual is documented at the site: a done event for a genuinely unrelated call can still pair with the single pending entry.
+- **Diagnostic usage frames can no longer kill ACP estimates.** The old suppression latch tripped on ANY usage-shaped frame and lived for the whole connection, so one context-window notice in turn one silenced the live estimates for every later turn, with no exact data ever replacing them. Suppression now keys on a real per-turn `PromptResponse.usage` only; a two-turn regression test pins that estimates survive the diagnostic frames.
+
 ## [1.6.3] - 2026-09-22
 
 ### Fixed

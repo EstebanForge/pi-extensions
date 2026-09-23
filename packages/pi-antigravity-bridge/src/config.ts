@@ -107,6 +107,11 @@ export interface AgyConfig {
 	 *  and models (no delegation tool in the model's window context).
 	 *  Takes effect at pi start (or /reload). */
 	askTool: boolean;
+	/** Register the agy_web_search + agy_read_url Pi tools. Default OFF:
+	 *  inside Antigravity sessions the model already has native web tools;
+	 *  these exist for NON-Antigravity provider sessions and every call
+	 *  spends Antigravity quota. Takes effect at pi start (or /reload). */
+	webTools: boolean;
 	/** Set after the one-time notice about a leftover legacy invokeTool patch
 	 *  on the installed pi. The notice never repeats; /agy patch-cleanup is
 	 *  always available. */
@@ -175,6 +180,7 @@ const DEFAULTS: AgyConfig = {
 	defaultModel: "flash",
 	defaultThinking: "medium",
 	askTool: true,
+	webTools: false,
 	bridgeTools: "all",
 	digest: false,
 	systemPrompt: true,
@@ -257,6 +263,10 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		? ["1", "true", "on"].includes(process.env.AGY_ASK_TOOL.toLowerCase())
 		: file.askTool ?? DEFAULTS.askTool;
 
+	const webTools = process.env.AGY_WEB_TOOLS !== undefined
+		? ["1", "true", "on"].includes(process.env.AGY_WEB_TOOLS.toLowerCase())
+		: file.webTools ?? DEFAULTS.webTools;
+
 	const bridgeRaw = (process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp"
@@ -319,6 +329,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		defaultModel,
 		defaultThinking,
 		askTool,
+		webTools,
 		bridgeTools,
 		digest,
 		systemPrompt,

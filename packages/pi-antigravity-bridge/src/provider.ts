@@ -314,6 +314,16 @@ export interface BlockState {
 	started: boolean;
 }
 
+export interface NativeDisplayEvent {
+	name: string;
+	mcpServer?: string;
+	status: "started" | "completed" | "failed";
+	path?: string;
+	command?: string;
+	output?: string;
+	diff?: string;
+}
+
 export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
@@ -336,6 +346,9 @@ export interface StreamSimpleDeps {
 	 *  read decides (tests); production wiring always passes it so a
 	 *  mid-session config flip cannot move one side of a parked turn. */
 	engine?: "stream-json" | "acp";
+	/** Output-only ACP tool events; persisted as TUI entries, never sent to
+	 *  Antigravity or dispatched through Pi's executable tools. */
+	onNativeEvent?: (event: NativeDisplayEvent) => void;
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -902,6 +915,7 @@ export interface DriverDeps {
 	roundTrips: ToolRoundTrips;
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
+	onNativeEvent?: (event: NativeDisplayEvent) => void;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
@@ -915,6 +929,7 @@ export interface ActivityFeatures {
 	nativeActive?: (name: string) => boolean;
 	roundTrips?: ToolRoundTrips;
 	engine?: "stream-json" | "acp";
+	onNativeEvent?: (event: NativeDisplayEvent) => void;
 }
 
 /** Process-wide counter: round-trip ids must never repeat across turns in
@@ -976,7 +991,13 @@ export function consumeActivity(
 			toPiUsage(activity.usage, partial.usage);
 			return "continue";
 		case "tool_start":
-			// Rendering happens on completion (output/diff available).
+			// Transient status while Antigravity executes; no Pi tool call or
+			// model-facing result is produced. Persist a card only on completion.
+			if (feats.engine === "acp" && feats.onNativeEvent) {
+				try {
+					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "started" });
+				} catch { /* UI failure must not fail the generation. */ }
+			}
 			return "continue";
 /** File-path argument of an ACP edit tool (observed: `file_path`); other
  *  tool kinds (execute, read) don't carry one. Returns undefined for
@@ -998,27 +1019,33 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 			//      output the stream-json engine produces, one readFileSync.
 			if (feats.engine === "acp") {
 				const d = activity.diff;
-				if (d) {
-					appendThinking(stream, blocks, `[agy edit: ${path.basename(d.path)}]\n`);
-					const diffText = formatInlineDiff(d.oldText ?? "", d.newText);
-					if (diffText) appendThinking(stream, blocks, `${diffText}\n`);
-					return "continue";
-				}
 				const editFile = ACP_EDIT_TOOLS.has(activity.name) ? acpEditFileArg(activity.args) : undefined;
-				if (editFile) {
-					const absFile = path.isAbsolute(editFile) ? editFile : path.resolve(cwd, editFile);
-					appendThinking(stream, blocks, `[agy edit: ${path.basename(absFile)}]\n`);
+				const file = d?.path ?? (editFile ? (path.isAbsolute(editFile) ? editFile : path.resolve(cwd, editFile)) : undefined);
+				let diffText = d ? formatInlineDiff(d.oldText ?? "", d.newText) : undefined;
+				if (!d && file) {
 					let disk = "";
 					try {
-						disk = fs.readFileSync(absFile, "utf8");
+						disk = fs.readFileSync(file, "utf8");
 					} catch {
 						/* deleted or unreadable: diffEdit degrades to a summary */
 					}
-					const outcome = diffCtx.diffEdit(absFile, disk);
-					if (outcome.text) appendThinking(stream, blocks, `${outcome.text}\n`);
-					return "continue";
+					diffText = diffCtx.diffEdit(file, disk).text;
 				}
-				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+				const command = ["CommandLine", "command_line", "command"].map((k) => activity.args[k]).find((v): v is string => typeof v === "string" && v.length > 0);
+				let displayed = false;
+				try {
+					if (feats.onNativeEvent) {
+						feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "completed", path: file, command, output: activity.output, diff: diffText });
+						displayed = true;
+					}
+				} catch { /* A stale renderer must never fail the model turn. */ }
+				if (displayed) return "continue";
+				if (file) {
+					appendThinking(stream, blocks, `[agy edit: ${path.basename(file)}]\n`);
+					if (diffText) appendThinking(stream, blocks, `${diffText}\n`);
+				} else {
+					appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+				}
 				return "continue";
 			}
 			// G8 (stream-json): agy file edits surface a git-sourced diff in a
@@ -1066,6 +1093,12 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 			}
 		}
 		case "tool_error":
+			if (feats.engine === "acp" && feats.onNativeEvent) {
+				try {
+					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "failed", output: activity.message });
+					return "continue";
+				} catch { /* Fall back to a thinking label. */ }
+			}
 			appendThinking(stream, blocks, `[agy tool: ${activity.name} failed: ${activity.message}]\n`);
 			return "continue";
 		case "bridge_call": {
@@ -1227,6 +1260,7 @@ async function runTurnDriver(
 		nativeActive: deps.nativeActive,
 		roundTrips: deps.roundTrips,
 		engine: deps.engine,
+		onNativeEvent: deps.onNativeEvent,
 	};
 
 	for (;;) {
@@ -1293,6 +1327,7 @@ export function createStreamSimple(
 				roundTrips,
 				replay: deps.replay,
 				nativeActive: deps.nativeActive,
+				onNativeEvent: deps.onNativeEvent,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream

@@ -50,6 +50,7 @@ import {
 	createStreamSimple,
 	formatEscalatedAck,
 	formatPollAnswer,
+	type NativeDisplayEvent,
 } from "../src/provider.js";
 import {
 	createShadowTool,
@@ -69,6 +70,7 @@ import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, sa
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
+import { registerWebTools } from "../src/web-tools.js";
 import { bridgeMcpConfigDir, startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
@@ -86,6 +88,7 @@ import {
 	type SkillLite,
 } from "../src/skills.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
+import { bridgedPiTools } from "../src/bridge-catalog.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
@@ -177,7 +180,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	};
 	fileLog.log(
 		"extension-load",
-		{ engine, models: models.length, fallback: usingFallback, bridge: loadConfig().bridgeTools, askTool: loadConfig().askTool },
+		{ engine, models: models.length, fallback: usingFallback, bridge: loadConfig().bridgeTools, askTool: loadConfig().askTool, webTools: loadConfig().webTools },
 		"info",
 	);
 
@@ -185,6 +188,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
 	let mcpHandle: McpServerHandle | null = null;
+	// Session-only visibility overrides; never change either application's MCP config.
+	const hiddenBridgeTools = new Set<string>();
+	const getBridgeTools = () => bridgedPiTools(pi.getAllTools(), pi.getActiveTools(), loadConfig().bridgeTools, hiddenBridgeTools);
 	// Approval-gate hook script (per-pid, token embedded). Written at session
 	// start when the gate is active; removed at session_shutdown.
 	let gateScriptPath: string | null = null;
@@ -328,12 +334,53 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			),
 	);
 	const replay = new WrapperReplay();
+	// ACP tool activity is display-only: durable Pi entries with native-looking
+	// titles and optional diffs. Unlike a synthetic Pi toolCall this does not
+	// re-execute edits, park the turn, or add tool results to model context.
+	if (engine === "acp") {
+		pi.registerEntryRenderer<NativeDisplayEvent>("agy-native-event", (entry, { expanded }, theme) => {
+			const event = entry.data;
+			const title = (event?.path ? path.basename(event.path) : event?.command?.split(/\r?\n/, 1)[0] ?? event?.name ?? "tool").slice(0, 160);
+			const status = event?.status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
+			const lines = [`${status} ${theme.fg("toolTitle", event?.name ?? "Antigravity")} ${theme.fg("muted", title)}`];
+			if (expanded) {
+				if (event?.path) lines.push(theme.fg("dim", event.path));
+				if (event?.diff) {
+					for (const line of event.diff.split("\n")) {
+						const color = line.startsWith("+") ? "toolDiffAdded" : line.startsWith("-") ? "toolDiffRemoved" : "toolDiffContext";
+						lines.push(theme.fg(color, line));
+					}
+				}
+				if (event?.output && (!event.diff || event.status === "failed")) lines.push(theme.fg("toolOutput", event.output));
+			}
+			return new Text(lines.join("\n"), 0, 0);
+		});
+	}
+	let pendingNativeTools = 0;
+	const onNativeEvent = (event: NativeDisplayEvent): void => {
+		if (engine !== "acp" || event.mcpServer === "pi-bridge") return;
+		// MCP calls through our own pi-bridge already have genuine Pi tool cards;
+		// only native Antigravity / other MCP events need display-only entries.
+		if (event.status === "started") {
+			pendingNativeTools++;
+			activeUi?.setStatus("agy-native", `agy ${event.name}… (${pendingNativeTools})`);
+			return;
+		}
+		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
+		if (pendingNativeTools === 0) activeUi?.setStatus("agy-native", undefined);
+		// Bound persisted session size; the ACP result and diff may be megabytes.
+		pi.appendEntry<NativeDisplayEvent>("agy-native-event", {
+			...event,
+			output: event.output?.slice(0, 4000),
+			diff: event.diff?.slice(0, 12000),
+			command: event.command?.slice(0, 500),
+		});
+	};
 	// Native re-exec only emits for builtins actually active in the session;
 	// anything else (or an unknown name) falls back to the wrapper card.
 	const nativeActive = (name: string): boolean => {
 		try {
-			const getAll = (pi as unknown as { getAllTools: () => Array<{ name: string }> }).getAllTools.bind(pi);
-			return getAll().some((t) => t.name === name);
+			return pi.getActiveTools().includes(name);
 		} catch {
 			return false;
 		}
@@ -354,6 +401,35 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	};
 	streamDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
+	// Pi's normal footer receives the incremental usage above. Mark the
+	// numbers as estimates in the status area too; ACP currently drops the
+	// SDK's exact usage metadata before it reaches the client.
+	if (engine === "acp") {
+		let lastUsageStatus = "";
+		pi.on("message_update", (event, ctx) => {
+			if (!ctx.hasUI || event.message.role !== "assistant" || event.message.provider !== "antigravity" || loadConfig().acp.usageEstimate === "off") return;
+			const { input, output } = event.message.usage;
+			const status = `ACP ≈ ${input} in / ${output} out`;
+			if (status !== lastUsageStatus) {
+				lastUsageStatus = status;
+				ctx.ui.setStatus("agy-usage", status);
+			}
+		});
+		const clearUsageStatus = (_event: unknown, ctx: { hasUI: boolean; ui: ExtensionUIContext }) => {
+			lastUsageStatus = "";
+			if (ctx.hasUI) ctx.ui.setStatus("agy-usage", undefined);
+		};
+		pi.on("agent_end", (event, ctx) => {
+			clearUsageStatus(event, ctx);
+			pendingNativeTools = 0;
+			if (ctx.hasUI) ctx.ui.setStatus("agy-native", undefined);
+		});
+		pi.on("session_shutdown", (event, ctx) => {
+			clearUsageStatus(event, ctx);
+			pendingNativeTools = 0;
+			if (ctx.hasUI) ctx.ui.setStatus("agy-native", undefined);
+		});
+	}
 	const streamSimple = createStreamSimple({
 		entries,
 		store,
@@ -362,6 +438,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		roundTrips,
 		replay,
 		nativeActive,
+		onNativeEvent,
 		engine,
 		log: fileLog.log.bind(fileLog),
 	});
@@ -393,6 +470,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		acpDriver,
 		engine,
 		getMcpPort: () => mcpHandle?.port ?? null,
+		bridgeTools: getBridgeTools,
+		hiddenBridgeTools,
 		acpLog,
 		fileLog,
 		authCapture: authCapture ?? null,
@@ -409,6 +488,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// pi-ask-antigravity keeps deferring even then: off means NO delegation
 	// tool from either package, not a fallback to pi-ask-antigravity.
 	if (loadConfig().askTool) await registerAskAntigravityTool(pi, toolModels, fileLog.log.bind(fileLog));
+	// Web tools are opt-in (config.webTools, default off): Antigravity sessions
+	// already have native web tools; these serve NON-Antigravity providers.
+	if (loadConfig().webTools) registerWebTools(pi, { log: fileLog.log.bind(fileLog) });
 
 	// Display-only wrapper tool: the provider emits mutating agy steps as
 	// toolCalls against it (never re-executed - execute() replays the output
@@ -633,22 +715,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
-		const SKIP = new Set(["AskAntigravity"]);
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
 		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? process.cwd() : undefined);
-		const getAll = (pi as unknown as {
-			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
-		}).getAllTools.bind(pi);
 		const listTools = () => {
-			const all = getAll();
-			const filtered =
-				bridgeMode === "mcp"
-					? all.filter((t) => /pi-mcp-adapter/.test(t.sourceInfo?.source ?? ""))
-					: all.filter((t) => t.sourceInfo?.source !== "builtin");
-			const tools = filtered
-				.filter((t) => !SKIP.has(t.name))
-				.map((t) => {
+			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
+			// this endpoint through session/new or session/load; no global config write.
+			const tools = getBridgeTools().map((t) => {
 					let inputSchema: object = { type: "object", properties: {}, additionalProperties: true };
 					try {
 						if (t.parameters) inputSchema = JSON.parse(JSON.stringify(t.parameters)) as object;
@@ -657,7 +730,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 					return { name: t.name, description: t.description ?? t.name, inputSchema };
 				});
-			if (skills.length > 0) {
+			if (skills.length > 0 && loadConfig().bridgeTools !== "none") {
 				tools.push({
 					name: ACTIVATE_SKILL_TOOL_NAME,
 					description: `Activate a pi Agent Skill by name. Catalog:\n${catalogSummary(skills)}`,
@@ -695,6 +768,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				return Promise.resolve(formatPollAnswer(wanted, roundTrips.poll(wanted)));
 			}
 			if (name !== ACTIVATE_SKILL_TOOL_NAME) {
+				// A cached MCP catalog is not authorization. An inactive/hidden tool
+				// must not get parked into Pi, even if agy retained its old schema.
+				if (!getBridgeTools().some((tool) => tool.name === name)) {
+					return Promise.resolve({ content: [{ type: "text", text: `Pi tool ${name} is not active or not exposed to Antigravity` }], isError: true });
+				}
 				return roundTrips.onToolCall(callId, name, args, signal).then((r) => {
 					// Early-ack: answer the HTTP request before agy's ~180s client
 					// deadline with a poll handle; pi keeps executing meanwhile.
@@ -704,7 +782,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				});
 			}
 			const wanted = typeof args.name === "string" ? args.name : "";
-			const skill = findSkillByName(skills, wanted);
+			const skill = loadConfig().bridgeTools !== "none" ? findSkillByName(skills, wanted) : undefined;
 			const body = skill ? readSkillBody(skill) : `unknown skill: ${wanted || "(none given)"}`;
 			return Promise.resolve({
 				content: [
@@ -730,14 +808,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// suppressed are healed here - but only when no live delegation is in
 			// flight anywhere (marker-aware heal). A blind re-enable used to
 			// un-hide the bridge during another session's active delegation.
+			// Global-config hygiene runs on BOTH engines: a crashed stream-json
+			// session must not leave dead-pid entries or stuck suppression flags
+			// for the next one.
 			sweepStaleBridgeServers();
 			healBridgeSuppression();
-			registerBridgeServer({
-				pid: process.pid,
-				port: r.handle.port,
-				token: r.handle.token,
-				tokenHeader: TOKEN_HEADER,
-			});
+			// ACP supplies the bridge per-session (session/new | session/load);
+			// only the stream-json CLI reads the global MCP config.
+			if (engine === "stream-json") {
+				registerBridgeServer({
+					pid: process.pid,
+					port: r.handle.port,
+					token: r.handle.token,
+					tokenHeader: TOKEN_HEADER,
+				});
+			}
 			// --- Approval gate (docs/TODO.md 2.5) ------------------------------
 			// agy native tool calls pass through a pi-side approval: a PreToolUse
 			// hook parks in the bridge, the provider emits a shadow toolUse, and
@@ -862,7 +947,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// ("quit") - the connection kill is identical and nothing runs after.
 		await streamDriver.close("recycle", "session shutdown");
 		await acpDriver.close("recycle", "session shutdown");
-		unregisterBridgeServer(process.pid);
+		if (engine === "stream-json") unregisterBridgeServer(process.pid);
+		hiddenBridgeTools.clear();
 		// Approval gate: unstage hooks and remove the per-pid script. Pending
 		// approvals already failed closed via handle close (bridge shutdown deny).
 		const unstaged = removeGateHooks();
@@ -897,6 +983,8 @@ interface AgyCommandCtx {
 	/** Engine latched at extension load (see the provider wiring note). */
 	engine: Engine;
 	getMcpPort: () => number | null;
+	bridgeTools: () => Array<{ name: string }>;
+	hiddenBridgeTools: Set<string>;
 	/** Shared ACP log sink (login URL surfacing + failure events). */
 	acpLog: (msg: string, data?: unknown) => void;
 	/** Daily file logger (src/daily-log.ts); command + doctor surfacing. */
@@ -916,6 +1004,7 @@ interface PendingConfig {
 	defaultThinking?: ThinkingTier;
 	turnTimeoutMin?: number;
 	askTool?: boolean;
+	webTools?: boolean;
 	bridgeTools?: BridgeTools;
 	digest?: boolean;
 	systemPrompt?: boolean;
@@ -935,6 +1024,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		row("mode:", config.mode),
 		row("permissions:", perm),
 		row("AskAntigravity tool:", config.askTool ? "on" : "off"),
+		row("Web tools:", config.webTools ? "on" : "off"),
 		row("AskAntigravity model:", config.defaultModel),
 		row("AskAntigravity thinking:", config.defaultThinking),
 		row("sessions:", `${ctx.store.size} bound`),
@@ -943,7 +1033,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		row("digest:", config.digest ? "on" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear",
 	].join("\n");
 }
 
@@ -951,7 +1041,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1245,13 +1335,31 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				if (val === "all" || val === "mcp" || val === "none") {
 					const next = saveConfig({ bridgeTools: val });
 					ui?.notify(
-						next.bridgeTools === "none"
-							? "bridge off. The MCP tool bridge will not start on the next pi start (or /reload)."
-							: `bridge tools set to ${next.bridgeTools}. The catalog rebuilds on the next pi start (or /reload).`,
+						ctx.getMcpPort() === null
+							? `bridge ${next.bridgeTools}. The bridge server is not running; /reload to apply.`
+							: `bridge ${next.bridgeTools}. The active catalog and call guard update now; ACP may retain cached schemas until the next session/load.`,
 						"info",
 					);
 				} else {
-					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|none\n  all: every non-builtin pi tool (default). mcp: pi-mcp-adapter tools + skills only. none: bridge off.`, "info");
+					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. none: bridge off.`, "info");
+				}
+				return;
+			}
+			if (sub === "tools") {
+				const name = (args ?? "").trim().split(/\s+/).slice(2).join(" ");
+				if (val === "reset") {
+					ctx.hiddenBridgeTools.clear();
+					ui?.notify("Antigravity tool visibility reset for this Pi session. Pi's active tools are unchanged.", "info");
+				} else if ((val === "hide" || val === "show") && name) {
+					if (!pi.getAllTools().some((tool) => tool.name === name)) {
+						ui?.notify(`Unknown Pi tool: ${name}`, "error");
+						return;
+					}
+					if (val === "hide") ctx.hiddenBridgeTools.add(name);
+					else ctx.hiddenBridgeTools.delete(name);
+					ui?.notify(`${name}: ${val === "hide" ? "hidden from Antigravity" : "visible if active in Pi"}. No MCP config changed.`, "info");
+				} else {
+					ui?.notify(`Exposed active Pi tools: ${ctx.bridgeTools().map((tool) => tool.name).join(", ") || "(none)"}\nHidden in this session: ${[...ctx.hiddenBridgeTools].join(", ") || "(none)"}\n/agy tools hide|show <exact Pi tool name> | reset\nUse Pi's /mcp or pi.setActiveTools() to change the underlying active tools.`, "info");
 				}
 				return;
 			}
@@ -1275,6 +1383,20 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					);
 				} else {
 					ui?.notify(`AskAntigravity tool: ${loadConfig().askTool ? "on" : "off"}\nusage: /agy ask on|off`, "info");
+				}
+				return;
+			}
+			if (sub === "web") {
+				if (val === "on" || val === "off") {
+					const next = saveConfig({ webTools: val === "on" });
+					ui?.notify(
+						next.webTools
+							? "Web tools on: agy_web_search and agy_read_url register on the next pi start (or /reload). Each call spends Antigravity quota."
+							: "Web tools off: agy_web_search and agy_read_url will not register on the next pi start (or /reload).",
+						"info",
+					);
+				} else {
+					ui?.notify(`Web tools: ${loadConfig().webTools ? "on" : "off"}\nusage: /agy web on|off\nExposes agy_web_search + agy_read_url as Pi tools for ANY provider (Antigravity sessions already have native web tools). Default off; each call spends Antigravity quota.`, "info");
 				}
 				return;
 			}
@@ -1368,6 +1490,14 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			values: ["on", "off"],
 		},
 		{
+			id: "web",
+			label: "Web tools",
+			description:
+				"Register agy_web_search + agy_read_url as Pi tools for ANY provider. Default off: Antigravity sessions already have native web tools, and each call spends Antigravity quota. Takes effect on the next pi start (or /reload).",
+			currentValue: config.webTools ? "on" : "off",
+			values: ["on", "off"],
+		},
+		{
 			id: "model",
 			label: "AskAntigravity model",
 			description:
@@ -1437,6 +1567,8 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 					pending.defaultThinking = newValue as ThinkingTier;
 				} else if (id === "ask") {
 					pending.askTool = newValue === "on";
+				} else if (id === "web") {
+					pending.webTools = newValue === "on";
 				} else if (id === "bridge") {
 					pending.bridgeTools = newValue as BridgeTools;
 				} else if (id === "turn-cap") {
@@ -1483,6 +1615,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 				? `permissions=${next.skipPermissions ? "auto-approved" : "prompt"}`
 				: null,
 			pending.askTool !== undefined ? `AskAntigravity tool=${next.askTool ? "on" : "off"}` : null,
+			pending.webTools !== undefined ? `webTools=${next.webTools ? "on" : "off"}` : null,
 			pending.defaultModel !== undefined ? `AskAntigravity model=${next.defaultModel}` : null,
 			pending.defaultThinking !== undefined ? `AskAntigravity thinking=${next.defaultThinking}` : null,
 			pending.bridgeTools !== undefined ? `bridge=${next.bridgeTools}` : null,

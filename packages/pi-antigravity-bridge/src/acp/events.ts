@@ -30,9 +30,9 @@ export interface AcpEditDiff {
 export type MappedUpdate =
 	| { kind: "text"; delta: string }
 	| { kind: "thought"; delta: string }
-	| { kind: "tool_start"; toolCallId: string; name: string; args: Record<string, unknown>; diff?: AcpEditDiff }
-	| { kind: "tool_done"; toolCallId: string; output?: string; diff?: AcpEditDiff }
-	| { kind: "tool_error"; toolCallId: string; message: string }
+	| { kind: "tool_start"; toolCallId: string; name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }
+	| { kind: "tool_done"; toolCallId: string; output?: string; diff?: AcpEditDiff; mcpServer?: string }
+	| { kind: "tool_error"; toolCallId: string; message: string; mcpServer?: string }
 	| { kind: "replay_user" }
 	| null;
 
@@ -56,6 +56,7 @@ export function mapUpdate(update: unknown): MappedUpdate {
 				toolCallId: id,
 				name: metaToolName(u._meta) ?? toolName(u.title, u.kind),
 				args: rawArguments(u.rawInput),
+				mcpServer: stringField(recordField(recordField(u._meta).mcp).server),
 				// Edits carry their native diff HERE, on the pending tool_call
 				// frame (run 6:10) — the completed update carries only display
 				// text. contentDiff on the update stays as a future-build
@@ -74,17 +75,20 @@ export function mapUpdate(update: unknown): MappedUpdate {
 				// failure next to a successful edit.
 				const raw = stringField(u.rawOutput);
 				if (raw?.includes("approved but never executed")) return null;
-				return { kind: "tool_error", toolCallId: id, message: raw ?? "tool failed" };
+				const mcpServer = stringField(recordField(recordField(u._meta).mcp).server);
+				return { kind: "tool_error", toolCallId: id, message: raw ?? "tool failed", ...(mcpServer ? { mcpServer } : {}) };
 			}
 			if (u.status === "completed") {
 				// content[] first (edits carry their diff there); rawOutput alone is
 				// often just the server's display title, not the result (probe
 				// 2026-09-03: completed MCP call, rawOutput "Call bridge_echo").
 				const diff = contentDiff(u.content);
+				const mcpServer = stringField(recordField(recordField(u._meta).mcp).server);
 				return {
 					kind: "tool_done",
 					toolCallId: id,
 					output: contentText(u.content) ?? stringField(u.rawOutput),
+					...(mcpServer ? { mcpServer } : {}),
 					...(diff ? { diff } : {}),
 				};
 			}

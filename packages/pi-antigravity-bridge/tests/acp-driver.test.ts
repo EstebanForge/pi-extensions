@@ -566,19 +566,63 @@ describe("acp/driver usage synthesis (Gate B stopgap)", () => {
 		assert.equal(run.activities.some((a) => a.type === "usage"), false);
 	});
 
-	test("a server frame carrying usage latches the estimate off (Gate B)", async () => {
+	test("a context-window usage frame never masquerades as exact turn usage", async () => {
 		const run = await tracked("usage-frame", { prompt: "hi" });
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "OK");
-		assert.equal(outcome.usage, undefined);
-		assert.equal(run.activities.some((a) => a.type === "usage"), false);
+		// The frame carries { totalTokens: 99 }; none of it may leak into the
+		// outcome. The turn still ends with OUR synthesized estimate because no
+		// exact usage exists (peer-review latch fix, 2026-09-23).
+		assert.ok(outcome.usage);
+		assert.notEqual(outcome.usage?.total_tokens, 99);
+		assert.equal(run.activities.some((a) => a.type === "usage"), true, "live estimates remain visible");
 	});
 
-	test("error turns never synthesize usage", async () => {
+	test("context-window frames do not kill estimates on later turns", async () => {
+		let driverRef: AcpDriver | undefined;
+		const first = await tracked("usage-frame", {
+			prompt: "hi",
+			onHandle: (_handle, driver) => {
+				driverRef = driver;
+			},
+		});
+		assert.equal((await first.handle.outcome).status, "OK");
+		assert.ok(driverRef);
+		assert.equal(first.activities.some((a) => a.type === "usage"), true, "turn 1 estimates visible");
+
+		// Turn 2 rides the SAME connection: a broad context-frame latch must not
+		// have silenced the per-turn estimates (peer review 2026-09-23).
+		const activities: DriverActivity[] = [];
+		const handle = await driverRef.run({
+			cwd: path.dirname(first._logPath),
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			conversationId: null,
+			prompt: "again",
+		});
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+		assert.equal(outcome.status, "OK");
+		// Final synthesized estimate, NOT the frame's totalTokens: 99.
+		assert.ok(outcome.usage);
+		assert.notEqual(outcome.usage?.total_tokens, 99);
+		assert.equal(activities.some((a) => a.type === "usage"), true, "estimates survive on later turns");
+	});
+
+	test("error turns may stream partial estimated usage but have no final usage", async () => {
 		const run = await tracked("slow", { prompt: "hang", timeoutMin: 0.05 });
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "ERROR");
 		assert.equal(outcome.usage, undefined);
-		assert.equal(run.activities.some((a) => a.type === "usage"), false);
+		assert.equal(run.activities.some((a) => a.type === "usage"), true);
 	});
 });

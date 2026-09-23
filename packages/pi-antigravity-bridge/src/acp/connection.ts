@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseAuthPort, readLastUrl } from "./browser-capture.js";
 import { frameCarriesUsage } from "./events.js";
+import type { AgyUsage } from "../driver-types.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
 
 export interface AcpMcpServer {
@@ -82,6 +83,10 @@ export class AcpConnection {
 	#rpc: JsonRpcSession | undefined;
 	#stderrTail = "";
 	#usageSeen = false;
+	/** Set ONLY by a parsed PromptResponse.usage; this gates estimate
+	 *  suppression. #usageSeen stays diagnostic: any usage-shaped frame trips
+	 *  it, and the connection outlives turns. */
+	#exactUsageSeen = false;
 	#exited = false;
 	#killed = false;
 	#suppressUpdates = false;
@@ -113,6 +118,11 @@ export class AcpConnection {
 	 *  sending token counts; silent until then. */
 	get usageSeen(): boolean {
 		return this.#usageSeen;
+	}
+
+	/** True once the server sent real per-turn usage (PromptResponse.usage). */
+	get exactUsageSeen(): boolean {
+		return this.#exactUsageSeen;
 	}
 
 	/** While true, session/update notifications are dropped: they are the
@@ -237,7 +247,7 @@ export class AcpConnection {
 		text: string,
 		images: Array<{ data: string; mimeType: string }> = [],
 		contextBlock?: { uri: string; text: string },
-	): Promise<{ stopReason: string }> {
+	): Promise<{ stopReason: string; usage?: AgyUsage }> {
 		// Block order: images, then the embedded-context resource (pi-side
 		// digest), then the text question last (it refers to everything before
 		// it). Shapes per the ACP v1 content-block schema; embeddedContext is
@@ -264,7 +274,15 @@ export class AcpConnection {
 		if (typeof stopReason !== "string") {
 			throw new Error("ACP session/prompt returned no stopReason");
 		}
-		return { stopReason };
+		// Optional, unstable ACP PromptResponse.usage: absent on 1.1.1 but
+		// parsed for the day the server forwards its SDK usage_metadata. Never
+		// infer exact counts from a context-window usage_update ({used,size}).
+		const usage = parseAcpTurnUsage(result?.usage);
+		if (usage) {
+			this.#usageSeen = true;
+			this.#exactUsageSeen = true;
+		}
+		return { stopReason, ...(usage ? { usage } : {}) };
 	}
 
 	/** Probe-and-cancel. Returns supported:false when the server does not
@@ -428,6 +446,28 @@ export class AcpConnection {
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
 		this.#opts.onExit({ code: null, signal: null, stderrTail: this.#stderrTail });
 	}
+}
+
+/** ACP's optional (unstable) per-turn PromptResponse.usage, not the
+ *  session/usage_update context-window occupancy notification. */
+export function parseAcpTurnUsage(value: unknown): AgyUsage | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const u = value as Record<string, unknown>;
+	const count = (v: unknown): number | undefined =>
+		typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
+	const input = count(u.inputTokens);
+	const output = count(u.outputTokens);
+	const total = count(u.totalTokens);
+	const thought = count(u.thoughtTokens);
+	const cacheRead = count(u.cachedReadTokens);
+	if (input === undefined || output === undefined || total === undefined) return undefined;
+	return {
+		input_tokens: input,
+		output_tokens: output,
+		total_tokens: total,
+		...(thought === undefined ? {} : { thinking_tokens: thought }),
+		...(cacheRead === undefined ? {} : { cache_read_tokens: cacheRead }),
+	};
 }
 
 export function translateError(method: string, err: unknown): Error {

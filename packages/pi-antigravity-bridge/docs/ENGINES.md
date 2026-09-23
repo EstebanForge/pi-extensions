@@ -3,7 +3,7 @@
 Turns run through one of two engines behind the same provider surface (`config.engine`, default `stream-json`). The choice of engine is left to the user: a first-run picker explains the trade-offs and asks once, and `/agy engine` (no arguments, TUI) reopens the same modal anytime. Direct switches work too: `/agy engine acp|stream-json`.
 
 - **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
-- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display shows client-side ESTIMATES until Google ships usage; `acp.usageEstimate` off to keep zeros) and no cancel (abort tears the server down and reloads it next turn).
+- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
 
 ## First run
 
@@ -16,7 +16,7 @@ Picking **acp** starts the server download immediately (progress in the status b
 | Capability | `stream-json` (default) | `acp` (beta) |
 | --- | --- | --- |
 | Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
-| Live token usage | Yes (live metrics from CLI step events) | Estimated client-side (absent in RC01; `acp.usageEstimate`, default on) |
+| Live token usage | Yes (live metrics from CLI step events) | Live client-side estimates (absent in RC01; `acp.usageEstimate`, default `estimate`, streamed per delta, superseded automatically by real per-turn usage when the server starts sending it) |
 | Image prompt input | No (CLI prompt is text-only; images dropped) | Yes (native image blocks forwarded to server) |
 | Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
 | Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |
@@ -27,7 +27,7 @@ Picking **acp** starts the server download immediately (progress in the status b
 | Session resume & persistence | Client-side map in `sessions.json` via `--conversation <id>` | Server-side session store via `session/load` and `session/new` |
 | Turn cancel / abort | Kills process group; in-flight turn terminates | Teardown, kill, and auto-reload on RC01 (-32601 fallback) |
 | MCP tool bridge routing | Injected filesystem config via `--add-dir` | Direct `mcpServers` param in `session/new` and `session/load` |
-| Tool execution & visibility | Native re-exec (read-only) + wrapper replay (mutating) | Server executes tools natively; events stream with content |
+| Tool execution & visibility | Native re-exec (read-only) + wrapper replay (mutating) | Server executes tools natively; steps render as display-only cards in pi (path/diff/command + output) |
 | Inline file edit diffs | Sourced from git working tree in thinking block | Sourced from `tool_call content[]` or disk vs git HEAD |
 | Permission handling | `--dangerously-skip-permissions` (unattended CLI requirement) | Protocol-native `session/request_permission` (auto-approve when `skipPermissions` is on; auto-deny when off) |
 | Context digest delivery (G1) | Prepend plain text inline in prompt | Native `embeddedContext` resource block |
