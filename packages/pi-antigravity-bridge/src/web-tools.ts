@@ -119,7 +119,7 @@ export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 	const agentName = `${WEB_AGENT_PREFIX}${process.pid}-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
 	const agentDir = path.join(root, agentName);
 	mkdirSync(agentDir, { recursive: true, mode: 0o700 });
-	// commandExecutionPolicy stays at the fork-validated "auto": the template's
+	// commandExecutionPolicy stays at the live-validated "auto": the template's
 	// tools list has no command tool and plan mode blocks edits; an unvalidated
 	// stricter enum risks agent discovery failing outright.
 	writeFileSync(
