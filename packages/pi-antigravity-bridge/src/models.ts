@@ -25,6 +25,14 @@ import type { Api, Model, ThinkingLevel, ThinkingLevelMap } from "@earendil-work
 
 const DISCOVERY_TIMEOUT_MS = 8_000;
 
+/** Stdout ceiling for `agy models`. Real output is a few KB of ASCII slugs;
+ *  anything past 1 MiB is a runaway process. Fail closed to "" so the
+ *  fallback catalog engages instead of letting the buffer grow without
+ *  limit. The check counts decoded string length (UTF-16 code units), not
+ *  raw bytes — a deliberate proxy, since the margin between a few KB of
+ *  real output and 1 MiB dwarfs any encoding difference. */
+export const MODELS_OUTPUT_CAP_BYTES = 1024 * 1024;
+
 /** Reasoning-effort tiers agy accepts via --effort. */
 export type AgyEffort = "low" | "medium" | "high";
 
@@ -105,10 +113,11 @@ export interface AgyModelEntry {
 }
 
 /** Spawn `agy models` and return its raw stdout text. Returns "" on any
- *  failure (non-zero exit, spawn error, or watchdog timeout). Bounded by
- *  DISCOVERY_TIMEOUT_MS so a hung agy (auth prompt, network stall) can't
- *  block extension load. Shared by the provider and the tool catalog so the
- *  extension spawns `agy models` ONCE per load. */
+ *  failure (non-zero exit, spawn error, watchdog timeout, or output cap).
+ *  Bounded by DISCOVERY_TIMEOUT_MS so a hung agy (auth prompt, network stall)
+ *  can't block extension load, and by MODELS_OUTPUT_CAP_BYTES so a runaway
+ *  agy can't grow the buffer without limit. Shared by the provider and the
+ *  tool catalog so the extension spawns `agy models` ONCE per load. */
 export async function spawnAgyModelsRaw(binary: string): Promise<string> {
 	try {
 		return await new Promise<string>((resolve, reject) => {
@@ -119,13 +128,27 @@ export async function spawnAgyModelsRaw(binary: string): Promise<string> {
 			proc.stdout?.setEncoding("utf8");
 			let out = "";
 			let done = false;
+			let capped = false;
 			const finish = (v: string) => {
 				if (done) return;
 				done = true;
 				clearTimeout(watchdog);
 				resolve(v);
 			};
-			proc.stdout?.on("data", (d: string) => (out += d));
+			proc.stdout?.on("data", (d: string) => {
+				if (capped) return;
+				if (out.length + d.length > MODELS_OUTPUT_CAP_BYTES) {
+					capped = true;
+					try {
+						proc.kill("SIGKILL");
+					} catch {
+						/* already gone */
+					}
+					finish("");
+					return;
+				}
+				out += d;
+			});
 			proc.on("error", (err) => {
 				clearTimeout(watchdog);
 				reject(err);

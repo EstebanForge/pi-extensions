@@ -15,7 +15,9 @@ import {
 	entriesFromRaw,
 	loadModelCatalogRaw,
 	MODELS_CACHE_TTL_MS,
+	MODELS_OUTPUT_CAP_BYTES,
 	refreshModelsInBackground,
+	spawnAgyModelsRaw,
 	toPiModel,
 } from "../src/models.js";
 
@@ -254,4 +256,40 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null });
 	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null });
 	assert.equal(claude.thinkingLevelMap, undefined);
+});
+
+// --- spawnAgyModelsRaw stdout cap -------------------------------------------
+
+/** Fake `agy` that streams `chunks` x 64KiB of 'x' to stdout in 64KiB writes,
+ *  then exits 0. Chunked (not one printf) so the cap fires while the process
+ *  is still alive and the kill path is exercised, not a natural exit. */
+function makeStreamingFakeAgy(chunks: number): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-fake-"));
+	const bin = path.join(dir, "agy");
+	fs.writeFileSync(
+		bin,
+		"#!/bin/sh\n" +
+			"i=0\n" +
+			`while [ $i -lt ${chunks} ]; do\n` +
+			"  head -c 65536 /dev/zero | tr '\\0' x\n" +
+			"  i=$((i+1))\n" +
+			"done\n",
+		{ mode: 0o755 },
+	);
+	return bin;
+}
+
+test("spawnAgyModelsRaw kills a runaway stream past the cap and fails closed", async () => {
+	// 40 chunks = 2.5MiB, well past MODELS_OUTPUT_CAP_BYTES.
+	const bin = makeStreamingFakeAgy(40);
+	const raw = await spawnAgyModelsRaw(bin);
+	assert.equal(raw, "");
+});
+
+test("spawnAgyModelsRaw keeps output at exactly the cap (strict > boundary)", async () => {
+	// 16 chunks = 1MiB exactly: must pass through untouched, exit 0.
+	const bin = makeStreamingFakeAgy(16);
+	const raw = await spawnAgyModelsRaw(bin);
+	assert.equal(raw.length, MODELS_OUTPUT_CAP_BYTES);
+	assert.match(raw, /^x+$/);
 });
