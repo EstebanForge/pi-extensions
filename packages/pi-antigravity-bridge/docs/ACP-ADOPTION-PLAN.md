@@ -773,8 +773,8 @@ Queue:
 
 Acceptance: parity suite remains 14/14, doctor parity, no breakage to stream-json default.
 
-Status: 🚧 Phase 3 remaining items are COMPLETE (2026-09-04): 168/168 tests,
-tsc clean, live parity 14/14, embeddedContext verified live (resource block
+Status: 🚧 Phase 3 remaining items are COMPLETE (2026-09-04): tsc clean,
+live parity 14/14, embeddedContext verified live (resource block
 with a secret word answered correctly). Phase-3 acceptance: nothing deletes
 in phase 3 — the streaming modules stay (permanently, see the standing
 decision at the top and Phase 4).
