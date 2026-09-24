@@ -71,7 +71,11 @@ import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker
 import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
+import { spawn } from "node:child_process";
 import { fetchAgyQuota, formatAgyQuotaReport } from "../src/usage.js";
+import { artifactOpenCommand, listAgyArtifacts } from "../src/artifacts.js";
+import { showArtifactsBrowser } from "../src/artifacts-ui.js";
+import { agyConversationDir } from "../src/agy-paths.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
@@ -1089,7 +1093,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1376,6 +1380,83 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(`mode set to ${next.mode}`, "info");
 				} else {
 					ui?.notify(`current mode: ${loadConfig().mode}\nusage: /agy mode plan|accept-edits`, "info");
+				}
+				return;
+			}
+			if (sub === "artifacts") {
+				const engine = ctx.engine;
+				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
+				const conversationId = snap.conversationId ?? undefined;
+				if (!conversationId) {
+					ui?.notify("no Antigravity conversation bound yet; run a turn first.", "warning");
+					return;
+				}
+				const dir = agyConversationDir(engine, conversationId);
+				const rest = (args ?? "").trim().split(/\s+/).slice(1);
+				const openWord = rest[0]?.toLowerCase();
+
+				// /agy artifacts open <name|index>: direct open, no overlay.
+				if (openWord === "open") {
+					const artifacts = await listAgyArtifacts(dir);
+					if (artifacts.length === 0) {
+						ui?.notify("no artifacts in this conversation.", "info");
+						return;
+					}
+					const target = rest.slice(1).join(" ").trim();
+					if (target === "") {
+						ui?.notify("usage: /agy artifacts open <name|index>. /agy artifacts lists them.", "warning");
+						return;
+					}
+					const byIndex = /^\d+$/.test(target) ? Number(target) : undefined;
+					const artifact =
+						byIndex !== undefined
+							? artifacts[byIndex]
+							: artifacts.find((a) => a.name.toLowerCase() === target.toLowerCase()) ??
+								(artifacts.filter((a) => a.name.toLowerCase().includes(target.toLowerCase())).length === 1
+									? artifacts.find((a) => a.name.toLowerCase().includes(target.toLowerCase()))
+									: undefined); // ambiguous or no match
+					if (!artifact) {
+						ui?.notify(`no unique artifact matches ${JSON.stringify(target)}. /agy artifacts lists them.`, "warning");
+						return;
+					}
+					const openCmd = artifactOpenCommand();
+					if (!openCmd) {
+						ui?.notify(`no file-open handler for ${process.platform}; the file is at ${artifact.absolutePath}`, "warning");
+						return;
+					}
+					spawn(openCmd.cmd, [artifact.absolutePath], { detached: true, stdio: "ignore", shell: false }).unref();
+					ui?.notify(`opened ${artifact.name}`, "info");
+					return;
+				}
+
+				// Browser loop; r rescans by re-listing fresh. The first scan is
+				// reused so the emptiness gate does not cost a second readdir pass.
+				let artifacts = await listAgyArtifacts(dir);
+				if (artifacts.length === 0) {
+					ui?.notify("no artifacts in this conversation (media dirs appear once agy generates or receives files).", "info");
+					return;
+				}
+				if (!ui) {
+					// Headless: no overlay is possible; print the indexed list.
+					const lines = artifacts.map((a, i) => `${i}  ${a.name} (${a.kind}, ${a.bytes}B)`);
+					console.log([`antigravity artifacts (${artifacts.length}):`, ...lines].join("\n"));
+					return;
+				}
+				for (;;) {
+					const action = await showArtifactsBrowser(ui, artifacts);
+					if (action.type === "rescan") {
+						artifacts = await listAgyArtifacts(dir);
+						continue;
+					}
+					if (action.type === "open") {
+						const openCmd = artifactOpenCommand();
+						if (!openCmd) {
+							ui.notify(`no file-open handler for ${process.platform}.`, "warning");
+							continue;
+						}
+						spawn(openCmd.cmd, [action.artifact.absolutePath], { detached: true, stdio: "ignore", shell: false }).unref();
+					}
+					break;
 				}
 				return;
 			}
