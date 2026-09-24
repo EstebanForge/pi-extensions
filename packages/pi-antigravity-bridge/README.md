@@ -73,7 +73,7 @@ cards for read-only steps.
 
 ## Approval gate (agy native tools)
 
-agy runs its own agent loop with native tools (`run_command`, `create_file`, `edit_file`, ...), which pi's permission extensions never saw. The optional approval gate routes those calls through a pi-side approval: a staged PreToolUse hook parks the call, the provider surfaces it as a shadow `bash`/`write`/`edit` toolUse, and your permission extension (or the built-in ask/allow/deny fallback) decides before agy executes it. Off by default (`approvals.gateMode: auto` enables it only when a pi permission extension is detected); denials fail closed; read-only agy tools stay ungated.
+agy runs its own agent loop with native tools (`run_command`, `create_file`, `edit_file`, ...), which pi's permission extensions never saw. The optional approval gate routes those calls through a pi-side approval: a staged PreToolUse hook parks the call, the provider surfaces it as a shadow `bash`/`write`/`edit` toolUse, and your permission extension (or the built-in ask/allow/deny fallback) decides before agy executes it. Off by default (`approvals.gateMode: auto` enables it only when a pi permission extension is detected); denials fail closed; read-only agy tools stay ungated. On ACP turns the server has its own per-tool permission ask: when one fires (`skipPermissions` off), the request parks on a real pi dialog instead of a silent deny, and allow-always choices are remembered per connection.
 
 Full mechanics, configuration, and a sample gate extension: [docs/APPROVAL-GATE.md](docs/APPROVAL-GATE.md).
 

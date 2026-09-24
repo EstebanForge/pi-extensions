@@ -23,8 +23,9 @@ src/patch-cleanup.ts  detects a leftover invokeTool patch from pre-1.3.0 install
 src/discovery.ts      conversation-id binding for the AskAntigravity one-shot tool (agy -p never prints its conversation id)
 src/models.ts         agy models -> pi Model projection (full catalog, per-model effort)
 src/sessions.ts       atomic JSON store: pi session -> agy conversation + watermark
-src/config.ts         persisted runtime config (engine + acp block, bridgeTools, digest, mode, permissions, model/thinking defaults)
+src/config.ts         persisted runtime config (engine + acp block, bridgeTools, digest, mode, model/thinking defaults)
 src/daily-log.ts      daily NDJSON support log (one file per day, 14-day retention, secret redaction, AGY_DEBUG verbose gate); fed by both drivers, the bridge, round-trips, /agy, and ask-tool
+src/redact.ts         redactText(): pattern-based secret scrubbing for free text, word-boundary anchored, applied where stderr tails and error strings leave their holders
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip. Also the approval park: POST /approval (ticket early-ack) + GET /approval/<id>, fail-closed on timeout/unwired/close
 src/mcp-registration.ts registers/unregisters the bridge in ~/.gemini/config/mcp_config.json for the stream-json CLI (per-pid, atomic, stale sweep) and flips our entries off around AskAntigravity spawns (refcounted; session start re-enables)
@@ -34,8 +35,9 @@ src/approval-hook.ts  merge-safe .agents/hooks.json staging (PreToolUse) + gener
 src/diff-render.ts    stream-json: render agy's file edits as git diffs in pi's thinking stream; formatInlineDiff (no git) renders ACP's native diffs
 src/engine-picker.ts  first-run onboarding: engine picker overlay (SelectList + DynamicBorder), first-run gate (no config file + no AGY_ENGINE), agy binary detection (PATH / AGY_BIN), missing-CLI toast copy
 src/driver-types.ts   TurnDriver contract shared by both engines (request/handle/snapshot types)
-src/acp/jsonrpc.ts    NDJSON JSON-RPC 2.0 framing with line buffering and typed error results
-src/acp/connection.ts ACP server process + protocol (initialize, session/new+load, prompt with image/resource blocks, config options, cancel probing, auto permissions)
+src/frame-guard.ts    stdout frame ceiling + known-noise line filtering shared by both readers (ACP jsonrpc + stream-json driver)
+src/acp/jsonrpc.ts    NDJSON JSON-RPC 2.0 framing with line buffering, a 32 MiB frame ceiling, noise filtering, and typed error results
+src/acp/connection.ts ACP server process + protocol (initialize, session/new+load, prompt with image/resource blocks, config options, cancel probing, parked permission answering)
 src/acp/events.ts     session/update -> DriverActivity mapping (pure; probe-frame regressions pinned)
 src/acp/driver.ts     AcpDriver: serialized turns, remaining-budget timer pause, Gate D abort, connection-scoped exit handling, reconnect/agentInfo snapshots
 ```
@@ -82,7 +84,7 @@ regardless of Gate B). Gate B (absent usage fields) is informational:
 zero-usage is documented on ACP. See docs/ACP-ADOPTION-PLAN.md section 17.
 
 Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/connection.ts`
-(process + protocol methods + in-connection `auto` permission answering),
+(process + protocol methods + parked permission answering),
 `src/acp/events.ts` (update mapping, pure), `src/acp/driver.ts`
 (`AcpDriver`). Both engines implement `TurnDriver`; `provider.ts` depends on
 the interface only and is otherwise unchanged.

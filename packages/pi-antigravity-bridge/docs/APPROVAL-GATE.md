@@ -33,3 +33,10 @@ export default function (pi) {
 ```
 
 Live end-to-end verification (drive a real mutating agy turn through the gate) is still pending; see docs/TODO.md section 1.
+
+ACP turns need none of this machinery: the server asks per-tool permission
+itself via `session/request_permission`, and the bridge parks that request
+on a real pi dialog (`approvals.mode` semantics apply; skip turns
+auto-allow and never ask; `allow_always` choices are remembered per
+connection). Wiring is pinned against a fake server; live verification is
+tracked in docs/TODO.md section 3.

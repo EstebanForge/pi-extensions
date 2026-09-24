@@ -17,9 +17,11 @@ dead; the bridge no longer patches pi).
 
 **Objective:** Let agy drive pi's native UI: confirm dialogs, toasts,
 file/directory pickers, status/footer updates. agy can already
-`ask_user_question`; missing are confirm/permission dialogs for destructive
-ops, notification toasts, native file pickers, and status-bar updates. This
-does NOT unlock a native diff viewer for agy edits — on stream-json that path
+`ask_user_question`; missing are notification toasts, native file pickers,
+and status-bar updates. Confirm/permission dialogs partially landed since
+this section was written: the ACP engine parks server permission requests
+on a real pi dialog, and the approval gate covers stream-json mutating
+tools. This does NOT unlock a native diff viewer for agy edits — on stream-json that path
 is closed (G8 renders diffs as thinking text); on ACP the server supplies
 edit diffs in `tool_call content[]`, rendered the same way.
 

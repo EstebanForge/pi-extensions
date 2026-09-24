@@ -19,3 +19,17 @@ decision -> hook stdout -> agy enforces.
 input `{toolName, args}`, for setups that prefer explicit names (gotgenes
 `shellTools` alias users). Full v2 spec preserved in git history:
 `dd7845b:docs/TODO.md` (sections 2.1-2.9).
+
+## 3. ACP permission parking: live end-to-end verification
+
+The park is wired and pinned against the fake ACP server but has never run
+against a live agy server. Drive an ACP turn that triggers
+`session/request_permission` (skipPermissions off), pick from the dialog,
+and confirm the server resumes; then repeat the identical request and
+confirm the always-memory answers without a second dialog.
+
+- Probe setup lives outside the repo: `~/tmp/pi-antigravity-bridge-probes/` (run scripts via `npx tsx` from the repo cwd).
+- Live-behavior risks to watch: how the real server handles a `cancelled`
+  outcome (our deny when it offers no reject option), and whether the
+  dialog park holds the turn open as long as the fake server does.
+- On pass: note it here and clear the caveat in docs/APPROVAL-GATE.md.
