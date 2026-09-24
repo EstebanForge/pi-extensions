@@ -68,6 +68,7 @@ import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
+import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
@@ -197,8 +198,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// ACP self-heal runs once per process (session_start re-fires on /reload;
 	// a ready setup is two file stats, so re-running is harmless anyway).
 	let acpSelfHealRan = false;
-	// Warn-once-per-process flag for the missing-agy-CLI toast (stream-json).
+	// Warn-once-per-process flags for the missing-agy-CLI toast and the
+	// too-old-agy version gate (both stream-json).
 	let agyMissingWarned = false;
+	let agyVersionWarned = false;
 	// OAuth URL capture: the server hands the login URL only to the
 	// browser-open call (nothing on stdio), so a BROWSER wrapper records it
 	// and the driver logs it as "auth-url". Local users keep the automatic
@@ -640,6 +643,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const msg = agyMissingMessage();
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
+		}
+		// Version gate (stream-json): an agy older than MIN_AGY_VERSION fails
+		// turns with raw stream errors that look like bridge bugs. Warn once
+		// with the fix in the message; doctor carries the full verdict.
+		// Development builds and unreadable output stay silent here (an agy
+		// from source works; doctor shows what we could not parse).
+		if (engine === "stream-json" && !agyVersionWarned && isAgyInstalled(binary)) {
+			void checkAgyCliVersion(binary).then((check) => {
+				if (agyVersionWarned || check.status !== "unsupported") return;
+				agyVersionWarned = true;
+				const msg = `agy ${check.version} is too old; install ${MIN_AGY_VERSION} or newer. Stream-json turns may fail in confusing ways until then (/agy doctor inspects).`;
+				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+				else console.error(`[antigravity-bridge] ${msg}`);
+			});
 		}
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
@@ -1290,6 +1307,15 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				const engine = ctx.engine;
 				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
 				const port = ctx.getMcpPort();
+				// The CLI matters on both engines (AskAntigravity shells out to
+				// `agy -p` even when turns ride ACP), but on an ACP session a
+				// missing CLI is a supported shape, so label it optional there
+				// instead of showing a bare failure line.
+				const cliCheck = await checkAgyCliVersion(resolveAgyBinary());
+				const cliSuffix =
+					cliCheck.status === "unavailable" && engine === "acp"
+						? " (optional here; AskAntigravity delegations use the CLI)"
+						: "";
 				const lines = [
 					"Antigravity doctor (no tokens spent)",
 					`  engine:        ${engine}`,
@@ -1298,6 +1324,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
+					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${MIN_AGY_VERSION})${cliSuffix}`,
 					`  config:        ${CONFIG_PATH}`,
 					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];
