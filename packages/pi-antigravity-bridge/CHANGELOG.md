@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.2] - 2026-09-24
+
+### Added
+
+- **ACP permission requests park on a human decision.** `session/request_permission` was answered silently in-process (skip turns auto-allowed, everything else auto-denied), making ACP turns all-or-nothing with no per-tool human say. Interactive turns now hold the JSON-RPC request open and surface the server's options as a pi select dialog under the dialog lock, with the turn budget paused while the human decides: 480 s park, deny on timeout/esc/throw/connection death, and a cancel instead of an answer when the server offers no reject option (a deny must never degrade into picking an allow). `skipPermissions` keeps the synchronous auto-allow; `approvals.mode allow` maps to it, deny and headless stay fail-closed. `allow_always`/`reject_always` answers are remembered per connection for identical later requests, and first settle wins: a late dialog answer after a timeout is forgotten. Nine new tests pin the behavior, including a scenario proving a late answer writes nothing. 1217 tests, tsc clean.
+
+### Changed
+
+- **Removed the dead `acp.permissions` config key.** It documented the in-connection auto policy but never had a consumer. Configs carrying it keep loading (unknown `acp` keys are ignored) and it drops out of the file on the next save.
+
 ## [1.7.1] - 2026-09-23
 
 ### Fixed
