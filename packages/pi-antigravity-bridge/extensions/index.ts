@@ -75,6 +75,8 @@ import { spawn } from "node:child_process";
 import { fetchAgyQuota, formatAgyQuotaReport } from "../src/usage.js";
 import { artifactOpenCommand, listAgyArtifacts } from "../src/artifacts.js";
 import { showArtifactsBrowser } from "../src/artifacts-ui.js";
+import { listAgyTasks, tailAgyTaskLog } from "../src/tasks.js";
+import { showTasksBrowser } from "../src/tasks-ui.js";
 import { agyConversationDir } from "../src/agy-paths.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
@@ -1093,7 +1095,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1380,6 +1382,70 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(`mode set to ${next.mode}`, "info");
 				} else {
 					ui?.notify(`current mode: ${loadConfig().mode}\nusage: /agy mode plan|accept-edits`, "info");
+				}
+				return;
+			}
+			if (sub === "tasks") {
+				const engine = ctx.engine;
+				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
+				const conversationId = snap.conversationId ?? undefined;
+				if (!conversationId) {
+					ui?.notify("no Antigravity conversation bound yet; run a turn first.", "warning");
+					return;
+				}
+				const dir = agyConversationDir(engine, conversationId);
+				const rest = (args ?? "").trim().split(/\s+/);
+
+				// /agy tasks tail <id>: last bytes of one task log into chat.
+				// Resolved against the scanned list, not a rebuilt filename:
+				// the id->filename convention must not live in two places.
+				if (rest[0]?.toLowerCase() === "tail") {
+					const id = Number(rest[1]);
+					if (!Number.isInteger(id) || id < 0) {
+						ui?.notify("usage: /agy tasks tail <id>. /agy tasks lists them.", "warning");
+						return;
+					}
+					const tasks = await listAgyTasks(dir);
+					const task = tasks.find((t) => t.id === id);
+					if (!task) {
+						ui?.notify(`no task #${id} in this conversation. /agy tasks lists them.`, "warning");
+						return;
+					}
+					const tail = await tailAgyTaskLog(task.logPath);
+					if (tail === "") {
+						ui?.notify(`task #${id} has no readable log.`, "warning");
+						return;
+					}
+					const lines = tail.split("\n");
+					const body = lines.length > 40 ? `…\n${lines.slice(-40).join("\n")}` : tail;
+					ui?.notify(`task #${id} tail:\n${body}`, "info");
+					return;
+				}
+
+				// Dashboard form; r rescans by re-listing fresh.
+				let tasks = await listAgyTasks(dir);
+				if (tasks.length === 0) {
+					ui?.notify("no background tasks recorded for this conversation.", "info");
+					return;
+				}
+				if (!ui) {
+					const lines = tasks.map((t) => {
+						const state = t.livenessKnown ? (t.active ? "ACTIVE" : "idle") : "liveness?";
+						return `#${t.id}  ${state}  ${t.bytes}B`;
+					});
+					console.log([`antigravity tasks (${tasks.length}):`, ...lines].join("\n"));
+					return;
+				}
+				for (;;) {
+					const action = await showTasksBrowser(ui, tasks, tasks[0]?.livenessKnown ?? false);
+					if (action.type === "rescan") {
+						tasks = await listAgyTasks(dir);
+						if (tasks.length === 0) {
+							ui?.notify("no background tasks recorded for this conversation.", "info");
+						}
+						continue;
+					}
+					break;
 				}
 				return;
 			}
