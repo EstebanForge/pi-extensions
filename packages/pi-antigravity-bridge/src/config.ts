@@ -76,10 +76,6 @@ export interface GateConfig {
 export interface AcpConfig {
 	/** Path to agy_acp_server.par. Empty = env AGY_ACP_BIN > PATH. */
 	bin: string;
-	/** Single policy today: auto-approve request_permission in-connection
-	 *  (parity with skipPermissions). Kept as a key so future policies do not
-	 *  change the config shape. */
-	permissions: "auto";
 	/** Gate B stopgap: client-side token estimates for ACP turns so pi's
 	 *  usage surfaces show nonzero numbers. Estimates are labeled as such in
 	 *  /agy doctor and auto-disable when the server sends real usage. */
@@ -187,7 +183,7 @@ const DEFAULTS: AgyConfig = {
 	turnTimeoutMin: 0, // placeholder: the real default is resolved per loadConfig call (defaultTurnTimeoutMin)
 	inactivityTimeoutMin: 5,
 	approvals: { gateMode: "auto", mode: "ask" },
-	acp: { bin: "", permissions: "auto", usageEstimate: "estimate" },
+	acp: { bin: "", usageEstimate: "estimate" },
 };
 
 /** Hard ceiling for a free-typed turn cap: one day, in minutes. */
@@ -317,7 +313,6 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		bin:
 			process.env.AGY_ACP_BIN ??
 			(typeof fileAcp.bin === "string" ? fileAcp.bin : DEFAULTS.acp.bin),
-		permissions: "auto",
 		usageEstimate,
 	};
 

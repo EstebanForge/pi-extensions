@@ -298,6 +298,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// a restart. Without this the driver defaults to "estimate" and the
 		// config knob (incl. "off") is dead.
 		usageEstimate: () => loadConfig().acp.usageEstimate,
+		// ACP request_permission parity with the approval gate: skipPermissions
+		// turns auto-allow in the driver; approvals.mode allow short-circuits
+		// to the same synchronous allow; everything else opens a dialog (esc
+		// and headless deny fail-closed) under the shared dialog lock.
+		permissionPolicy: () => (loadConfig().approvals.mode === "allow" ? "auto" : "deny"),
+		onPermissionRequest: async (req) => {
+			const ui = activeUi;
+			if (loadConfig().approvals.mode === "deny" || !ui) return undefined;
+			return await withDialogLock(async () => {
+				const labels = req.options.map((o) => o.name ?? o.kind ?? o.optionId ?? "?");
+				const title = req.toolCall?.title ? `agy requests: ${req.toolCall.title}` : "agy requests permission";
+				const picked = await ui.select(title, labels);
+				if (picked === undefined) return undefined;
+				const idx = labels.indexOf(picked);
+				return idx >= 0 ? (req.options[idx]?.optionId ?? undefined) : undefined;
+			});
+		},
 		...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
 		log: acpLog,
 		mcpServers: () => {
@@ -1218,7 +1235,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				if (rest.length > 0) {
 					// Only the keyword compares case-insensitively; the path keeps its case.
 					const bin = rest.toLowerCase() === "auto" ? "" : rest.replace(/^~(?=\/|$)/, os.homedir());
-					// Spread, not a bare acp patch: a bare {bin, permissions} object
+					// Spread, not a bare acp patch: a bare {bin} object
 					// would drop sibling keys (usageEstimate) from the file.
 					saveConfig({ acp: { ...loadConfig().acp, bin } });
 					ui?.notify(

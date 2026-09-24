@@ -21,7 +21,6 @@ test("engine defaults to stream-json (ACP is opt-in)", () => {
 	try {
 		const c = loadConfig(p);
 		assert.equal(c.engine, "stream-json");
-		assert.equal(c.acp.permissions, "auto");
 		assert.equal(c.acp.bin, "");
 	} finally {
 		rm(p);
@@ -88,7 +87,7 @@ test("AGY_ACP_BIN env overrides acp.bin", () => {
 test("acp.bin persists through saveConfig", () => {
 	const p = tmpConfig();
 	try {
-		saveConfig({ acp: { bin: "~/.local/opt/agy-acp/current/agy_acp_server.par", permissions: "auto", usageEstimate: "estimate" } }, p);
+		saveConfig({ acp: { bin: "~/.local/opt/agy-acp/current/agy_acp_server.par", usageEstimate: "estimate" } }, p);
 		assert.equal(loadConfig(p).acp.bin, "~/.local/opt/agy-acp/current/agy_acp_server.par");
 		saveConfig({ digest: true }, p);
 		assert.equal(loadConfig(p).acp.bin, "~/.local/opt/agy-acp/current/agy_acp_server.par");
@@ -102,7 +101,7 @@ test("usageEstimate defaults to estimate; unknown values fall back", () => {
 	const p = tmpConfig();
 	try {
 		assert.equal(loadConfig(p).acp.usageEstimate, "estimate");
-		saveConfig({ acp: { bin: "", permissions: "auto", usageEstimate: "direct" } }, p);
+		saveConfig({ acp: { bin: "", usageEstimate: "direct" } }, p);
 		assert.equal(loadConfig(p).acp.usageEstimate, "direct");
 		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
 		const acpRaw = raw.acp as Record<string, unknown>;
@@ -125,6 +124,24 @@ test("AGY_USAGE_ESTIMATE env overrides acp.usageEstimate", () => {
 	} finally {
 		if (prev === undefined) delete process.env.AGY_USAGE_ESTIMATE;
 		else process.env.AGY_USAGE_ESTIMATE = prev;
+		rm(p);
+	}
+});
+
+test("legacy acp.permissions key is ignored on load and dropped on save", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(
+			p,
+			JSON.stringify({ acp: { bin: "/bin/test", permissions: "auto", usageEstimate: "estimate" } }),
+		);
+		const c = loadConfig(p);
+		assert.equal("permissions" in c.acp, false);
+		saveConfig({ digest: true }, p);
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+		const acpRaw = raw.acp as Record<string, unknown>;
+		assert.equal("permissions" in acpRaw, false);
+	} finally {
 		rm(p);
 	}
 });
