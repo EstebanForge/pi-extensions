@@ -112,16 +112,17 @@ export interface AgyModelEntry {
 	efforts?: AgyEffort[];
 }
 
-/** Spawn `agy models` and return its raw stdout text. Returns "" on any
- *  failure (non-zero exit, spawn error, watchdog timeout, or output cap).
- *  Bounded by DISCOVERY_TIMEOUT_MS so a hung agy (auth prompt, network stall)
- *  can't block extension load, and by MODELS_OUTPUT_CAP_BYTES so a runaway
- *  agy can't grow the buffer without limit. Shared by the provider and the
- *  tool catalog so the extension spawns `agy models` ONCE per load. */
-export async function spawnAgyModelsRaw(binary: string): Promise<string> {
+/** Spawn a read-only agy listing subcommand and return its raw stdout text.
+ *  Returns "" on any failure (non-zero exit, spawn error, watchdog timeout,
+ *  or output cap). Bounded by DISCOVERY_TIMEOUT_MS so a hung agy (auth
+ *  prompt, network stall) can't block the caller, and by
+ *  MODELS_OUTPUT_CAP_BYTES so a runaway agy can't grow the buffer without
+ *  limit. Shared by the model catalog (spawned ONCE per load, provider +
+ *  tool catalog) and the agent roster. */
+export async function spawnAgyRaw(binary: string, args: string[]): Promise<string> {
 	try {
 		return await new Promise<string>((resolve, reject) => {
-			const proc = spawn(binary, ["models"], {
+			const proc = spawn(binary, args, {
 				stdio: ["ignore", "pipe", "ignore"],
 				shell: false,
 			});
@@ -166,6 +167,11 @@ export async function spawnAgyModelsRaw(binary: string): Promise<string> {
 	} catch {
 		return "";
 	}
+}
+
+/** Spawn `agy models`: the model catalog listing. */
+export async function spawnAgyModelsRaw(binary: string): Promise<string> {
+	return spawnAgyRaw(binary, ["models"]);
 }
 
 // --- catalog cache ----------------------------------------------------------

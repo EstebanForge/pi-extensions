@@ -69,6 +69,7 @@ import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
+import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
@@ -1079,7 +1080,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1367,6 +1368,37 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				} else {
 					ui?.notify(`current mode: ${loadConfig().mode}\nusage: /agy mode plan|accept-edits`, "info");
 				}
+				return;
+			}
+			if (sub === "agent") {
+				// ACP has no agent slot in the protocol (RC01): refuse instead of
+				// silently ignoring a configured agent.
+				if (ctx.engine === "acp") {
+					ui?.notify("the ACP engine has no agent selection (RC01). /agy engine stream-json first.", "warning");
+					return;
+				}
+				const name = (args ?? "").trim().split(/\s+/).slice(1).join(" ").trim();
+				if (!name) {
+					const agents = await listAgyAgents(resolveAgyBinary());
+					const current = loadConfig().agent;
+					const roster =
+						agents.length > 0
+							? agents.map((a) => `${a === current ? ">" : " "} ${a}`).join("\n")
+							: "(no custom agents defined)";
+					ui?.notify(`current agent: ${current ?? "(agy default)"}\n\n${roster}\n\nusage: /agy agent <name|off>`, "info");
+					return;
+				}
+				if (name === "off" || name === "none" || name === "default") {
+					saveConfig({ agent: undefined });
+					ui?.notify("agent cleared: agy default", "info");
+					return;
+				}
+				if (!isValidAgyAgentName(name)) {
+					ui?.notify(`invalid agent name: ${name} (use letters, digits, dot, dash, underscore)`, "warning");
+					return;
+				}
+				saveConfig({ agent: name });
+				ui?.notify(`agent set: ${name} (takes effect on the next stream-json turn)`, "info");
 				return;
 			}
 			if (sub === "permissions") {

@@ -18,6 +18,10 @@ export interface DriverProfile {
 	effort?: string;
 	mode: string;
 	skipPermissions: boolean;
+	/** Custom agy agent (stream-json `--agent`). ACP has no agent slot in the
+	 *  protocol (RC01) and ignores it; the /agy agent command refuses to set
+	 *  one while the ACP engine is active. */
+	agent?: string;
 }
 
 export interface DriverTurnRequest extends DriverProfile {

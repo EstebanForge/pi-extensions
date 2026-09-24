@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeAgyAgentName } from "./agents.js";
 
 const CONFIG_PATH = path.join(
 	os.homedir(),
@@ -112,6 +113,9 @@ export interface AgyConfig {
 	 *  on the installed pi. The notice never repeats; /agy patch-cleanup is
 	 *  always available. */
 	patchCleanupNotified?: boolean;
+	/** Custom agy agent for stream-json turns (`--agent`, /agy agent).
+	 *  Absent = agy's default agent. ACP turns ignore it (no protocol slot). */
+	agent?: string;
 	/** Which pi tools the MCP bridge exposes to agy: "none" (bridge off),
 	 *  "all" (every registered non-builtin tool incl. other Ask* delegations;
 	 *  default - users expect the bridge working out of the box, and the
@@ -316,6 +320,11 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		usageEstimate,
 	};
 
+	// Custom agent for stream-json turns (--agent). Env wins over the file
+	// (same pattern as mode). Normalized (trim/cap/control-strip); an empty
+	// result means agy's default agent.
+	const agent = normalizeAgyAgentName(process.env.AGY_AGENT ?? file.agent);
+
 	return {
 		engine,
 		acp,
@@ -330,6 +339,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		systemPrompt,
 		turnTimeoutMin,
 		inactivityTimeoutMin,
+		agent,
 		approvals: { gateMode, mode: gateAskMode },
 		patchCleanupNotified: file.patchCleanupNotified === true,
 	};

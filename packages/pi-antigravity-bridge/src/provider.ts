@@ -1232,6 +1232,7 @@ async function runTurnDriver(
 				effort,
 				mode: config.mode,
 				skipPermissions: config.skipPermissions,
+				agent: config.agent,
 				timeoutMin: config.turnTimeoutMin,
 				inactivityMin: config.inactivityTimeoutMin,
 				conversationId: existing?.conversationId ?? null,

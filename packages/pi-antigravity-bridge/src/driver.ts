@@ -333,6 +333,7 @@ export class StreamDriver implements TurnDriver {
 			effort: request.effort,
 			mode: request.mode,
 			skipPermissions: request.skipPermissions,
+			agent: request.agent,
 		};
 		this.#boundConversation = request.conversationId ?? undefined;
 		this.#stderrTail = "";
@@ -346,6 +347,7 @@ export class StreamDriver implements TurnDriver {
 		args.push("--model", request.model);
 		if (request.effort) args.push("--effort", request.effort);
 		args.push("--mode", request.mode);
+		if (request.agent) args.push("--agent", request.agent);
 		if (request.skipPermissions) args.push("--dangerously-skip-permissions");
 		if (request.conversationId) args.push("--conversation", request.conversationId);
 		args.push(
@@ -627,6 +629,7 @@ export class StreamDriver implements TurnDriver {
 		if (cur.effort !== next.effort) return "effort";
 		if (cur.mode !== next.mode) return "mode";
 		if (cur.skipPermissions !== next.skipPermissions) return "permissions";
+		if (cur.agent !== next.agent) return "agent";
 		if (!next.conversationId) return this.#boundConversation ? "conversation-reset" : undefined;
 		return next.conversationId === this.#boundConversation ? undefined : "conversation";
 	}
