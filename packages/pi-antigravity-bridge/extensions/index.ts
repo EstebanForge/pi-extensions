@@ -357,9 +357,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	if (engine === "acp") {
 		pi.registerEntryRenderer<NativeDisplayEvent>("agy-native-event", (entry, { expanded }, theme) => {
 			const event = entry.data;
-			const title = (event?.path ? path.basename(event.path) : event?.command?.split(/\r?\n/, 1)[0] ?? event?.name ?? "tool").slice(0, 160);
+			// Collapsed detail: most-specific signal wins (path, command, agy's own
+			// display text). The name is NOT a fallback here - it rendered "ls ls"
+			// duplication whenever the event carried neither path nor command.
+			const firstLine = (value: string | undefined): string | undefined => value?.split(/\r?\n/, 1)[0].trim() || undefined;
+			const detail = event?.path ? path.basename(event.path) : firstLine(event?.command) ?? firstLine(event?.output);
 			const status = event?.status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
-			const lines = [`${status} ${theme.fg("toolTitle", event?.name ?? "Antigravity")} ${theme.fg("muted", title)}`];
+			const lines = [`${status} ${theme.fg("toolTitle", event?.name ?? "Antigravity")}${detail ? ` ${theme.fg("muted", detail.slice(0, 160))}` : ""}`];
 			if (expanded) {
 				if (event?.path) lines.push(theme.fg("dim", event.path));
 				if (event?.diff) {
