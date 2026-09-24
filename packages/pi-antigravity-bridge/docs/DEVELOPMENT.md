@@ -88,10 +88,9 @@ Most "stuck" reports trace to one of:
 
 ## Regression tests worth knowing
 
-- `tests/stream-roundtrip.test.ts` - the stream-json engine pieces: NDJSON parser, native re-exec mapping, and the no-patch toolUse round-trip store.
+- `tests/stream-roundtrip.test.ts` - the stream-json engine pieces: NDJSON parser, native re-exec mapping, and the toolUse round-trip store.
 - `tests/provider-streaming.test.ts` - drives streamSimple with an injected fake driver (no agy) and asserts how pi's reasoning level maps onto the agy `--effort` tier (forward, clamp, omit).
 - `tests/provider-digest.test.ts` - the G1 context digest builder: injects pi-side context without replaying agy's own history.
-- `tests/patch-cleanup.test.ts` - legacy-patch detection and restore, real fs via tmpdirs, no mocks.
 - `tests/mcp-server.test.ts` - the MCP tool bridge end-to-end against a real (port 0) server: capability gate, per-pid config lifecycle, shared-secret token gate, 1 MB body cap, protocol-version clamp. The provider owns the tool catalog and the round-trip; the server only ferries list/call.
 - `tests/acp-jsonrpc.test.ts` - the JSON-RPC stdio session: id correlation, typed error results, server-to-client requests, notifications, line framing (partial frames buffered across chunk boundaries, garbage lines counted not fatal).
 - `tests/acp-events.test.ts` - ACP session/update mapping onto pi activities (text, thought, tool cards) and the session/load replay suppression.

@@ -5,7 +5,7 @@
 //
 // Mutating tools (commands, edits, writes) and agy-specialty tools are never
 // re-executed - they replay through the display-only `antigravity` wrapper
-// tool. Ported from tianzuo/pi-antigravity lib/native-tools.ts (MIT).
+// tool.
 
 export interface NativeToolCall {
 	/** pi builtin tool name (`read`, `ls`, `grep`, `find`). */

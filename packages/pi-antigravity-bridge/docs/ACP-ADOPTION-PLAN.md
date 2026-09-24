@@ -180,7 +180,6 @@ is an unmaintained contract. ACP is the maintained one.
 | `src/diff-render.ts` | git-sourced diffs for agy edits | KEEP while agy self-executes edits (our fs capabilities off) |
 | `src/ask-tool.ts` | AskAntigravity one-shot via `agy -p` | MIGRATE to ACP one-shot in phase 3 |
 | `src/discovery.ts` | snapshot-diff + `/proc` fd-scan conversation binding | DELETE in phase 3 (ACP returns real session ids) |
-| `src/patch-cleanup.ts` | pre-1.3.0 patch cleanup | KEEP unrelated |
 | `extensions/index.ts` | registration, `/agy` command, notices | EXTEND: engine switch, acp auth command, doctor rebuild |
 
 ## 4. Capability matrix

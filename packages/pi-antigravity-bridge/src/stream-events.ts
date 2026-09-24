@@ -3,8 +3,7 @@
 // `agy --input-format stream-json --output-format stream-json` emits one JSON
 // object per line on stdout: `init` (conversation binding), `step_update`
 // (user_input / agent_response / checkpoint / tool steps), `result` (terminal).
-// Shapes captured from live output and cross-checked against
-// tianzuo/pi-antigravity lib/events.ts (MIT). Unknown event kinds parse as
+// Shapes captured from live output. Unknown event kinds parse as
 // {kind:"unknown"} so a future agy release degrades instead of crashing the
 // reader loop.
 

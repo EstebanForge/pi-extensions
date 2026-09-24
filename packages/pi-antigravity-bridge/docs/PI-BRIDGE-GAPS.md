@@ -11,9 +11,7 @@ they are closed and not used here.
 
 ### pi UI primitives
 
-**Status:** Open. **Blocked by:** pi exposing a public API surface for these
-without a patch (the old plan of patching `AgentSession.ui` into pi's dist is
-dead; the bridge no longer patches pi).
+**Status:** Open. **Blocked by:** pi lacking a public API surface for these.
 
 **Objective:** Let agy drive pi's native UI: confirm dialogs, toasts,
 file/directory pickers, status/footer updates. agy can already
@@ -88,7 +86,7 @@ text-only, deliberately: the late-delivery prompt
   any image it produces (e.g. `/tmp/pi-clipboard-<uuid>.png`), and agy
   reaches and reads those files directly via the bridge's `read` tool, so
   returning image content blocks over the transport would duplicate a path
-  that already works end-to-end. No agy transport change or pi patch
+  that already works end-to-end. No agy transport change
   required. Update (2026-09-04): user-provided image *attachments* now ride
   natively on the ACP engine as typed prompt content blocks (see README, Two
   engines); the stream-json CLI prompt stays text-only, and the bridge

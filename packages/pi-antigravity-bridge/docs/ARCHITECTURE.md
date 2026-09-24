@@ -19,7 +19,6 @@ src/driver.ts         stream-json driver: persistent agy process, turn serializa
 src/stream-events.ts  agy NDJSON event parser (init / step_update / result) + usage mapping onto pi's Usage
 src/native-tools.ts   maps agy read-only tool steps to real pi builtins (read/ls/grep/find) for native re-execution
 src/skills.ts         activate_skill bridge: exposes the pi Agent Skills catalog to agy, answered by the bridge directly
-src/patch-cleanup.ts  detects a leftover invokeTool patch from pre-1.3.0 installs; /agy patch-cleanup restores the backup
 src/discovery.ts      conversation-id binding for the AskAntigravity one-shot tool (agy -p never prints its conversation id)
 src/models.ts         agy models -> pi Model projection (full catalog, per-model effort)
 src/sessions.ts       atomic JSON store: pi session -> agy conversation + watermark
@@ -60,9 +59,9 @@ Unknown event kinds parse as `{kind:"unknown"}` so a future agy release degrades
 
 Usage maps onto pi's `Usage` (input/output/thinking/cache-read tokens); cost stays zero because agy runs on subscription quota.
 
-### No-patch tool round-trip (G9)
+### Tool round-trip (G9)
 
-The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. No pi patch, no privileged API.
+The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. Public APIs only.
 
 Display follows the same split: agy read-only steps (`view_file`, `list_dir`, `grep_search`, `find_by_name`) re-run as real pi builtins via `native-tools.ts`, so their cards render with pi's own renderers. Mutating and agy-specialty steps replay through a display-only `antigravity` wrapper tool - recorded output only, nothing re-executes. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
 

@@ -7,7 +7,7 @@
 //
 // Recycle semantics: the child is killed and respawned when the next turn's
 // process profile (model / effort / mode / cwd / conversation) drifts from the
-// running one, mirroring tianzuo/pi-antigravity's driver. Stats and a bounded
+// running one. Stats and a bounded
 // lifecycle log feed /agy doctor.
 //
 // The driver never talks to the MCP bridge directly: the provider owns the

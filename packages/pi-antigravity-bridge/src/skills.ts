@@ -5,7 +5,6 @@
 // can tell when a skill applies. Calling it returns the full SKILL.md plus the
 // bundled resource dir. Nothing is appended to the prompt: agy sees the
 // catalog in tools/list on every spawn, including after pi compaction.
-// Shape borrowed from tianzuo/pi-antigravity lib/skills.ts (MIT).
 
 import fs from "node:fs";
 import os from "node:os";

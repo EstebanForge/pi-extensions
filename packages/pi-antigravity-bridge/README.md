@@ -40,7 +40,7 @@ While agy is the active model it normally cannot see pi's universe of extensions
 
 The bridge starts a localhost MCP server inside pi's process. The exposed catalog is computed live from pi's active tools on every `tools/list` and re-checked immediately before every `tools/call`: the `bridgeTools` mode, the session's `/agy tools` hidden set, and the bridge's own internal tools (`AskAntigravity`, the display-only `antigravity` wrapper, `activate_skill`, `bridge_poll_result`, the `agy_web_search`/`agy_read_url` wrappers) are filtered each time, and a call for anything outside the fresh set is rejected - a cached MCP catalog is not authorization. A call that passes routes into pi's own tool loop via the round-trip described below. Discovery has two layers. The provider's agy gets a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the driver passes that dir as an extra `--add-dir` when it spawns agy. A per-pid entry (`pi-bridge-<pid>`) is also registered in the user's global agy config (`~/.gemini/config/mcp_config.json`; foreign servers preserved, stale entries swept at start), so agy builds that read only the global config still find the bridge.
 
-**No patch required.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call. This is the same mechanism tianzuo/pi-antigravity uses; upstream pi APIs only.
+**Upstream pi APIs only.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call.
 
 **Long calls don't die.** agy's MCP client abandons a `tools/call` request at a flat ~180s, which used to kill any pi tool that ran longer (a long peer review, a build, a commit preview waiting for you). A call still running after ~20 seconds now settles its HTTP request with a `STILL RUNNING` answer carrying a `callId` while pi keeps executing; agy fetches the result through the bridge-local `bridge_poll_result` tool and polls until it lands. Escalated calls get their own 30-minute budget, so human-gated tools can take as long as the human takes. Fast calls stay fully synchronous and never see any of this. If a park does fail (abort, timeout, recycle), the late result is re-routed to agy as a follow-up prompt in the same conversation instead of being lost.
 
@@ -79,7 +79,7 @@ Full mechanics, configuration, and a sample gate extension: [docs/APPROVAL-GATE.
 
 ## Install
 
-> **No patch required.** The bridge runs on pi's public APIs only; the extension never edits your pi install. If an older version of this extension patched your pi (adding `pi.invokeTool()`), the leftover is inert and a pi update removes it. The extension detects it once and offers `/agy patch-cleanup` to restore the original files from the backup immediately.
+> The bridge runs on pi's public APIs; the extension never edits your pi install.
 
 Install with pi's package manager:
 
@@ -150,7 +150,6 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy acp-bin <path|auto>  point the ACP engine at a specific server binary (auto = setup installs, or AGY_ACP_BIN; applies on the next ACP turn)
 /agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp is beta and runs self-service setup: binary install + auth bootstrap). No arguments opens the engine picker modal (TUI)
 /agy auth-manual             manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
-/agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)
 ```
 
