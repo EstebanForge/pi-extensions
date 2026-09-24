@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.3] - 2026-09-24
+
+### Fixed
+
+- **Collapsed ACP tool cards no longer repeat the tool name.** The `agy-native-event` renderer filled the muted detail slot with the tool name itself whenever an event carried neither a path nor a recognized command argument, so `ls` and `exec_command` collapsed to "✓ ls ls" / "✓ exec_command exec_command". The detail now prefers the path basename, then the command's first line, then agy's own display text (the first line of the completed call's output, e.g. "Run make test in wicket-cli-atlas"), and stays empty when none exists; the name always stands alone. ACP tool_call frames carry no per-tool reasoning, so agy's display text is the closest honest signal.
+
 ## [1.7.2] - 2026-09-24
 
 ### Added
