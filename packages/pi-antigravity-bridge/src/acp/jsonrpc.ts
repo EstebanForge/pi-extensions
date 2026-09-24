@@ -16,6 +16,8 @@
 //   - `abortAll()` rejects every pending request (Gate D teardown: no promise
 //     survives a killed connection).
 
+import { isKnownNoiseLine, MAX_FRAME_BYTES, stripGluedNoise } from "../frame-guard.js";
+
 export interface JsonRpcErrorShape {
 	code: number;
 	message: string;
@@ -41,6 +43,9 @@ export interface JsonRpcSessionOptions {
 	onNotification?: (method: string, params: unknown) => void;
 	/** Unparseable line (logged, never fatal). */
 	onParseError?: (line: string) => void;
+	/** Frame-cap breach: the peer flooded stdout with no newline. The session
+	 *  aborts itself; the transport must kill the process. */
+	onOverflow?: (detail: string) => void;
 	/** Default timeout for requests without an explicit one (ms). 0 = none. */
 	defaultTimeoutMs?: number;
 }
@@ -58,6 +63,7 @@ export class JsonRpcSession {
 	#pending = new Map<number, Pending>();
 	#nextId = 1;
 	#aborted = false;
+	#overflowed = false;
 	#lineBuf = "";
 	parseErrors = 0;
 
@@ -68,24 +74,60 @@ export class JsonRpcSession {
 
 	/** Feed raw transport bytes. Stdio chunks are NOT newline-aligned: bytes
 	 *  are buffered and only complete lines are parsed (a frame split across a
-	 *  64KB pipe boundary must never be dropped). */
+	 *  64KB pipe boundary must never be dropped). The buffer is capped: a peer
+	 *  flooding stdout with no newline breaches the cap and the session dies
+	 *  (onOverflow + abortAll), it never grows without bound. */
 	feed(chunk: string): void {
+		if (this.#overflowed) return;
 		this.#lineBuf += chunk;
+		if (this.#lineBuf.length > MAX_FRAME_BYTES) {
+			const detail = `${this.#lineBuf.length} bytes buffered with no newline (cap ${MAX_FRAME_BYTES})`;
+			this.#overflow(detail);
+			return;
+		}
 		const lines = this.#lineBuf.split("\n");
 		this.#lineBuf = lines.pop() ?? "";
 		for (const raw of lines) {
 			const line = raw.trim();
 			if (!line) continue;
+			// Known foreign noise (e.g. the Chromium launcher behind a browser
+			// login) is dropped before parsing, not counted as a parse error.
+			if (isKnownNoiseLine(line)) continue;
 			let msg: JsonRpcIncoming;
 			try {
 				msg = JSON.parse(line) as JsonRpcIncoming;
 			} catch {
-				this.parseErrors += 1;
-				this.#opts.onParseError?.(line.slice(0, 200));
-				continue;
+				// A noise FRAGMENT without its newline glued itself onto the next
+				// real frame; strip everything up to the marker and re-parse.
+				const repaired = stripGluedNoise(line);
+				if (repaired) {
+					try {
+						msg = JSON.parse(repaired) as JsonRpcIncoming;
+					} catch {
+						this.parseErrors += 1;
+						this.#opts.onParseError?.(line.slice(0, 200));
+						continue;
+					}
+				} else {
+					// Malformed lines are counted and dropped, never fatal (the
+					// parseAgyLine lesson: a chatty banner must not kill the reader
+					// loop).
+					this.parseErrors += 1;
+					this.#opts.onParseError?.(line.slice(0, 200));
+					continue;
+				}
 			}
 			this.#handleMessage(msg);
 		}
+	}
+
+	#overflow(detail: string): void {
+		this.#overflowed = true;
+		this.#lineBuf = "";
+		// Aborting first gives pending requests the typed overflow reason; the
+		// transport's own teardown afterwards is a no-op on the empty map.
+		this.abortAll(`stdout frame overflow: ${detail}`);
+		this.#opts.onOverflow?.(detail);
 	}
 
 	#handleMessage(msg: JsonRpcIncoming): void {

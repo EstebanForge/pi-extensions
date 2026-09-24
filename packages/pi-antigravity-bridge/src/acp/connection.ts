@@ -164,6 +164,24 @@ export class AcpConnection {
 			onRequest: (method, params) => this.#onServerRequest(method, params),
 			onNotification: (method, params) => this.#onNotification(method, params),
 			onParseError: (line) => this.#opts.log("parse-error", { line }),
+			onOverflow: (detail) => {
+				// The session already aborted its pending requests with the typed
+				// reason; finish so later events are ignored, then take the whole
+				// process GROUP down: a flooder is broken or hostile, and the
+				// binary may be a wrapper script with live descendants.
+				this.#opts.log("frame-overflow", { detail });
+				this.#finish(`stdout frame overflow: ${detail}`);
+				const child = this.#child;
+				try {
+					if (child?.pid && process.platform !== "win32") {
+						process.kill(-child.pid, "SIGKILL");
+					} else {
+						child?.kill("SIGKILL");
+					}
+				} catch {
+					/* already gone */
+				}
+			},
 		});
 		this.#rpc = rpc;
 

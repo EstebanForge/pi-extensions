@@ -48,6 +48,45 @@ describe("stream-json driver stdout framing (H1)", () => {
 	});
 });
 
+describe("stream-json driver frame ceiling", () => {
+	test("a no-newline flood over the frame cap fails the turn instead of buffering forever", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "OVERFLOW-FLOOD",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /frame overflow/i);
+	}, 30_000);
+});
+
+describe("stream-json driver stdout noise guard", () => {
+	test("a noise line and a glued noise fragment do not corrupt the turn", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "NOISE-GLUE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.conversationId, "conv-noise");
+		assert.equal(outcome.response, "AFTER-NOISE");
+	});
+});
+
 describe("stream-json driver shutdown latch", () => {
 	// Parity with the ACP driver fix: pi fires session_shutdown on /new,
 	// /resume and /fork, so a closed driver must respawn on the next turn

@@ -18,6 +18,28 @@ case "$_line" in
     sleep 30
     exit 0
     ;;
+  *OVERFLOW-FLOOD*)
+    # Frame-ceiling test: far more than the 32MB cap with no newline. The
+    # driver's reassembly buffer must abort the turn instead of growing.
+    # Exit on the write callback: a timer would race the parent's drain
+    # speed and could kill the flood before the cap is reached.
+    printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-overflow"}}'
+    node -e 'process.stdout.write("x".repeat(34*1024*1024), () => process.exit(0))'
+    sleep 30
+    exit 0
+    ;;
+  *NOISE-GLUE*)
+    # Noise-guard test: the Chromium launcher line lands whole (dropped),
+    # then a noise FRAGMENT without a newline glues onto the next real
+    # frame (stripped, so the result frame still parses).
+    printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-noise"}}'
+    sleep 0.1
+    printf '%s\n' 'Opening in existing browser session.'
+    printf '%s' 'Opening in existing browser session.'
+    printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"AFTER-NOISE"}}'
+    sleep 0.2
+    exit 0
+    ;;
 esac
 printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-777"}}'
 sleep 0.15

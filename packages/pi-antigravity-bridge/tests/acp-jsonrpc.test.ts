@@ -4,6 +4,7 @@
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { JsonRpcResponseError, JsonRpcSession } from "../src/acp/jsonrpc.js";
+import { MAX_FRAME_BYTES } from "../src/frame-guard.js";
 
 function makeSession(handlers: Partial<ConstructorParameters<typeof JsonRpcSession>[0]> = {}) {
 	const sent: unknown[] = [];
@@ -136,5 +137,55 @@ describe("acp/jsonrpc", () => {
 		session.feed(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
 		assert.equal(session.pendingCount, 0);
 		void p.catch(() => {});
+	});
+});
+
+describe("acp/jsonrpc frame ceiling and stdout noise", () => {
+	test("a frame over the cap fires onOverflow, aborts pending, and stops parsing", async () => {
+		const overflows: string[] = [];
+		const { session, sent } = makeSession({ onOverflow: (detail) => overflows.push(detail) });
+		const p = session.request("session/prompt", {});
+		// A flood with no newline must never grow the buffer without bound.
+		session.feed("x".repeat(MAX_FRAME_BYTES + 1));
+		await assert.rejects(p, /frame overflow/i);
+		assert.equal(overflows.length, 1);
+		// The session is dead: later bytes are ignored, not parsed.
+		session.feed(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }) + "\n");
+		assert.equal(overflows.length, 1);
+		void p.catch(() => {});
+	});
+
+	test("a complete known-noise line is dropped before parsing, not a parse error", async () => {
+		let parseErrors = 0;
+		const { session, sent } = makeSession({ onParseError: () => (parseErrors += 1) });
+		const p = session.request("session/prompt", {});
+		// The Chromium launcher line lands as its own newline-terminated line.
+		session.feed("Opening in existing browser session.\n");
+		session.feed(JSON.stringify({ jsonrpc: "2.0", id: (sent[0] as { id: number }).id, result: { ok: true } }) + "\n");
+		assert.deepEqual(await p, { ok: true });
+		assert.equal(parseErrors, 0);
+	});
+
+	test("a noise fragment glued to the next frame is stripped and the frame parses", async () => {
+		let parseErrors = 0;
+		const { session, sent } = makeSession({ onParseError: () => (parseErrors += 1) });
+		const p = session.request("session/prompt", {});
+		// The noise line arrived WITHOUT its newline: it glues onto the next
+		// real frame. Pre-fix this line failed JSON.parse and the response was
+		// lost (the request hung until timeout).
+		session.feed("Opening in existing browser session.");
+		session.feed(JSON.stringify({ jsonrpc: "2.0", id: (sent[0] as { id: number }).id, result: { ok: true } }) + "\n");
+		assert.deepEqual(await p, { ok: true });
+		assert.equal(parseErrors, 0);
+	});
+
+	test("an ordinary malformed banner stays non-fatal (parseAgyLine lesson)", async () => {
+		let parseErrors = 0;
+		const { session, sent } = makeSession({ onParseError: () => (parseErrors += 1) });
+		const p = session.request("session/prompt", {});
+		session.feed("chatty banner\n");
+		session.feed(JSON.stringify({ jsonrpc: "2.0", id: (sent[0] as { id: number }).id, result: { ok: true } }) + "\n");
+		assert.deepEqual(await p, { ok: true });
+		assert.equal(parseErrors, 1);
 	});
 });

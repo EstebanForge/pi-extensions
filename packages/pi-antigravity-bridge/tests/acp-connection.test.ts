@@ -64,3 +64,33 @@ test("acp connection: a token split across stderr chunks is still redacted", asy
 	}
 	fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("acp connection: a stdout frame flood kills the connection instead of growing memory", async () => {
+	// 34MB with no newline breaches the 32MB frame cap: start() must reject
+	// with a typed reason and the exit path must fire, not buffer forever.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-conn-"));
+	const exits: Array<{ stderrTail: string }> = [];
+	const conn = new AcpConnection({
+		cwd: dir,
+		bin: process.execPath,
+		binArgs: [
+			"-e",
+			// Flood stdout, and exit only when the write has fully drained: a
+			// timer here would race the parent's drain speed (slow CI workers
+			// read slower than the 34MB flows) and kill the flood mid-write.
+			`process.stdout.write("x".repeat(34*1024*1024), () => process.exit(0));`,
+		],
+		log: () => {},
+		onUpdate: () => {},
+		onExit: (info) => exits.push(info),
+	});
+	let rejection: unknown;
+	try {
+		await conn.start();
+	} catch (err) {
+		rejection = err;
+	}
+	assert.match((rejection as Error)?.message ?? "", /frame overflow/i);
+	assert.ok(exits.length > 0, "exit fired");
+	fs.rmSync(dir, { recursive: true, force: true });
+}, 30_000);

@@ -17,6 +17,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseAgyLine } from "./stream-events.js";
+import { isKnownNoiseLine, MAX_FRAME_BYTES, stripGluedNoise } from "./frame-guard.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
 import { gateHooksStaged } from "./approval-hook.js";
 import { redactText } from "./redact.js";
@@ -424,6 +425,18 @@ export class StreamDriver implements TurnDriver {
 		// Buffer the trailing partial line: a frame split across pipe chunks is
 		// reassembled when its newline arrives (mirrors JsonRpcSession.feed).
 		this.#stdoutBuf += chunk;
+		if (this.#stdoutBuf.length > MAX_FRAME_BYTES) {
+			// A no-newline flood over the cap means the peer is broken or
+			// hostile: fail the turn and tear the process tree down instead of
+			// growing memory without bound.
+			const detail = `${this.#stdoutBuf.length} bytes buffered with no newline (cap ${MAX_FRAME_BYTES})`;
+			this.#stdoutBuf = "";
+			const turn = this.#active;
+			this.#log("frame-overflow", { detail });
+			if (turn && !turn.closed) this.#failTurn(turn, `stdout frame overflow: ${detail}`);
+			this.#killChild();
+			return;
+		}
 		const lines = this.#stdoutBuf.split("\n");
 		this.#stdoutBuf = lines.pop() ?? "";
 		const turn = this.#active;
@@ -431,7 +444,19 @@ export class StreamDriver implements TurnDriver {
 		if (turn.idleTimer) turn.idleTimer.refresh();
 		for (const line of lines) {
 			if (!line.trim()) continue;
-			this.#applyParsed(turn, parseAgyLine(line));
+			// Known foreign noise (e.g. the Chromium launcher behind a browser
+			// login) is dropped; a noise FRAGMENT glued onto a real frame is
+			// stripped so the frame still parses.
+			if (isKnownNoiseLine(line)) continue;
+			let parsed = parseAgyLine(line);
+			// Repair applies only to true parse failures (raw is the string
+			// fragment): a valid JSON object agy sent with an unrecognized shape
+			// also lands as "unknown" and must reach the turn untouched.
+			if (parsed.kind === "unknown" && typeof parsed.raw === "string") {
+				const repaired = stripGluedNoise(line);
+				if (repaired) parsed = parseAgyLine(repaired);
+			}
+			this.#applyParsed(turn, parsed);
 			if (turn.closed) return;
 		}
 	}
