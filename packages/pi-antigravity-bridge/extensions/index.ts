@@ -71,6 +71,7 @@ import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker
 import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
+import { fetchAgyQuota, formatAgyQuotaReport } from "../src/usage.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
@@ -1088,7 +1089,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1375,6 +1376,33 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(`mode set to ${next.mode}`, "info");
 				} else {
 					ui?.notify(`current mode: ${loadConfig().mode}\nusage: /agy mode plan|accept-edits`, "info");
+				}
+				return;
+			}
+			if (sub === "quota") {
+				// Quota lives in the CLI's Google identity. A pure-ACP install
+				// without the CLI is a supported shape; say what is missing instead
+				// of rendering a fetch failure.
+				const bin = resolveAgyBinary();
+				if (!isAgyInstalled(bin)) {
+					ui?.notify(
+						"quota comes from the agy CLI, which is not installed. ACP-only setups can install the CLI separately (same Google account) to see subscription quota (/agy doctor shows what IS available).",
+						"warning",
+					);
+					return;
+				}
+				// /usage answers in ~10s live; surface the wait instead of a dead
+				// command line.
+				ui?.setStatus("agy-quota", "checking agy quota…");
+				try {
+					const report = await fetchAgyQuota(bin);
+					if (report === undefined) {
+						ui?.notify("quota unavailable: agy did not return a /usage payload (see /agy doctor for binary health).", "warning");
+						return;
+					}
+					ui?.notify(formatAgyQuotaReport(report), "info");
+				} finally {
+					ui?.setStatus("agy-quota", undefined);
 				}
 				return;
 			}

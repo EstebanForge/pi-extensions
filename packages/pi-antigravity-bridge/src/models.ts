@@ -114,12 +114,18 @@ export interface AgyModelEntry {
 
 /** Spawn a read-only agy listing subcommand and return its raw stdout text.
  *  Returns "" on any failure (non-zero exit, spawn error, watchdog timeout,
- *  or output cap). Bounded by DISCOVERY_TIMEOUT_MS so a hung agy (auth
- *  prompt, network stall) can't block the caller, and by
- *  MODELS_OUTPUT_CAP_BYTES so a runaway agy can't grow the buffer without
- *  limit. Shared by the model catalog (spawned ONCE per load, provider +
- *  tool catalog) and the agent roster. */
-export async function spawnAgyRaw(binary: string, args: string[]): Promise<string> {
+ *  or output cap). Bounded by timeoutMs (default DISCOVERY_TIMEOUT_MS) so a
+ *  hung agy (auth prompt, network stall) can't block the caller, and by
+ *  capBytes (default MODELS_OUTPUT_CAP_BYTES) so a runaway agy can't grow
+ *  the buffer without limit. Shared by the model catalog (spawned ONCE per
+ *  load, provider + tool catalog), the agent roster, and the quota fetch
+ *  (which passes its own 30s budget: /usage answers in ~10s live). */
+export async function spawnAgyRaw(
+	binary: string,
+	args: string[],
+	timeoutMs: number = DISCOVERY_TIMEOUT_MS,
+	capBytes: number = MODELS_OUTPUT_CAP_BYTES,
+): Promise<string> {
 	try {
 		return await new Promise<string>((resolve, reject) => {
 			const proc = spawn(binary, args, {
@@ -138,7 +144,7 @@ export async function spawnAgyRaw(binary: string, args: string[]): Promise<strin
 			};
 			proc.stdout?.on("data", (d: string) => {
 				if (capped) return;
-				if (out.length + d.length > MODELS_OUTPUT_CAP_BYTES) {
+				if (out.length + d.length > capBytes) {
 					capped = true;
 					try {
 						proc.kill("SIGKILL");
@@ -162,7 +168,7 @@ export async function spawnAgyRaw(binary: string, args: string[]): Promise<strin
 					/* already gone */
 				}
 				finish("");
-			}, DISCOVERY_TIMEOUT_MS);
+			}, timeoutMs);
 		});
 	} catch {
 		return "";
