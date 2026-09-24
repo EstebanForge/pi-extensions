@@ -11,9 +11,10 @@
 //     the effort tier baked in, e.g. gemini-3.8-flash-low)
 //   - session/cancel returns -32601 on RC01 (not implemented) — the driver
 //     treats that as "cancel unsupported" and falls back to teardown+kill
-//   - session/request_permission is answered in-connection: policy per turn
-//     (skipPermissions on -> first allow option; off -> first reject option,
-//     fail-closed)
+//   - session/request_permission: skipPermissions turns answer the first
+//     allow option synchronously; otherwise a wired human handler PARKS the
+//     request (the JSON-RPC reply waits for the decision), and everything
+//     else fail-closes to the first reject option
 //   - session/load replays history as notifications BEFORE its response; the
 //     driver suppresses updates while the load is in flight
 //   - mcpServers entries: {name, type:"http", url, headers:[]} — headers is a
@@ -65,9 +66,17 @@ export interface AcpConnectionOptions {
 	 *  the same param). Evaluated lazily per call. */
 	mcpServers?: () => AcpMcpServer[];
 	/** Permission policy for session/request_permission, evaluated per request:
-	 *  "auto" selects the first allow option; "deny" fail-closes to the first
-	 *  reject option. Absent = deny (fail closed). */
+	 *  "auto" selects the first allow option; "deny" consults the human
+	 *  handler (parking) or fail-closes to the first reject option. Absent =
+	 *  deny (fail closed). */
 	permissions?: () => "auto" | "deny";
+	/** Human gate for "deny"-policy turns. The request is PARKED: the JSON-RPC
+	 *  reply waits until the handler settles. The returned optionId is
+	 *  validated against the server's options; undefined/null deny. Absent =
+	 *  synchronous deny (fail closed). */
+	onPermissionRequest?: AcpPermissionHandler;
+	/** Park budget for one permission dialog. Tests shrink it. */
+	permissionParkMs?: number;
 	/** Record file for BROWSER-captured OAuth URLs (src/acp/browser-capture.ts).
 	 *  The server hands the login URL only to the browser-open call, so the
 	 *  wrapper records it there; the connection watches the file and logs
@@ -77,6 +86,30 @@ export interface AcpConnectionOptions {
 
 const INIT_TIMEOUT_MS = 30_000;
 const SESSION_OP_TIMEOUT_MS = 20_000;
+
+/** Human-decision budget for one parked permission request. Mirrors the
+ *  approval-gate park budget (APPROVAL_PARK_TIMEOUT_MS): the dialog must
+ *  deny by itself, never hold the agy prompt open forever. */
+const PERMISSION_PARK_MS = 480_000;
+
+/** One session/request_permission option block (the subset we consume). */
+export interface AcpPermissionOption {
+	optionId?: string;
+	kind?: string;
+	name?: string;
+}
+
+/** Payload handed to the permission handler when the server asks for a human
+ *  decision. Options are server-defined data; the handler returns the chosen
+ *  optionId, or undefined/null to deny. */
+export interface AcpPermissionRequest {
+	sessionId?: string;
+	options: AcpPermissionOption[];
+	toolCall?: { toolCallId?: string; kind?: string; title?: string };
+}
+
+export type AcpPermissionHandler = (req: AcpPermissionRequest) => Promise<string | null | undefined>;
+
 
 export class AcpConnection {
 	#opts: AcpConnectionOptions;
@@ -97,6 +130,13 @@ export class AcpConnection {
 	lastConfigOptions: unknown = undefined;
 	#authUrlWatcher: fs.FSWatcher | undefined;
 	#lastAuthUrl: string | null = null;
+	/** Parked permission dialogs: each entry settles its own request with a
+	 *  deny. #finish drains the set so a dying connection never leaves the
+	 *  server's request hanging. */
+	#permissionPending = new Set<() => void>();
+	/** allow_always / reject_always answers, keyed by toolCall kind|title for
+	 *  the life of this connection: identical requests skip the dialog. */
+	#permissionMemory = new Map<string, string>();
 
 	constructor(opts: AcpConnectionOptions) {
 		this.#opts = opts;
@@ -325,26 +365,97 @@ export class AcpConnection {
 		await this.guarded("session/close", { sessionId }, SESSION_OP_TIMEOUT_MS);
 	}
 
-	/** Protocol-level permission answering: policy from the driver ("auto"
-	 *  selects the first allow option; "deny" fail-closes to the first reject
-	 *  option). Never hangs: options are data from the server and the answer
-	 *  is computed synchronously. */
+	/** Protocol-level permission answering: policy "auto" selects the first
+	 *  allow option synchronously; "deny" consults the parked human handler
+	 *  (#answerPermission) or fail-closes. See there for the full matrix. */
 	#onServerRequest(method: string, params: unknown): Promise<unknown> {
 		if (method === "session/request_permission") {
-			const options = (
-				typeof params === "object" && params !== null ? (params as Record<string, unknown>).options : undefined
-			) as Array<{ optionId?: string; kind?: string }> | undefined;
-			const allow = options?.find((o) => typeof o.kind === "string" && o.kind.startsWith("allow"));
-			const deny = options?.find((o) => typeof o.kind === "string" && o.kind.startsWith("reject"));
-			const policy = this.#opts.permissions?.() ?? "deny";
-			const chosen = policy === "auto" ? (allow ?? deny ?? options?.[0]) : (deny ?? options?.[0]);
-			this.#opts.log("permission", { optionId: chosen?.optionId, policy });
-			return Promise.resolve({ outcome: { outcome: "selected", optionId: chosen?.optionId } });
+			return this.#answerPermission(params as AcpPermissionRequest);
 		}
 		// fs/* and terminal/* are declined: our client capabilities are off and
 		// agy keeps executing its own tools (plan §8 capability posture).
 		this.#opts.log("unsupported-server-request", { method });
 		return Promise.reject(new Error(`client capability not enabled: ${method}`));
+	}
+
+	/** Answer session/request_permission. "auto" (skipPermissions turns)
+	 *  selects the first allow option synchronously. Otherwise a wired handler
+	 *  parks the request — the reply waits for the human — while every other
+	 *  path fail-closes synchronously: no handler, esc, throw, timeout,
+	 *  connection death. A chosen *_always option is remembered per connection
+	 *  for identical later requests (same toolCall kind+title). */
+	#answerPermission(params: AcpPermissionRequest): Promise<unknown> {
+		const options = Array.isArray(params?.options) ? params.options : [];
+		const allow = options.find((o) => typeof o.kind === "string" && o.kind.startsWith("allow"));
+	const denyId = options.find((o) => typeof o.kind === "string" && o.kind.startsWith("reject"))?.optionId;
+		const policy = this.#opts.permissions?.() ?? "deny";
+		if (policy === "auto") {
+			const chosen = (allow ?? options[0])?.optionId;
+			this.#opts.log("permission", { optionId: chosen, policy });
+			return Promise.resolve({ outcome: { outcome: "selected", optionId: chosen } });
+		}
+		const handler = this.#opts.onPermissionRequest;
+		if (!handler) {
+			this.#opts.log("permission", { optionId: denyId, policy });
+			return Promise.resolve(
+				denyId !== undefined
+					? { outcome: { outcome: "selected", optionId: denyId } }
+					: { outcome: { outcome: "cancelled" } },
+			);
+		}
+		// Always-memory needs a stable identity: the title. Without one, every
+		// untitled call would collapse onto one key and inherit its answer.
+		const memKey = params?.toolCall?.title ? `${params.toolCall.kind ?? ""}|${params.toolCall.title}` : undefined;
+		const remembered = memKey !== undefined ? this.#permissionMemory.get(memKey) : undefined;
+		if (remembered !== undefined && options.some((o) => o.optionId === remembered)) {
+			this.#opts.log("permission", { optionId: remembered, policy: "memory" });
+			return Promise.resolve({ outcome: { outcome: "selected", optionId: remembered } });
+		}
+		const parkMs = this.#opts.permissionParkMs ?? PERMISSION_PARK_MS;
+		return new Promise((resolve) => {
+			let timer: NodeJS.Timeout | undefined;
+			// First settle wins: a late dialog answer after a timeout/deny must
+			// not re-log or record an always-memory from a dead request.
+			let settled = false;
+			const settle = (optionId: string | undefined, why: string): void => {
+				if (settled) return;
+				settled = true;
+				if (timer) clearTimeout(timer);
+				this.#permissionPending.delete(settleDeny);
+				this.#opts.log("permission", { optionId, policy: why });
+				// undefined optionId (no reject option on the table) cancels
+				// instead of selecting nothing.
+				resolve(
+					optionId !== undefined
+						? { outcome: { outcome: "selected", optionId } }
+						: { outcome: { outcome: "cancelled" } },
+				);
+			};
+			const settleDeny = (): void => settle(denyId, "dialog-deny");
+			timer = setTimeout(() => {
+				this.#opts.log("permission-timeout", { parkMs });
+				settleDeny();
+			}, parkMs);
+			this.#permissionPending.add(settleDeny);
+			Promise.resolve()
+				.then(() => handler(params))
+				.then((picked) => {
+					if (settled) return;
+					const chosen = picked != null ? options.find((o) => o.optionId === picked) : undefined;
+					if (!chosen?.optionId) {
+						settle(denyId, "dialog-deny");
+						return;
+					}
+					if (chosen.kind === "allow_always" || chosen.kind === "reject_always") {
+						if (memKey !== undefined) this.#permissionMemory.set(memKey, chosen.optionId);
+					}
+					settle(chosen.optionId, "dialog");
+				})
+				.catch((err: unknown) => {
+					this.#opts.log("permission-error", { message: err instanceof Error ? err.message : String(err) });
+					settle(denyId, "dialog-error");
+				});
+		});
 	}
 
 	#onNotification(method: string, params: unknown): void {
@@ -466,6 +577,11 @@ export class AcpConnection {
 		this.#exited = true;
 		this.#authUrlWatcher?.close();
 		this.#authUrlWatcher = undefined;
+		// Pending permission dialogs must not outlive the connection: deny them
+		// so their replies race the teardown instead of hanging the server.
+		const pendings = [...this.#permissionPending];
+		this.#permissionPending.clear();
+		for (const deny of pendings) deny();
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
 		this.#opts.onExit({ code: null, signal: null, stderrTail: redactText(this.#stderrTail) });
 	}

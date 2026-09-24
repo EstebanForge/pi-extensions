@@ -104,10 +104,50 @@ rl.on("close", () => {
 async function handle(msg) {
   const { id, method, params } = msg;
 
-  // Client response to our request_permission probe (permission scenario).
-  if (method === undefined && id === 100) {
+  // Client response to our request_permission probe (permission scenarios).
+  // permission: one request (id 100). permission-twice: a second, identical
+  // request (id 101) after the first answer, for allow_always memory tests.
+  if (method === undefined && (id === 100 || id === 101)) {
     const optionId = msg.result?.outcome?.optionId;
     logReq({ _permissionAnswer: optionId });
+    if (scenario === "permission-twice" && id === 100) {
+      send({
+        jsonrpc: "2.0",
+        id: 101,
+        method: "session/request_permission",
+        params: {
+          sessionId,
+          toolCall: { toolCallId: "t2", kind: "edit", status: "pending", title: "Run create_file?" },
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "always", name: "Always allow", kind: "allow_always" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        },
+      });
+      return;
+    }
+    if (scenario === "permission-late" && id === 100) {
+      // The client's dialog loses the park race (its answer lands late).
+      // The second, identical request must NOT inherit the late answer.
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          id: 101,
+          method: "session/request_permission",
+          params: {
+            sessionId,
+            toolCall: { toolCallId: "t2", kind: "edit", status: "pending", title: "Run create_file?" },
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "always", name: "Always allow", kind: "allow_always" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          },
+        });
+      }, 400);
+      return;
+    }
     await streamPrompt();
     return;
   }
@@ -219,7 +259,7 @@ async function handle(msg) {
         streaming = false;
         return;
       }
-      if (scenario === "permission") {
+      if (scenario === "permission" || scenario === "permission-twice" || scenario === "permission-late") {
         send({
           jsonrpc: "2.0",
           id: 100,
@@ -229,11 +269,28 @@ async function handle(msg) {
             toolCall: { toolCallId: "t1", kind: "edit", status: "pending", title: "Run create_file?" },
             options: [
               { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "always", name: "Always allow", kind: "allow_always" },
               { optionId: "deny", name: "Deny", kind: "reject_once" },
             ],
           },
         });
         return; // resumed by the client's response above
+      }
+      if (scenario === "permission-then-die") {
+        send({
+          jsonrpc: "2.0",
+          id: 100,
+          method: "session/request_permission",
+          params: {
+            sessionId,
+            toolCall: { toolCallId: "t1", kind: "edit", status: "pending", title: "Run create_file?" },
+            options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          },
+        });
+        // Die with the request still parked: the client must settle the
+        // pending permission and fail the turn, never hang.
+        setTimeout(() => process.exit(0), 50);
+        return;
       }
       await streamPrompt();
       return;

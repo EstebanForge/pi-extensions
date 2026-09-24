@@ -15,12 +15,16 @@
 //     probed once per connection; when upstream ships it, abort goes graceful
 //   - overall-timer pause uses remaining-budget semantics on G9 parks (never a
 //     fresh cap); every park carries its own timeout (BRIDGE_TIMEOUT_MS)
-//   - single `auto` permission policy: request_permission answered
-//     in-connection (plan §9.3); no provider involvement
+//   - request_permission: skipPermissions turns answer the first allow option
+//     synchronously; otherwise an optional human handler (extension dialog)
+//     PARKS the request with the turn budget paused; no handler = deny
+//     fail-closed. Approvals-mode parity: a permissionPolicy override maps
+//     approvals.mode allow to the same synchronous auto path
 
 import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
-import { AcpConnection, resolveAcpBinary, type AcpMcpServer } from "./connection.js";
+import { AcpConnection, resolveAcpBinary, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
+import type { AcpPermissionHandler } from "./connection.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
@@ -53,6 +57,16 @@ export interface AcpDriverOptions {
 	 *  none. A function is resolved per turn (follows live config, like bin).
 	 *  Default "estimate". */
 	usageEstimate?: UsageEstimate | (() => UsageEstimate);
+	/** Human gate for ACP request_permission on non-skip turns. Forwarded to
+	 *  the connection; the driver parks the turn budget around each call
+	 *  (dialog time does not eat the deadline). */
+	onPermissionRequest?: AcpPermissionHandler;
+	/** Park budget for one permission dialog (tests shrink it). */
+	permissionParkMs?: number;
+	/** Standing policy consulted when the turn is not skipPermissions:
+	 *  "auto" answers the first allow option synchronously, "deny" consults
+	 *  the human handler or fail-closes. Default deny. */
+	permissionPolicy?: () => "auto" | "deny";
 	log?: (msg: string, data?: unknown) => void;
 }
 
@@ -164,6 +178,33 @@ export class AcpDriver implements TurnDriver {
 			this.#pauseOverall(t);
 		}
 		this.#emit(t, activity);
+	}
+
+	/** Run the human permission dialog with the turn parked: same budget
+	 *  semantics as bridge parks (dialog time does not consume the deadline).
+	 *  The finally unparks the CAPTURED turn, never whatever is active at
+	 *  exit: the turn can close mid-dialog (abort, server death) and a new
+	 *  turn must not inherit this park's accounting. */
+	async #parkForPermission(req: AcpPermissionRequest): Promise<string | null | undefined> {
+		const t = this.#active;
+		const parked = t !== undefined && !t.closed;
+		if (parked) {
+			t.parks += 1;
+			this.#clearIdle(t);
+			this.#pauseOverall(t);
+		}
+		try {
+			return await this.#opts.onPermissionRequest!(req);
+		} finally {
+			if (parked && !t.closed && t.parks > 0) {
+				t.parks -= 1;
+				if (t.parks === 0) {
+					this.#armIdle(t);
+					this.#resumeOverall(t);
+					this.#log("unparked");
+				}
+			}
+		}
 	}
 
 	kickIdle(): void {
@@ -476,8 +517,17 @@ export class AcpDriver implements TurnDriver {
 			cwd: request.cwd,
 			mcpServers: this.#opts.mcpServers,
 			log: (msg, data) => this.#log(msg, data),
-			// Fail-closed permissions: only turns with skipPermissions answer allow.
-			permissions: () => (this.#active?.request.skipPermissions ? "auto" : "deny"),
+			// Fail-closed permissions: skipPermissions answers allow; a standing
+			// policy override (approvals.mode allow) may widen that; everything
+			// else goes to the human handler or denies.
+			permissions: () =>
+				this.#active?.request.skipPermissions
+					? "auto"
+					: (this.#opts.permissionPolicy?.() ?? "deny"),
+			onPermissionRequest: this.#opts.onPermissionRequest
+				? (req) => this.#parkForPermission(req)
+				: undefined,
+			permissionParkMs: this.#opts.permissionParkMs,
 			onUpdate: (sessionId, update) => this.#onConnectionUpdate(sessionId, update),
 			onExit: (info) => this.#onConnectionExit(conn, info),
 		});

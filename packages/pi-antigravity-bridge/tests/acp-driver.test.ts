@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpDriver } from "../src/acp/driver.js";
+import type { AcpPermissionHandler } from "../src/acp/connection.js";
 import type { DriverActivity } from "../src/driver-types.js";
 
 const FAKE_SERVER = fileURLToPath(new URL("./helpers/fake-acp-server.mjs", import.meta.url));
@@ -36,6 +37,8 @@ async function runDriver(
 		timeoutMin?: number;
 		skipPermissions?: boolean;
 		usageEstimate?: "estimate" | "direct" | "off";
+		onPermissionRequest?: AcpPermissionHandler;
+		permissionParkMs?: number;
 		signal?: AbortSignal;
 		onHandle?: (
 			handle: Awaited<ReturnType<AcpDriver["run"]>>,
@@ -50,6 +53,8 @@ async function runDriver(
 		binArgs: [FAKE_SERVER],
 		extraEnv: { ACP_FAKE_SCENARIO: scenario, ACP_FAKE_LOG: logPath },
 		usageEstimate: opts.usageEstimate,
+		onPermissionRequest: opts.onPermissionRequest,
+		permissionParkMs: opts.permissionParkMs,
 		log: () => {},
 	});
 	const activities: DriverActivity[] = [];
@@ -202,6 +207,166 @@ describe("acp/driver permission policy", () => {
 		};
 		assert.equal(answer._permissionAnswer, "deny");
 	});
+});
+
+describe("acp/driver permission parking", () => {
+	const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+	test("a wired handler answers the request with its chosen optionId", async () => {
+		let calls = 0;
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: false,
+			onPermissionRequest: async () => {
+				calls += 1;
+				return "allow";
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(calls, 1);
+		const answer = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(answer?._permissionAnswer, "allow");
+	});
+
+	test("esc (undefined) fail-closes to reject", async () => {
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: false,
+			onPermissionRequest: async () => undefined,
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const answer = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(answer?._permissionAnswer, "deny");
+	});
+
+	test("a throwing handler fail-closes to reject", async () => {
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: false,
+			onPermissionRequest: async () => {
+				throw new Error("dialog exploded");
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const answer = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(answer?._permissionAnswer, "deny");
+	});
+
+	test("an unanswered dialog times out deny", async () => {
+		// Never-resolving handler: no dangling timer after the test ends.
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: false,
+			permissionParkMs: 100,
+			onPermissionRequest: () => new Promise(() => {}),
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const answer = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(answer?._permissionAnswer, "deny");
+	});
+
+	test("allow_always is remembered for identical later requests", async () => {
+		let calls = 0;
+		const run = await tracked("permission-twice", {
+			prompt: "make the file",
+			skipPermissions: false,
+			onPermissionRequest: async () => {
+				calls += 1;
+				return "always";
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		// The dialog runs once; the identical second request rides memory.
+		assert.equal(calls, 1);
+		const answers = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>)
+			.filter((r) => r._permissionAnswer !== undefined)
+			.map((r) => r._permissionAnswer);
+		assert.deepEqual(answers, ["always", "always"]);
+	});
+
+	test("skipPermissions stays synchronous: the handler is never called", async () => {
+		let calls = 0;
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			onPermissionRequest: async () => {
+				calls += 1;
+				return "deny";
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(calls, 0);
+		const answer = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(answer?._permissionAnswer, "allow");
+	});
+
+	test("a slow dialog pauses the turn budget instead of eating it", async () => {
+		// 600ms overall budget, 900ms dialog: without the park the budget kill
+		// wins; with it the turn survives the dialog.
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: false,
+			timeoutMin: 0.01,
+			onPermissionRequest: () => sleep(900).then(() => "allow"),
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const answer = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(answer?._permissionAnswer, "allow");
+	}, 20_000);
+
+	test("the server dying mid-park fails the turn instead of hanging", async () => {
+		const run = await tracked("permission-then-die", {
+			prompt: "make the file",
+			skipPermissions: false,
+			onPermissionRequest: () => new Promise(() => {}),
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+	});
+
+	test("a late dialog answer after a timeout writes nothing", async () => {
+		// Call 1 loses the 100ms park race and answers 300ms later (late).
+		// The server waits 400ms after answer 1 before sending the identical
+		// request 2: with first-wins, the late answer is forgotten (handler
+		// runs again, deny); without it, request 2 would ride poisoned memory.
+		let calls = 0;
+		const run = await tracked("permission-late", {
+			prompt: "make the file",
+			skipPermissions: false,
+			permissionParkMs: 100,
+			onPermissionRequest: async () => {
+				calls += 1;
+				if (calls === 1) await sleep(300);
+				return calls === 1 ? "allow" : "deny";
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(calls, 2);
+		const answers = (sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>)
+			.filter((r) => r._permissionAnswer !== undefined)
+			.map((r) => r._permissionAnswer);
+		assert.deepEqual(answers, ["deny", "deny"]);
+	}, 10_000);
 });
 
 describe("acp/driver Gate D abort", () => {
