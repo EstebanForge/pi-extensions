@@ -20,6 +20,7 @@ import { parseAgyLine } from "./stream-events.js";
 import { isKnownNoiseLine, MAX_FRAME_BYTES, stripGluedNoise } from "./frame-guard.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
 import { gateHooksStaged } from "./approval-hook.js";
+import { parkedTurnAnswer } from "./parked-turn.js";
 import { redactText } from "./redact.js";
 import type {
 	AgyUsage,
@@ -62,6 +63,9 @@ interface ActiveTurn {
 	response: string;
 	usage?: AgyUsage;
 	conversationId?: string;
+	/** Wall clock at turn creation; the parked-turn probe filters
+	 *  transcript steps to those written after this. */
+	startedAt: number;
 	sawResult: boolean;
 	/** Text-dedupe guard state (delta vs cumulative response_text). */
 	cumulativeText: boolean | undefined;
@@ -171,10 +175,7 @@ export class StreamDriver implements TurnDriver {
 			// 0 disables the stall guard (config inactivityTimeoutMin: 0).
 			if (idleMin > 0) {
 				turn.idleTimer = setTimeout(() => {
-					if (turn.closed) return;
-					this.#log(`stall:${turn.id}`);
-					this.#killChild();
-					this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
+					void this.#turnDeadlineGuard(turn, "stall", `agy stalled for ${idleMin}m with no output`);
 				}, idleMin * 60_000);
 			}
 		}
@@ -279,6 +280,7 @@ export class StreamDriver implements TurnDriver {
 			sawResult: false,
 			cumulativeText: undefined,
 			parks: 0,
+			startedAt: Date.now(),
 		};
 		if (request.signal) {
 			turn.onAbort = () => {
@@ -306,19 +308,13 @@ export class StreamDriver implements TurnDriver {
 		const totalMin = turn.request.timeoutMin ?? 10;
 		if (totalMin > 0) {
 			turn.overallTimer = setTimeout(() => {
-				if (turn.closed) return;
-				this.#log(`timeout:${turn.id}`);
-				this.#killChild();
-				this.#failTurn(turn, `agy exceeded the ${totalMin}m turn timeout`);
+				void this.#turnDeadlineGuard(turn, "timeout", `agy exceeded the ${totalMin}m turn timeout`);
 			}, totalMin * 60_000);
 		}
 		const idleMin = turn.request.inactivityMin ?? 5;
 		if (idleMin > 0) {
 			turn.idleTimer = setTimeout(() => {
-				if (turn.closed) return;
-				this.#log(`stall:${turn.id}`);
-				this.#killChild();
-				this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
+				void this.#turnDeadlineGuard(turn, "stall", `agy stalled for ${idleMin}m with no output`);
 			}, idleMin * 60_000);
 		}
 	}
@@ -607,6 +603,38 @@ export class StreamDriver implements TurnDriver {
 		} catch {
 			/* listener errors must not break settling */
 		}
+	}
+
+	/** Stall / total-timeout guard shared by both timer sites. Before
+	 *  failing, probes the conversation's brain transcript for a DONE
+	 *  final-response step written during the turn (parked turn: agy finished
+	 *  its answer but never streamed it). One found, the turn settles OK with
+	 *  the withheld answer instead of discarding finished work; the child is
+	 *  killed either way so the next turn respawns into a known state. */
+	async #turnDeadlineGuard(turn: ActiveTurn, label: string, message: string): Promise<void> {
+		if (turn.closed) return;
+		this.#log(`${label}:${turn.id}`);
+		let parked: string | undefined;
+		try {
+			parked = turn.conversationId
+				? await parkedTurnAnswer(turn.conversationId, turn.startedAt)
+				: undefined;
+		} catch {
+			parked = undefined; // the guard must never throw
+		}
+		this.#killChild();
+		if (parked !== undefined) {
+			this.#settle(turn, {
+				conversationId: turn.conversationId,
+				status: "OK",
+				response: parked,
+				usage: turn.usage,
+				finished: true,
+				aborted: false,
+			});
+			return;
+		}
+		this.#failTurn(turn, message);
 	}
 
 	#failTurn(turn: ActiveTurn, message: string): void {
