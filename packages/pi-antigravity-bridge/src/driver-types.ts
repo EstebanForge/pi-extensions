@@ -59,13 +59,15 @@ export type DriverActivity =
 	/** Stream-json emits a token count only; ACP carries the actual thought text in
 	 *  `delta`. The provider renders whichever is present. */
 	| { type: "thought"; tokens?: number; delta?: string }
-	| { type: "tool_start"; stepId?: number; name: string; args: Record<string, unknown>; mcpServer?: string }
+	| { type: "tool_start"; stepId?: number; name: string; args: Record<string, unknown>; mcpServer?: string; /** ACP only: the protocol toolCallId (stream-json carries numeric stepId instead). */ toolCallId?: string }
 	| {
 			type: "tool_done";
 			stepId?: number;
 			name: string;
 			args: Record<string, unknown>;
 			mcpServer?: string;
+			/** ACP only: the protocol toolCallId; pairs done/error with their start. */
+			toolCallId?: string;
 			output?: string;
 			durationSeconds?: number;
 			/** ACP only: the server's native edit diff from `tool_call`
@@ -73,7 +75,7 @@ export type DriverActivity =
 			 *  sets it; the provider renders it without any git subprocess. */
 			diff?: { path: string; oldText?: string; newText: string };
 	  }
-	| { type: "tool_error"; stepId?: number; name: string; message: string; mcpServer?: string }
+	| { type: "tool_error"; stepId?: number; name: string; message: string; mcpServer?: string; toolCallId?: string }
 	| { type: "usage"; usage: AgyUsage }
 	/** Synthetic: injected by the provider when the MCP bridge receives a call
 	 *  (G9). Parks the turn: output is expected to stall while pi executes the

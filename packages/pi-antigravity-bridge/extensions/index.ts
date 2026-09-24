@@ -70,6 +70,7 @@ import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, sa
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
+import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
@@ -355,6 +356,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			),
 	);
 	const replay = new WrapperReplay();
+	// Subagent roster: folded from every driver activity (both engines) via
+	// the provider; /agy subagents renders it. In-memory, process-lifetime.
+	const roster = new SubagentRoster();
 	// ACP tool activity is display-only: durable Pi entries with native-looking
 	// titles and optional diffs. Unlike a synthetic Pi toolCall this does not
 	// re-execute edits, park the turn, or add tool results to model context.
@@ -464,6 +468,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		replay,
 		nativeActive,
 		onNativeEvent,
+		roster,
 		engine,
 		log: fileLog.log.bind(fileLog),
 	});
@@ -499,6 +504,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		hiddenBridgeTools,
 		acpLog,
 		fileLog,
+		roster,
 		authCapture: authCapture ?? null,
 		runAcpPickSetup,
 	});
@@ -1028,6 +1034,8 @@ interface AgyCommandCtx {
 	acpLog: (msg: string, data?: unknown) => void;
 	/** Daily file logger (src/daily-log.ts); command + doctor surfacing. */
 	fileLog: DailyLogger;
+	/** Live subagent roster (folded in the provider); /agy subagents. */
+	roster: SubagentRoster;
 	/** Wizard-pick follow-through (download now + chained sign-in); reused
 	 *  by /agy engine's no-args modal so both entry points behave alike. */
 	runAcpPickSetup: (cmdCtx: { ui: ExtensionUIContext }) => Promise<void>;
@@ -1080,7 +1088,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1370,6 +1378,15 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				return;
 			}
+			if (sub === "subagents") {
+				const entries = ctx.roster.snapshot();
+				if (entries.length === 0) {
+					ui?.notify("antigravity subagents: none tracked this session\n\nagy spawns subagents as ordinary tool steps; they appear here once a turn uses them.", "info");
+					return;
+				}
+				ui?.notify(formatSubagentRoster(entries), "info");
+				return;
+			}
 			if (sub === "agent") {
 				// ACP has no agent slot in the protocol (RC01): refuse instead of
 				// silently ignoring a configured agent.
@@ -1381,11 +1398,11 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				if (!name) {
 					const agents = await listAgyAgents(resolveAgyBinary());
 					const current = loadConfig().agent;
-					const roster =
+					const agentList =
 						agents.length > 0
 							? agents.map((a) => `${a === current ? ">" : " "} ${a}`).join("\n")
 							: "(no custom agents defined)";
-					ui?.notify(`current agent: ${current ?? "(agy default)"}\n\n${roster}\n\nusage: /agy agent <name|off>`, "info");
+					ui?.notify(`current agent: ${current ?? "(agy default)"}\n\n${agentList}\n\nusage: /agy agent <name|off>`, "info");
 					return;
 				}
 				if (name === "off" || name === "none" || name === "default") {

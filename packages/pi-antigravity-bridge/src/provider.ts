@@ -33,6 +33,7 @@ import {
 import fs from "node:fs";
 import type { Api } from "@earendil-works/pi-ai";
 import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
+import { SubagentRoster } from "./subagent-roster.js";
 import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
@@ -349,6 +350,8 @@ export interface StreamSimpleDeps {
 	/** Output-only ACP tool events; persisted as TUI entries, never sent to
 	 *  Antigravity or dispatched through Pi's executable tools. */
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	/** Subagent roster (both engines); folded from every activity. */
+	roster?: SubagentRoster;
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -916,6 +919,8 @@ export interface DriverDeps {
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	/** Subagent roster fold target (both engines; best-effort telemetry). */
+	roster?: SubagentRoster;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
@@ -930,6 +935,7 @@ export interface ActivityFeatures {
 	roundTrips?: ToolRoundTrips;
 	engine?: "stream-json" | "acp";
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	roster?: SubagentRoster;
 }
 
 /** Process-wide counter: round-trip ids must never repeat across turns in
@@ -976,6 +982,10 @@ export function consumeActivity(
 	feats: ActivityFeatures,
 ): "parked" | "continue" {
 	const partial = blocks.partial;
+	// Subagent roster folds BEFORE any rendering branch: pure in-memory
+	// telemetry over the same activities both engines emit, and it must see
+	// spawn/message/manage steps regardless of how they render.
+	feats.roster?.fold(activity);
 	switch (activity.type) {
 		case "text":
 			appendText(stream, blocks, activity.delta);
@@ -1262,6 +1272,7 @@ async function runTurnDriver(
 		roundTrips: deps.roundTrips,
 		engine: deps.engine,
 		onNativeEvent: deps.onNativeEvent,
+		roster: deps.roster,
 	};
 
 	for (;;) {
@@ -1329,6 +1340,7 @@ export function createStreamSimple(
 				replay: deps.replay,
 				nativeActive: deps.nativeActive,
 				onNativeEvent: deps.onNativeEvent,
+				roster: deps.roster,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream
