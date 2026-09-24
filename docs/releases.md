@@ -9,12 +9,11 @@ Versions are per-package. A package's version moves only when that package relea
 Use when exactly one package changed: a bug fix, a tweak, a new tool.
 
 ```bash
-npm run rel pi-slack-me patch    # bump 1.2.1 -> 1.2.2, commit, tag pi-slack-me-v1.2.2
-npm run pub pi-slack-me          # full check, then npm publish for that package only
+npm run pub pi-slack-me          # releases if needed, then npm publish: the one gate command
 ```
 
-- `rel` (release): check gates, version bump, lockfile sync, `chore(release): <package> <version>` commit, `<name>-v<version>` tag.
-- `pub` (publish): full check, then `npm publish` for that workspace only. Scoped packages publish public via each manifest's `publishConfig`.
+- `pub` is the whole release. If the package changed since its release tag, it first runs the release (check gates, version bump, lockfile sync, `chore(release): <package> <version>` commit, `<name>-v<version>` tag; default bump `patch`, override with a second arg: `npm run pub <name> minor`). It then syncs with origin - refuses when behind, pushes commits and tags when ahead - refuses a version npm already has, and finally runs the full check and `npm publish` for that workspace only. Scoped packages publish public via each manifest's `publishConfig`.
+- `rel` (release) stays available standalone: check gates, version bump, lockfile sync, commit, tag. Use it when you want the bump as its own reviewed commit before any publish; a later `pub` sees the fresh tag and publishes without re-releasing.
 
 Levels:
 
@@ -29,19 +28,17 @@ Examples:
 
 ```bash
 # fixed a crash in the Slack post tool
-npm run rel pi-slack-me patch
-npm run pub pi-slack-me
+npm run pub pi-slack-me          # patches to 1.2.2, commits, tags, pushes, publishes
 
-# added a new search tool to git-me
+# same thing, split manually when you want to review the bump first
 npm run rel pi-git-me minor
-npm run pub pi-git-me
+npm run pub pi-git-me            # sees the fresh tag, publishes without re-releasing
 
 # renamed zendesk-me config keys (breaking)
-npm run rel pi-zendesk-me major
-npm run pub pi-zendesk-me
+npm run pub pi-zendesk-me major
 ```
 
-Splitting `rel` and `pub` is deliberate: the release commit and tag are local and undoable; the publish is not.
+The publish stays the only irreversible step. Everything `pub` does before `npm publish` is a local commit you can reset.
 
 ## Fleet stamp: dependency bumps and mass changes
 
@@ -68,7 +65,7 @@ After individual releases (no stamp), the blanket publish fails on unchanged pac
 | Command | Does | Publishes |
 |---|---|---|
 | `npm run rel <name> <level>` | check, bump one package, lockfile, commit, tag | no |
-| `npm run pub <name>` | check, publish one package | one |
+| `npm run pub <name> [level]` | release if the package changed since its tag, sync with origin, check, publish one package | one |
 | `npm run release:<level>` | check, +level on every package, one commit, tag | no |
 | `npm run publish` | check, publish every package | all |
 | `npm run check` | typecheck + tests | - |
@@ -78,7 +75,7 @@ Tags always mark a released version: `<name>-v<version>` (pi-slack-me-v1.2.2). A
 Rules:
 
 - Never hand-edit a package version. Use `rel`, or a fleet stamp.
-- npm refuses publishing a version that already exists on the registry. As of the migration every package sits exactly at its legacy registry version, so each package's first monorepo publish must come from a `rel` bump or a fleet stamp. Exception: pi-deepwiki was never published, so 1.0.1 publishes as-is.
+- npm refuses publishing a version that already exists on the registry; `pub` checks for that before publishing and stops cleanly. As of the migration every package sits exactly at its legacy registry version, so each package's first monorepo publish must come from a `rel` bump or a fleet stamp. Exception: pi-deepwiki was never published, so 1.0.1 publishes as-is.
 - The registry can hold different versions per package. That is by design.
 - Publish is the only irreversible step. Everything before it is a local commit you can reset.
 - Check what the registry has before publishing: `npm view @estebanforge/<name> version`.
