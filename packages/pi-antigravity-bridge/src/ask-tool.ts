@@ -78,7 +78,7 @@ TWO MODES (you choose):
 - **Continued conversation**: pass the conversationId returned in the PREVIOUS call's details (details.conversationId). agy resumes that conversation with full context intact.
 
 EXECUTION MODES (param: mode):
-- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks.
+- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks. Enforced: plan runs never receive the skip-permissions flag, so a write or command attempt ends the run quickly with a "confirm plan" message instead of executing.
 - **accept-edits** (default): agy applies edits directly inside the workspace.
 
 COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request compact digests instead of full file contents. Defaults on for plan, off for accept-edits.
@@ -536,7 +536,16 @@ export async function registerAskAntigravityTool(
 			// Honor the shared permissions setting (same knob as the provider). Non-
 			// interactive -p can't answer a permission prompt, so when this is off
 			// any run_command will hang - but the setting must mean what it says.
-			if (config.skipPermissions !== false) args.push("--dangerously-skip-permissions");
+			// Plan mode never gets the flag even when the knob is on: the flag
+			// auto-approves ALL permission requests including plan mode's own
+			// approval gate, which would silently turn "review-only" into full
+			// write access inside --add-dir (probed 2026-09-25: with the flag a
+			// plan run wrote files; without it, file and command attempts end
+			// exit 0 in ~20-30s with a "confirm plan" message - fail-visible,
+			// never a hang). Omitting it is what makes "plan = review-only" true.
+			if (mode !== "plan" && config.skipPermissions !== false) {
+				args.push("--dangerously-skip-permissions");
+			}
 			if (isContinuation) args.push("--conversation", rawConvId as string);
 			args.push("--print-timeout", `${timeoutMin}m`);
 			if (contextFile) args.push("--add-dir", askContextDir());

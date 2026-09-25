@@ -20,7 +20,7 @@ Picking **acp** starts the server download immediately (progress in the status b
 | Image prompt input | No (CLI prompt is text-only; images dropped) | Yes (native image blocks forwarded to server) |
 | Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
 | Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |
-| Review-only plan mode | Yes (`--mode plan` review-only via `/agy mode plan`) | No (RC01 modes are permission levels; plan mode refused) |
+| Review-only plan mode | Yes (`--mode plan`; plan-approval gate enforced — the skip-permissions flag is never passed in plan mode, so writes and commands fail visibly at "confirm plan") | No (RC01 modes are permission levels; plan mode refused) |
 | Leading slash commands in prompt | Disabled via `--disable-slash-commands` (sent as plain text) | Server intercepts recognized commands (e.g. `/plan`) and executes them under the active policy |
 | Dynamic model / effort switch | Recycles process on model or effort change | Dynamic per-turn via `session/set_config_option` (no restart) |
 | Process lifecycle | 1 persistent `agy` process per provider; recycles on drift | 1 persistent server process hosting N sessions concurrently |

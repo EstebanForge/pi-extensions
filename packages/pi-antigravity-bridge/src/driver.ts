@@ -75,6 +75,15 @@ interface ActiveTurn {
 	parks: number;
 }
 
+/** The skip-permissions flag actually passed to agy. Plan mode never
+ *  carries it: the flag auto-approves every permission request including
+ *  plan mode's own approval gate, silently turning review-only into full
+ *  write access. #start (argv + profile) and #recycleCause (comparison)
+ *  must both go through this, or plan turns recycle on every turn. */
+function effectiveSkipPermissions(mode: DriverTurnRequest["mode"], skipPermissions: boolean): boolean {
+	return mode !== "plan" && skipPermissions;
+}
+
 function emit(turn: ActiveTurn, activity: DriverActivity): void {
 	if (turn.closed) return;
 	if (turn.wake.length > 0) turn.wake.shift()!();
@@ -323,12 +332,20 @@ export class StreamDriver implements TurnDriver {
 		this.#state = "starting";
 		this.#generation += 1;
 		const generation = this.#generation;
+		// Plan mode never carries the skip flag: the flag auto-approves ALL
+		// permission requests including plan mode's own approval gate, which
+		// would silently turn "review-only" into full write access (probed
+		// 2026-09-25: with the flag a plan session wrote files; without it,
+		// file and command attempts end exit 0 in ~20-30s with a "confirm
+		// plan" message). The profile stores the EFFECTIVE value so the
+		// recycle comparison stays consistent with the argv.
+		const skipPermissions = effectiveSkipPermissions(request.mode, request.skipPermissions);
 		this.#profile = {
 			cwd: request.cwd,
 			model: request.model,
 			effort: request.effort,
 			mode: request.mode,
-			skipPermissions: request.skipPermissions,
+			skipPermissions,
 			agent: request.agent,
 		};
 		this.#boundConversation = request.conversationId ?? undefined;
@@ -344,7 +361,7 @@ export class StreamDriver implements TurnDriver {
 		if (request.effort) args.push("--effort", request.effort);
 		args.push("--mode", request.mode);
 		if (request.agent) args.push("--agent", request.agent);
-		if (request.skipPermissions) args.push("--dangerously-skip-permissions");
+		if (skipPermissions) args.push("--dangerously-skip-permissions");
 		if (request.conversationId) args.push("--conversation", request.conversationId);
 		args.push(
 			"--input-format",
@@ -658,7 +675,9 @@ export class StreamDriver implements TurnDriver {
 		if (cur.model !== next.model) return "model";
 		if (cur.effort !== next.effort) return "effort";
 		if (cur.mode !== next.mode) return "mode";
-		if (cur.skipPermissions !== next.skipPermissions) return "permissions";
+		if (cur.skipPermissions !== effectiveSkipPermissions(next.mode, next.skipPermissions)) {
+			return "permissions";
+		}
 		if (cur.agent !== next.agent) return "agent";
 		if (!next.conversationId) return this.#boundConversation ? "conversation-reset" : undefined;
 		return next.conversationId === this.#boundConversation ? undefined : "conversation";

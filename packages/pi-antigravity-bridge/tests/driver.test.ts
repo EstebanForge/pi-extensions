@@ -187,3 +187,68 @@ describe("stream-json driver stderr redaction", () => {
 		await driver.close("shutdown");
 	});
 });
+
+describe("stream-json driver plan-mode skip-permission gating", () => {
+	// The skip-permissions flag is never passed in plan mode (it would
+	// auto-approve plan mode's own approval gate). #recycleCause compares
+	// the stored EFFECTIVE value, so two identical plan-mode requests must
+	// reuse the process; comparing effective vs raw recycled every turn.
+	test("two identical plan-mode turns reuse the process", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const base = {
+			prompt: "KEEP-ALIVE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "plan" as const,
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		};
+		const first = await driver.run(base);
+		const firstOutcome = await first.outcome;
+		assert.equal(firstOutcome.status, "OK");
+		assert.equal(firstOutcome.conversationId, "conv-777");
+		const second = await driver.run({
+			...base,
+			conversationId: firstOutcome.conversationId,
+		});
+		const secondOutcome = await second.outcome;
+		assert.equal(secondOutcome.status, "OK");
+		const stats = driver.snapshot().stats;
+		assert.equal(stats.recycles, 0, "plan turns must not recycle");
+		assert.equal(stats.reused, 1, "second plan turn reuses the process");
+		assert.equal(stats.spawns, 1, "one process serves both turns");
+		await driver.close("shutdown");
+	});
+
+	test("a raw knob flip stays invisible in plan mode", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const first = await driver.run({
+			prompt: "KEEP-ALIVE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "plan",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const firstOutcome = await first.outcome;
+		assert.equal(firstOutcome.status, "OK");
+		const second = await driver.run({
+			prompt: "KEEP-ALIVE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "plan",
+			skipPermissions: false,
+			conversationId: firstOutcome.conversationId,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		await second.outcome;
+		const stats = driver.snapshot().stats;
+		assert.equal(stats.recycles, 0, "raw knob flip stays invisible in plan mode (effective unchanged)");
+		await driver.close("shutdown");
+	});
+});

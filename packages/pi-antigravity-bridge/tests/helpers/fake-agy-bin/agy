@@ -41,6 +41,19 @@ case "$_line" in
     exit 0
     ;;
 esac
+if [[ "$_line" == *KEEP-ALIVE* ]]; then
+	# Two-turn reuse test: serve TWO user turns on ONE process, then exit.
+	# The script-top read consumed turn 1's line; read turn 2's between the
+	# replies so the driver sees a genuine persistent-process exchange.
+	for _i in 1 2; do
+		if [[ "$_i" -gt 1 ]]; then read -r _line; fi
+		printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-777"}}'
+		sleep 0.15
+		printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"KEEP-TURN"}}'
+		sleep 0.1
+	done
+	exit 0
+fi
 printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-777"}}'
 sleep 0.15
 printf '%s' '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"HALF-ONE-'
