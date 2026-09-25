@@ -6,7 +6,7 @@
 // the delegator read as "returned only a conversationId, zero output, no
 // error" (silent-failure bug found 2026-09-25, peer handoff).
 //
-// Seam: AGY_BIN pointed at a fake binary that exits 0 with empty stdout and
+// Stub: AGY_BIN pointed at a fake binary that exits 0 with empty stdout and
 // the real jetski stderr message. mcp-registration is mocked (the real one
 // rewrites the user's global ~/.gemini/config/mcp_config.json).
 //
@@ -25,6 +25,22 @@ vi.mock("../src/mcp-registration.js", () => ({
 import { registerAskAntigravityTool } from "../src/ask-tool.js";
 
 type ToolResult = { content: Array<{ type: string; text: string }> };
+
+type RegisteredTool = {
+	name: string;
+	execute: (
+		id: string,
+		params: Record<string, unknown>,
+		signal?: unknown,
+		onUpdate?: unknown,
+		ctx?: Record<string, unknown>,
+	) => Promise<ToolResult>;
+	renderResult: (
+		result: unknown,
+		opts: { expanded?: boolean; isPartial?: boolean },
+		theme: unknown,
+	) => unknown;
+};
 
 // The REAL stderr agy prints when a headless run auto-denies a command
 // permission (captured verbatim from a plan-mode repro, 2026-09-25).
@@ -47,35 +63,38 @@ function makeFakeAgyBin(stderr: string): string {
 	return bin;
 }
 
-async function registerAndRun(bin: string): Promise<string> {
+async function registerTool(bin: string): Promise<RegisteredTool> {
 	const prevBin = process.env.AGY_BIN;
 	process.env.AGY_BIN = bin;
 	try {
-		const tools: Array<{
-			execute: (
-				id: string,
-				params: Record<string, unknown>,
-				signal?: unknown,
-				onUpdate?: unknown,
-				ctx?: Record<string, unknown>,
-			) => Promise<ToolResult>;
-		}> = [];
+		const tools: RegisteredTool[] = [];
 		const fakePi = {
-			registerTool: (tool: (typeof tools)[number]) => tools.push(tool),
+			registerTool: (tool: RegisteredTool) => tools.push(tool),
 		} as unknown as ExtensionAPI;
 		await registerAskAntigravityTool(fakePi, []);
 		expect(tools).toHaveLength(1);
+		return tools[0];
+	} finally {
+		if (prevBin === undefined) delete process.env.AGY_BIN;
+		else process.env.AGY_BIN = prevBin;
+	}
+}
 
+async function runEmptyOutput(tool: RegisteredTool, bin: string): Promise<ToolResult> {
+	// The binary resolves at EXECUTE time, so AGY_BIN must stay pointed at the
+	// fake through the call, not just through registration.
+	const prevBin = process.env.AGY_BIN;
+	process.env.AGY_BIN = bin;
+	try {
 		// mode plan mirrors the reported failure: the skip-permissions flag is
 		// withheld there, so permission gates bite (the fake ignores args).
-		const res = await tools[0].execute(
+		return await tool.execute(
 			"t1",
 			{ prompt: "review", cwd: process.cwd(), timeoutMinutes: 1, mode: "plan" },
 			undefined,
 			undefined,
 			{},
 		);
-		return res.content[0].text;
 	} finally {
 		if (prevBin === undefined) delete process.env.AGY_BIN;
 		else process.env.AGY_BIN = prevBin;
@@ -88,7 +107,9 @@ test(
 	async () => {
 		const bin = makeFakeAgyBin(DENIED_STDERR);
 		try {
-			const text = await registerAndRun(bin);
+			const tool = await registerTool(bin);
+			const res = await runEmptyOutput(tool, bin);
+			const text = res.content[0].text;
 
 			// Loud failure note carrying agy's own reason.
 			expect(text).toContain("produced no output");
@@ -109,7 +130,9 @@ test(
 	async () => {
 		const bin = makeFakeAgyBin("");
 		try {
-			const text = await registerAndRun(bin);
+			const tool = await registerTool(bin);
+			const res = await runEmptyOutput(tool, bin);
+			const text = res.content[0].text;
 
 			expect(text).toContain("produced no output");
 			// Empty stderr: the note omits the segment instead of printing an
@@ -121,3 +144,31 @@ test(
 		}
 	},
 );
+
+test("renderResult flips to the error glyph on the empty-output failure", async () => {
+	// Registration tolerates a missing binary; the render path never spawns.
+	const tool = await registerTool("/nonexistent/agy-fake");
+
+	const calls: Array<[string, string]> = [];
+	const theme = {
+		fg: (style: string, s: string) => {
+			calls.push([style, s]);
+			return s;
+		},
+	};
+	const rendered = tool.renderResult(
+		{
+			content: [{ type: "text", text: "agy exited cleanly but produced no output." }],
+			details: { exitCode: 0, aborted: false, timedOut: false, empty: true },
+		},
+		{ expanded: false, isPartial: false },
+		theme,
+	);
+	expect(rendered).toBeDefined();
+
+	// The old errored condition (exitCode/aborted/timedOut only) rendered a
+	// green checkmark for this exact failure (peer review, finding 1).
+	expect(
+		calls.some(([style, s]) => style === "error" && s.includes("AskAntigravity error")),
+	).toBe(true);
+});
