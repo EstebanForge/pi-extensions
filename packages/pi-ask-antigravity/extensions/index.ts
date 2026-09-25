@@ -156,7 +156,7 @@ TWO MODES (you choose):
 - **Continued conversation**: pass the conversationId returned in the PREVIOUS call's details (details.conversationId). agy resumes that conversation with full context intact — use for follow-ups, multi-turn refinement, or when the user says "ask agy to follow up / continue / now do X based on what you just did". Thread the id from each result into the next call.
 
 EXECUTION MODES (param: mode):
-- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks.
+- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks. Enforced: plan runs never receive the skip-permissions flag, so a write or command attempt ends the run quickly with a "confirm plan" message instead of executing.
 - **accept-edits** (default): agy applies edits directly inside the workspace.
 - For agy's orthogonal \`--sandbox\` shell-containment flag, set the \`AGY_EXTRA_ARGS=--sandbox\` env var.
 
