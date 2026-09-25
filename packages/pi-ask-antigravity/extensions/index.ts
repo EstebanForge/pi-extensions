@@ -96,7 +96,9 @@ function levelToTier(level: string): ThinkingTier {
 }
 
 // Mode = which agy tool-loop policy to apply. Distinct from the alias layer.
-//   "plan"         → --mode plan     (no edits; review-only)
+//   "plan"         → --mode plan     (no edits; review-only — the skip-
+//                                      permissions flag is withheld in plan
+//                                      mode so the plan-approval gate holds)
 //   "accept-edits" → --mode accept-edits (agy applies edits)
 //
 // Note: agy's --sandbox flag is an orthogonal shell-containment setting
@@ -949,7 +951,7 @@ export default async function (pi: ExtensionAPI) {
 					],
 					{
 						description:
-							"agy execution mode. 'plan' = review-only, no edits (--mode plan). 'accept-edits' = agy applies edits directly (--mode accept-edits, default). For agy's orthogonal --sandbox shell-containment flag, set the AGY_EXTRA_ARGS env var.",
+							"agy execution mode. 'plan' = review-only, no edits (--mode plan; the skip-permissions flag is never passed, so write and command attempts fail visibly at plan approval). 'accept-edits' = agy applies edits directly (--mode accept-edits, default). For agy's orthogonal --sandbox shell-containment flag, set the AGY_EXTRA_ARGS env var.",
 						default: "accept-edits",
 					},
 				),
@@ -1199,7 +1201,16 @@ export default async function (pi: ExtensionAPI) {
 			// accept-edits auto-approves file edits but NOT shell commands, so a
 			// run_command would hang on an unanswerable y/n prompt in non-interactive
 			// -p mode. Honor the shared permissions setting (same knob as the bridge).
-			if (config.skipPermissions) args.push("--dangerously-skip-permissions");
+			// Plan mode never gets the flag even when the knob is on: the flag
+			// auto-approves ALL permission requests including plan mode's own
+			// approval gate, which would silently turn "review-only" into full
+			// write access inside --add-dir (probed 2026-09-25: with the flag a
+			// plan run wrote files; without it, file and command attempts end
+			// exit 0 in ~20-30s with a "confirm plan" message - fail-visible,
+			// never a hang). Same fix as the bridge's ask-tool and driver.
+			if (mode !== "plan" && config.skipPermissions) {
+				args.push("--dangerously-skip-permissions");
+			}
 			if (isContinuation) args.push("--conversation", rawConvId as string);
 			args.push("--print-timeout", `${timeoutMin}m`);
 			if (contextFile) args.push("--add-dir", askContextDir());

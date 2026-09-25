@@ -63,7 +63,7 @@ Verbose `agy models` strings (`Gemini 3.5 Flash (Medium)`) are hostile to natura
 
 | Mode | Flag | Use when |
 | --- | --- | --- |
-| `plan` | `--mode plan` | agy reviews and plans without writing. Use for cross-review and read-only tasks. |
+| `plan` | `--mode plan` | agy reviews and plans without writing. Use for cross-review and read-only tasks. Enforced: the skip-permissions flag is never passed in plan mode, so write and command attempts fail visibly at plan approval instead of executing. |
 | `accept-edits` (default) | `--mode accept-edits` | agy applies edits directly inside the workspace. |
 
 For agy's orthogonal `--sandbox` shell-containment flag, set `AGY_EXTRA_ARGS=--sandbox` in your environment. The extension does not expose it as a `mode` value because `--sandbox` controls command containment, not edit persistence.
@@ -111,7 +111,7 @@ Interactive picker for the default model and default thinking. If the project co
 | `prompt` | yes | Self-contained task. agy cannot see the Pi conversation. |
 | `cwd` | no | Workspace agy runs in. Defaults to the project root. |
 | `model` | no | Alias or exact id. Omit for the configured default. |
-| `mode` | no | `plan` (review-only) or `accept-edits` (agy applies edits, default). |
+| `mode` | no | `plan` (review-only; enforced via plan approval) or `accept-edits` (agy applies edits, default). |
 | `digest` | no | Prefix the prompt with `(Use compact digests, not full file contents.)`. Defaults on for `plan`, off for `accept-edits`. |
 | `conversationId` | no | Omit for a one-shot (agy starts fresh). Pass the id from a prior call's result (`details.conversationId`) to resume that agy conversation with full context. See [Two modes](#two-modes-one-shot-vs-continued-conversation). |
 | `timeoutMinutes` | no | Hard cap on the run. Default 10. |
