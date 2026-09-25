@@ -1439,6 +1439,26 @@ export default async function (pi: ExtensionAPI) {
 					};
 				}
 
+				// Exit 0 with nothing on stdout is still a failure for the
+				// caller: headless agy auto-denies a permission-gated tool call
+				// (e.g. the command gate in plan mode), prints the reason only to
+				// stderr, and ends cleanly. Falling through to the success path
+				// here returned just the conversation footer, which read as an
+				// empty success (silent-failure bug found 2026-09-25).
+				if (!text) {
+					const note = [
+						"agy exited cleanly but produced no output.",
+						details.stderr.trim() ? `stderr: ${details.stderr.trim()}` : null,
+						"Common cause: a tool call needed a permission that headless mode cannot prompt for (typically the command gate in plan mode), so it was auto-denied. Allow-list it under permissions.allow in ~/.gemini/antigravity-cli/settings.json, or rerun outside plan mode with skipPermissions.",
+					]
+						.filter(Boolean)
+						.join(" ");
+					return {
+						content: [{ type: "text", text: note }],
+						details,
+					};
+				}
+
 				// Success. Clear the last partial status line (claude-bridge
 				// idiom) so the running-tail preview doesn't linger under the final
 				// answer, then append a conversation footer so the orchestrating model
