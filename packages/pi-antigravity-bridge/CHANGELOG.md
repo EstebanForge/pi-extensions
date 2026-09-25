@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.5] - 2026-09-25
+
+### Fixed
+
+- **Exit 0 with no output is a failure, not a silent success.** A headless `agy -p` run can end cleanly with nothing on stdout when a delegated tool call hits a permission gate the headless run cannot prompt for. The plan-mode fix (withholding the skip flag in plan) makes the command gate the common case: the call is auto-denied, the reason goes only to stderr, agy exits 0, and the execute path fell through to success, returning just the conversation footer. The delegating model read that as "returned only a conversationId, zero output, no error" (silent-failure handoff, 2026-09-25). An empty answer now returns a loud failure note carrying the redacted stderr plus the remedy (allow-list the command under `permissions.allow` in the CLI settings, or rerun outside plan mode), and the ask-end log marks the run warn with an `empty` flag so error-only default logging records what the chat saw. Two new tests pin both stderr shapes through the fake-binary seam.
+
 ## [1.7.4] - 2026-09-25
 
 ### Added
