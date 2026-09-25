@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.7] - 2026-09-25
+
+### Fixed
+
+- **Plan mode never receives `--dangerously-skip-permissions`.** agy's plan-mode no-write gate IS a permission request ("File creation requires plan approval"), and the skip flag auto-approves every permission request — so a `mode: "plan"` delegation could edit the workspace inside the `--add-dir` grant despite the review-only contract. The default `skipPermissions` knob made this the out-of-the-box behavior. Probe evidence transfers directly (same binary, same `-p` path): with the flag a plan run wrote files; without it, file-write and run_command attempts end exit 0 in ~20-30 s with a "confirm plan" message — fail-visible, never the upstream #318 prompt-hang. Plan runs now never receive the flag, and the tool description and README state the enforcement instead of the aspirational claim.
+
+Version 1.2.6 was a fleet-wide version stamp with no package changes.
+
 ## [1.2.5] - 2026-09-18
 
 ### Added
