@@ -136,3 +136,55 @@ test("formatSubagentRoster: header counts and per-entry lines", () => {
 test("formatSubagentRoster: empty roster renders the zero header", () => {
 	assert.match(formatSubagentRoster([]), /0 tracked, 0 running/);
 });
+
+test("roster: invoke_subagent extracts Role and Prompt from Subagents array", () => {
+	const r = new SubagentRoster();
+	r.fold(
+		start(
+			"invoke_subagent",
+			{
+				Subagents: [
+					{ Role: "Codebase Researcher", TypeName: "research", Prompt: "Map out routes" },
+				],
+			},
+			10,
+		),
+	);
+	const [e] = r.snapshot();
+	assert.equal(e.name, "Codebase Researcher");
+	assert.equal(e.detail, "Map out routes");
+	assert.equal(e.status, "running");
+
+	// send_message with Recipient increments the target
+	r.fold(start("send_message", { Recipient: "Codebase Researcher", Message: "continue" }, 11));
+	assert.equal(e.messages, 1);
+});
+
+test("roster: invoke_subagent with multiple Subagents creates entries for all", () => {
+	const r = new SubagentRoster();
+	r.fold(
+		start(
+			"invoke_subagent",
+			{
+				Subagents: [
+					{ Role: "Worker 1", Prompt: "Task 1" },
+					{ Role: "Worker 2", Prompt: "Task 2" },
+				],
+			},
+			20,
+		),
+	);
+	assert.equal(r.snapshot().length, 2);
+	assert.equal(r.runningCount(), 2);
+	r.fold(done("invoke_subagent", 20));
+	assert.equal(r.runningCount(), 0);
+	assert.equal(r.snapshot()[0]?.status, "done");
+	assert.equal(r.snapshot()[1]?.status, "done");
+});
+
+test("roster: define_subagent does not register as a running subagent", () => {
+	const r = new SubagentRoster();
+	r.fold(start("define_subagent", { name: "template", description: "blueprint" }, 30));
+	assert.equal(r.snapshot().length, 0);
+});
+

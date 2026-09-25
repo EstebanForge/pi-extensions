@@ -85,6 +85,31 @@ test("extractParkedAnswer: escaped newlines and unicode in content survive", () 
 	assert.equal(extractParkedAnswer(tail, START), "line1\nline2 — café ✓");
 });
 
+test("extractParkedAnswer: steps with tool_calls are rejected as non-terminal", () => {
+	const stepWithTools = JSON.stringify({
+		source: "MODEL",
+		type: "PLANNER_RESPONSE",
+		status: "DONE",
+		created_at: "2026-09-08T16:11:43Z",
+		content: "Running test in background...",
+		tool_calls: [{ name: "run_command", args: {} }],
+	});
+	assert.equal(extractParkedAnswer(`${stepWithTools}\n`, START), undefined);
+});
+
+test("extractParkedAnswer: trailing step in the same turn invalidates earlier response", () => {
+	const earlierResponse = doneStep("Earlier text", "2026-09-08T16:11:42Z");
+	const laterToolStep = JSON.stringify({
+		source: "MODEL",
+		type: "GENERIC",
+		status: "ERROR",
+		created_at: "2026-09-08T16:11:44Z",
+		content: "Tool execution failed",
+	});
+	const tail = `${earlierResponse}\n${laterToolStep}\n`;
+	assert.equal(extractParkedAnswer(tail, START), undefined);
+});
+
 // --- readTranscriptTail ------------------------------------------------------
 
 test("readTranscriptTail: small file returns whole content, missing returns empty", async () => {

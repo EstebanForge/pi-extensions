@@ -7,9 +7,10 @@
 // fork-storm). Ownership is deliberately NOT resolved: modern agy pipes
 // task output through itself, so the process holding a log open proves
 // nothing about which spawned job it is, and we never kill what we cannot
-// prove we own. A task is "active" while any process holds its log open,
-// "idle" otherwise; when lsof is missing, liveness is unknown and the
-// dashboard says so instead of guessing.
+// prove we own. A task is "active" while any process holds its log open
+// (a reader counts too — cat/less/tail -f will light it up; the dashboard
+// is a watch, not a fact), "idle" otherwise; when lsof is missing,
+// liveness is unknown and the dashboard says so instead of guessing.
 
 import { readdir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -133,7 +134,15 @@ async function defaultSpawnRaw(
 			done(() => reject(new Error(`${cmd} timed out`)));
 		}, timeoutMs);
 		child.stdout.on("data", (d: Buffer) => {
-			if (out.length > capBytes) return; // keep draining, stop storing
+			if (out.length + d.length > capBytes) {
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					/* already gone */
+				}
+				done(() => reject(new Error(`${cmd} output cap exceeded`)));
+				return;
+			}
 			out += d.toString("utf8");
 		});
 		child.on("error", (err) => done(() => reject(err)));

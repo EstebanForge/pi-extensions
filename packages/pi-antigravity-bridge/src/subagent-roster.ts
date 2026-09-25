@@ -21,14 +21,14 @@
 import type { DriverActivity } from "./driver-types.js";
 
 /** Tools whose start opens a roster entry and whose done/error closes it. */
-const SPAWN_TOOLS = new Set(["invoke_subagent", "run_subagent", "define_subagent", "browser_subagent"]);
+const SPAWN_TOOLS = new Set(["invoke_subagent", "run_subagent", "browser_subagent"]);
 /** Tools addressed at an already-spawned agent. */
 const MESSAGE_TOOLS = new Set(["send_message"]);
 /** Tools carrying lifecycle actions (kill/stop/...). */
 const MANAGE_TOOLS = new Set(["manage_subagents"]);
 
 /** Arg keys that plausibly name the target agent (their casing varies). */
-const NAME_ARG_KEYS = /^(name|subagent|subagent_name|agent|agent_name|type)$/i;
+const NAME_ARG_KEYS = /^(name|subagent|subagent_name|agent|agent_name|type|recipient|role|to)$/i;
 /** Arg keys plausibly holding a manage_subagents lifecycle action. */
 const ACTION_ARG_KEYS = /^(action|command|operation|op)$/i;
 const DETAIL_MAX = 120;
@@ -67,6 +67,38 @@ function detailFromArgs(args: Record<string, unknown>): string {
 	return "";
 }
 
+interface ExtractedSpawn {
+	name: string;
+	detail: string;
+}
+
+function extractSpawnsFromArgs(args: Record<string, unknown>): ExtractedSpawn[] {
+	const raw = args.Subagents ?? args.subagents;
+	if (Array.isArray(raw) && raw.length > 0) {
+		const out: ExtractedSpawn[] = [];
+		for (const item of raw) {
+			if (item && typeof item === "object") {
+				const rec = item as Record<string, unknown>;
+				const name =
+					(typeof rec.Role === "string" && rec.Role.trim()) ||
+					(typeof rec.role === "string" && rec.role.trim()) ||
+					(typeof rec.TypeName === "string" && rec.TypeName.trim()) ||
+					(typeof rec.type_name === "string" && rec.type_name.trim()) ||
+					(typeof rec.name === "string" && rec.name.trim()) ||
+					"subagent";
+				const detail =
+					(typeof rec.Prompt === "string" && rec.Prompt.trim()) ||
+					(typeof rec.prompt === "string" && rec.prompt.trim()) ||
+					(typeof rec.task === "string" && rec.task.trim()) ||
+					"";
+				out.push({ name: truncate(name), detail: truncate(detail) });
+			}
+		}
+		if (out.length > 0) return out;
+	}
+	return [{ name: subagentNameFromArgs(args), detail: detailFromArgs(args) }];
+}
+
 function manageActionIsKill(args: Record<string, unknown>): boolean {
 	for (const [k, v] of Object.entries(args)) {
 		if (ACTION_ARG_KEYS.test(k) && typeof v === "string" && /kill|stop|terminate|cancel/i.test(v))
@@ -88,15 +120,24 @@ export class SubagentRoster {
 		return `n:${this.#acpSeq++}`;
 	}
 
-	#entryFor(activity: Extract<DriverActivity, { type: "tool_done" | "tool_error" }>): SubagentEntry | undefined {
-		if (activity.toolCallId !== undefined) return this.#entries.get(`t:${activity.toolCallId}`);
-		if (activity.stepId !== undefined) return this.#entries.get(`s:${activity.stepId}`);
-		// No id at all: close the oldest running entry (spawn order), since the
-		// done/error activity names the TOOL, not the spawned agent.
-		for (const entry of this.#entries.values()) {
-			if (entry.status === "running") return entry;
+	#entriesFor(activity: Extract<DriverActivity, { type: "tool_done" | "tool_error" }>): SubagentEntry[] {
+		const baseKey =
+			activity.toolCallId !== undefined
+				? `t:${activity.toolCallId}`
+				: activity.stepId !== undefined
+					? `s:${activity.stepId}`
+					: undefined;
+		if (baseKey !== undefined) {
+			const matched: SubagentEntry[] = [];
+			for (const [k, v] of this.#entries) {
+				if (k === baseKey || k.startsWith(`${baseKey}:`)) matched.push(v);
+			}
+			return matched;
 		}
-		return undefined;
+		for (const entry of this.#entries.values()) {
+			if (entry.status === "running") return [entry];
+		}
+		return [];
 	}
 
 	/** Fold one driver activity. Non-tool activities are ignored; unknown
@@ -113,16 +154,21 @@ export class SubagentRoster {
 	#fold(activity: DriverActivity): void {
 		if (activity.type === "tool_start") {
 			if (SPAWN_TOOLS.has(activity.name)) {
-				const key = this.#keyFor(activity);
-				this.#entries.set(key, {
-					key,
-					name: subagentNameFromArgs(activity.args),
-					status: "running",
-					spawnedAtMs: Date.now(),
-					lastActivityMs: Date.now(),
-					messages: 0,
-					detail: detailFromArgs(activity.args),
-				});
+				const baseKey = this.#keyFor(activity);
+				const spawns = extractSpawnsFromArgs(activity.args);
+				const now = Date.now();
+				for (let i = 0; i < spawns.length; i++) {
+					const key = spawns.length === 1 ? baseKey : `${baseKey}:${i}`;
+					this.#entries.set(key, {
+						key,
+						name: spawns[i]!.name,
+						status: "running",
+						spawnedAtMs: now,
+						lastActivityMs: now,
+						messages: 0,
+						detail: spawns[i]!.detail,
+					});
+				}
 				return;
 			}
 			if (MESSAGE_TOOLS.has(activity.name)) {
@@ -145,15 +191,18 @@ export class SubagentRoster {
 			return;
 		}
 		if (activity.type === "tool_done" || activity.type === "tool_error") {
-			const entry = this.#entryFor(activity);
-			if (!entry) return;
-			entry.lastActivityMs = Date.now();
-			if (activity.type === "tool_error") {
-				entry.status = "error";
-				entry.error = truncate(activity.message);
-				return;
+			const entries = this.#entriesFor(activity);
+			if (entries.length === 0) return;
+			const now = Date.now();
+			for (const entry of entries) {
+				entry.lastActivityMs = now;
+				if (activity.type === "tool_error") {
+					entry.status = "error";
+					entry.error = truncate(activity.message);
+				} else if (entry.status === "running") {
+					entry.status = "done";
+				}
 			}
-			if (entry.status === "running") entry.status = "done";
 		}
 	}
 

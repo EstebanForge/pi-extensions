@@ -131,6 +131,18 @@ test("listAgyTasks: no tasks -> no lsof spawned", async () => {
 	}
 });
 
+test("listAgyTasks: lsof cap breach degrades to unknown liveness", async () => {
+	const dir = tmpConversation([{ id: 1 }]);
+	try {
+		const tasks = await listAgyTasks(dir, async () => {
+			throw new Error("lsof output cap exceeded");
+		});
+		assert.deepEqual(tasks.map((t) => [t.active, t.livenessKnown]), [[false, false]]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 // --- tailAgyTaskLog ----------------------------------------------------------
 
 test("tailAgyTaskLog: last bytes only, missing file empty", async () => {

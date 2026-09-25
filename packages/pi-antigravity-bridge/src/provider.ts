@@ -1297,7 +1297,7 @@ async function runTurnDriver(
 		finalize(stream, blocks, "error", outcome.error ?? "agy turn failed");
 		return;
 	}
-	if (blocks.textIdx === null && blocks.thinkingIdx === null && outcome.response) {
+	if (blocks.textIdx === null && outcome.response) {
 		appendText(stream, blocks, outcome.response);
 	}
 	if (blocks.textIdx === null && blocks.thinkingIdx === null) {

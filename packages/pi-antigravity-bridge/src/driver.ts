@@ -605,15 +605,18 @@ export class StreamDriver implements TurnDriver {
 		}
 	}
 
-	/** Stall / total-timeout guard shared by both timer sites. Before
-	 *  failing, probes the conversation's brain transcript for a DONE
-	 *  final-response step written during the turn (parked turn: agy finished
-	 *  its answer but never streamed it). One found, the turn settles OK with
-	 *  the withheld answer instead of discarding finished work; the child is
-	 *  killed either way so the next turn respawns into a known state. */
+	/** Stall / total-timeout guard shared by both timer sites. Kills the
+	 *  child FIRST (bumping the generation so a racing exit handler cannot
+	 *  settle the turn ERROR mid-probe), then probes the conversation's
+	 *  brain transcript for a clean final-response step written during the
+	 *  turn (parked turn: agy finished its answer but never streamed it).
+	 *  One found, the turn settles OK with the withheld answer instead of
+	 *  discarding finished work; either way the next turn respawns into a
+	 *  known state. */
 	async #turnDeadlineGuard(turn: ActiveTurn, label: string, message: string): Promise<void> {
 		if (turn.closed) return;
 		this.#log(`${label}:${turn.id}`);
+		this.#killChild();
 		let parked: string | undefined;
 		try {
 			parked = turn.conversationId
@@ -622,7 +625,6 @@ export class StreamDriver implements TurnDriver {
 		} catch {
 			parked = undefined; // the guard must never throw
 		}
-		this.#killChild();
 		if (parked !== undefined) {
 			this.#settle(turn, {
 				conversationId: turn.conversationId,
