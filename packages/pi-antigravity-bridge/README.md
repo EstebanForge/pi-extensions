@@ -132,9 +132,8 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 `/agy` configures the provider at runtime. Settings persist to `~/.pi/agent/antigravity-bridge/config.json` and take effect on the next turn.
 
 ```
-/agy                      status, or open the full settings picker (TUI)
-/agy status               print current settings + session counts
-/agy doctor               bridge state, driver counters, bridge port, last lifecycle events, log dir
+/agy                      status summary, or open the full settings picker (TUI)
+/agy doctor               single status surface: bridge state, driver counters, versions, acp state, lifecycle, settings, log dir
 /agy auth                 run the antigravity-acp sign-in now (engine acp): opens the Google login in your browser, shows the URL when no browser opens
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)

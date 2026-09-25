@@ -1064,30 +1064,39 @@ interface PendingConfig {
 	systemPrompt?: boolean;
 }
 
-function statusText(ctx: AgyCommandCtx): string {
+function settingsRows(ctx: AgyCommandCtx): string[] {
 	const config = loadConfig();
-	const source = ctx.usingFallback ? "fallback (agy models failed)" : "discovered";
 	const perm = config.skipPermissions ? "auto-approved (DANGEROUS)" : "prompt (hangs in -p)";
 	// padEnd keyed to the longest label ("AskAntigravity thinking:") so the
-	// value column stays aligned as labels grow.
+	// value column stays aligned as labels grow. Doctor-only state (engine,
+	// models, sessions, config path) lives in /agy doctor, not here: one
+	// surface per concern — this is the config surface, doctor is health.
 	const row = (label: string, value: string) => `  ${label.padEnd(24)} ${value}`;
 	return [
-		"Antigravity bridge",
-		row("engine:", `${config.engine}${config.engine === "acp" ? " (official server, opt-in)" : ""}`),
-		row("models:", `${ctx.entries.length} ${source}`),
 		row("mode:", config.mode),
 		row("permissions:", perm),
 		row("AskAntigravity tool:", config.askTool ? "on" : "off"),
 		row("Web tools:", config.webTools ? "on" : "off"),
 		row("AskAntigravity model:", config.defaultModel),
 		row("AskAntigravity thinking:", config.defaultThinking),
-		row("sessions:", `${ctx.store.size} bound`),
-		row("config:", CONFIG_PATH),
 		row("bridge tools:", config.bridgeTools),
 		row("digest:", config.digest ? "on" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
+	];
+}
+
+function statusText(ctx: AgyCommandCtx): string {
+	const config = loadConfig();
+	const source = ctx.usingFallback ? "fallback (agy models failed)" : "discovered";
+	return [
+		"Antigravity bridge",
+		`  engine:        ${config.engine}${config.engine === "acp" ? " (official server, opt-in)" : ""}`,
+		`  models:        ${ctx.entries.length} ${source}`,
+		...settingsRows(ctx),
+		`  sessions:      ${ctx.store.size} bound`,
+		`  config:        ${CONFIG_PATH}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -1095,7 +1104,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1369,6 +1378,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						`  acp auth:      ${setup.auth ?? "not configured (auto-setup bootstraps)"}`,
 					);
 				}
+				// The config surface lives here too, so doctor is the ONE status
+				// surface (former /agy status is gone).
+				lines.push("", "settings:", ...settingsRows(ctx));
 				ui?.notify(lines.join("\n"), "info");
 				return;
 			}
@@ -1712,9 +1724,11 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 
 
-			// No subcommand (or "status"): print status, or open the picker in TUI.
-			if (sub && sub !== "status") {
-				ui?.notify(`unknown subcommand: ${sub}\n${statusText(ctx)}`, "warning");
+			// No subcommand: print status, or open the picker in TUI. The old
+			// "status" alias is retired; /agy doctor is the one status surface.
+			if (sub) {
+				const pointer = sub === "status" ? "/agy status was removed; use /agy doctor.\n" : "";
+				ui?.notify(`${pointer}unknown subcommand: ${sub}\n${statusText(ctx)}`, "warning");
 				return;
 			}
 
