@@ -710,10 +710,11 @@ export async function registerAskAntigravityTool(
 				details.aborted = outcome.aborted;
 				details.timedOut = outcome.timedOut;
 				details.durationMs = Date.now() - start;
+				const text = out.trim();
 				log?.(
 					"ask-end",
-					{ exitCode: outcome.exitCode, aborted: outcome.aborted, timedOut: outcome.timedOut, durationMs: details.durationMs, conversationId: details.conversationId },
-					outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut ? "warn" : "info",
+					{ exitCode: outcome.exitCode, aborted: outcome.aborted, timedOut: outcome.timedOut, empty: !text, durationMs: details.durationMs, conversationId: details.conversationId },
+					outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut || !text ? "warn" : "info",
 				);
 
 				if (!isContinuation && !details.conversationId && snapshot) {
@@ -726,8 +727,6 @@ export async function registerAskAntigravityTool(
 						await sleep(DISCOVERY_POLL_MS);
 					}
 				}
-
-				const text = out.trim();
 
 				if (outcome.aborted) {
 					return {
@@ -761,6 +760,24 @@ export async function registerAskAntigravityTool(
 						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
 						details,
 					};
+				}
+
+				// Exit 0 with nothing on stdout is still a failure for the
+				// delegator: headless agy auto-denies a permission-gated tool call
+				// (e.g. the command gate in plan mode), prints the reason only to
+				// stderr, and ends cleanly. Falling through to the success path here
+				// returned just the conversation footer, which read as an empty
+				// success (silent-failure bug found 2026-09-25).
+				if (!text) {
+					const stderr = redactText(details.stderr.trim());
+					const note = [
+						"agy exited cleanly but produced no output.",
+						stderr ? `stderr: ${stderr}` : null,
+						"Common cause: a tool call needed a permission that headless mode cannot prompt for (typically the command gate in plan mode), so it was auto-denied. Allow-list it under permissions.allow in ~/.gemini/antigravity-cli/settings.json, or rerun outside plan mode with skipPermissions.",
+					]
+						.filter(Boolean)
+						.join(" ");
+					return { content: [{ type: "text", text: note }], details };
 				}
 
 				onUpdate?.({ content: [{ type: "text", text: "" }], details: { ...details } });
