@@ -762,6 +762,9 @@ interface AgyDetails {
 	exitCode: number;
 	aborted: boolean;
 	timedOut: boolean;
+	// Exit 0 with no answer on stdout (the empty-output failure branch).
+	// renderResult flips to the error glyph on it.
+	empty?: boolean;
 	durationMs: number;
 	stderr: string;
 }
@@ -1027,7 +1030,8 @@ export default async function (pi: ExtensionAPI) {
 			}
 
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
-			const errored = d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut;
+			const errored =
+		d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut || !!d?.empty;
 
 			let text = errored
 				? theme.fg("error", "✗ AskAntigravity error")
@@ -1446,6 +1450,7 @@ export default async function (pi: ExtensionAPI) {
 				// here returned just the conversation footer, which read as an
 				// empty success (silent-failure bug found 2026-09-25).
 				if (!text) {
+					details.empty = true;
 					const note = [
 						"agy exited cleanly but produced no output.",
 						details.stderr.trim() ? `stderr: ${details.stderr.trim()}` : null,

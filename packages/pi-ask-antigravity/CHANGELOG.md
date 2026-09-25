@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.8] - 2026-09-25
+
+### Fixed
+
+- **Exit 0 with no output is a failure, not a silent success.** Same bug as the bridge fix: a headless `agy -p` run auto-denies a permission-gated tool call (the command gate in plan mode bites hardest since plan runs never receive the skip flag), prints the reason only to stderr, exits 0, and the execute path fell through to success, returning just the conversation footer. An empty answer now returns a loud failure note carrying the stderr plus the remedy (allow-list the command under `permissions.allow`, or rerun outside plan mode), and a new `details.empty` marker flips the TUI result row to its error glyph instead of a green checkmark. Three new tests pin both stderr shapes and the glyph flip through the fake-binary stub; HOME is pointed at an empty tmpdir during them so the bridge-deferral scan finds nothing and the factory registers.
+
 ## [1.2.7] - 2026-09-25
 
 ### Fixed
