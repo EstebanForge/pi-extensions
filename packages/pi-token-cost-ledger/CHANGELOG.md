@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.5 — 2026-09-30
+
+### Added
+- **Prices for GPT-6.1-Sol and Claude Sonnet 5.5.** The 0.99.x releases made `gpt-6.1-sol` the default model on the Codex provider and added Sonnet 5.5, so default-configuration sessions landed in the unpriced bucket. Refresh is update-only by design, so new ids ship with the bundled file. Rates from the live models.dev catalog: `gpt-6.1-sol` $2 input / $0.10 cache-read / $10 output per 1M ($4 / $0.20 / $15 over 272K context), `claude-sonnet-5-5` $2 / $0.20 / $10.
+
+### Fixed
+- **Stale Sonnet 5 intro-pricing note.** The bundled note predicted a $3/$15 standard rate after the ~Aug 2026 intro window; that rate never shipped. anthropic.com and models.dev list $2/$10 as the standing rate for sonnet-5 and sonnet-5-5 (verified 2026-09-30). Values must stay catalog-aligned: refresh overwrites tracked i/c/o from models.dev on every run, so off-catalog prices would not survive anyway.
+
 ## 1.2.3 — 2026-08-26
 
 ### Added
