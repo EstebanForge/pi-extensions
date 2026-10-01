@@ -19,7 +19,17 @@ import {
 	type GateDecision,
 } from "../src/approval-gate.js";
 
-const ctxStub = { hasUI: false } as import("@earendil-works/pi-coding-agent").ExtensionContext;
+// pi 1.0.0: tool execute() receives ExtensionToolContext (ExtensionContext + tools/executeTool).
+// The shadow factory only forwards ctx (to the policy and the real builtin), so the stub
+// carries the members the gate itself touches and casts through unknown; pi adds required
+// context members across versions and a full stub would rot with each release.
+const ctxStub = {
+	hasUI: false,
+	tools: [],
+	executeTool: async () => {
+		throw new Error("executeTool is not available in the approval-gate test stub");
+	},
+} as unknown as import("@earendil-works/pi-coding-agent").ExtensionToolContext;
 
 interface ExecuteLog {
 	params: Record<string, unknown>;

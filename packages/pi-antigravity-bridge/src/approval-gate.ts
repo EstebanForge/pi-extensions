@@ -25,7 +25,7 @@
 import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	ExtensionContext,
+	ExtensionToolContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
@@ -151,7 +151,7 @@ export function createShadowTool(base: AnyToolDefinition, policy: GatePolicy, op
 		params: any,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<any> | undefined,
-		ctx: ExtensionContext,
+		ctx: ExtensionToolContext,
 	): Promise<AgentToolResult<unknown>> => {
 		const p = (params ?? {}) as Record<string, unknown>;
 		if (p[GATE_MARKER] !== true) {
