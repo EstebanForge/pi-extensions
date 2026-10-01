@@ -1,0 +1,72 @@
+{
+  "name": "@estebanforge/pi-tool-display",
+  "version": "1.0.0",
+  "description": "Compact tool call rendering, diff visualization, and output truncation extension for Pi coding agent. Hides, collapses, and truncates verbose tool output for cleaner TUI display. Adopted from MasuRii/pi-tool-display.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-tui",
+    "tool-rendering",
+    "tool-output",
+    "diff-visualization",
+    "output-truncation",
+    "compact",
+    "diff"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@actitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "contributors": [
+    {
+      "name": "MasuRii",
+      "url": "https://github.com/MasuRii"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-tool-display"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./extensions/index.ts",
+    "./tool-display-api-consumer": {
+      "types": "./lib/tool-display-api-consumer.d.ts",
+      "default": "./lib/tool-display-api-consumer.js"
+    }
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "config/config.example.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
