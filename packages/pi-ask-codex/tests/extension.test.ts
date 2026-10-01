@@ -10,7 +10,7 @@ const LUNA_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 function entry(
 	slug: string,
-	opts: { efforts?: string[]; upgrade?: string | null } = {},
+	opts: { efforts?: string[]; upgrade?: string | null; hidden?: boolean } = {},
 ): CodexModelEntry {
 	const { family, version } = classifySlug(slug);
 	return {
@@ -19,6 +19,7 @@ function entry(
 		version,
 		efforts: opts.efforts ?? (slug.includes("luna") ? LUNA_EFFORTS : FULL_EFFORTS),
 		upgrade: opts.upgrade ?? null,
+		hidden: opts.hidden ?? false,
 	};
 }
 
@@ -31,6 +32,15 @@ const CATALOG: CodexModelEntry[] = [
 	entry("gpt-5.6-terra", { upgrade: "gpt-6-sol" }),
 	entry("gpt-5.6-luna", { upgrade: "gpt-6-luna" }),
 	entry("gpt-5.5", { efforts: LUNA_EFFORTS, upgrade: "gpt-6-sol" }),
+	// Hidden catalog entries: reachable as exact ids, never via aliases.
+	entry("gpt-daybreak-blue-latest", { hidden: true }),
+	entry("codex-auto-review", { hidden: true }),
+];
+
+const CHAIN: CodexModelEntry[] = [
+	entry("gpt-4-alpha", { upgrade: "gpt-5-beta" }),
+	entry("gpt-5-beta", { upgrade: "gpt-6.1-sol" }),
+	entry("gpt-6.1-sol"),
 ];
 
 describe("classifySlug (GPT-6 taxonomy)", () => {
@@ -85,6 +95,12 @@ describe("resolveModel (GPT-6 catalog)", () => {
 		expect(resolveModel("6 astra", CATALOG).flagValue).toBe("gpt-6-astra");
 	});
 
+	it("resolves tier names used as aliases (sol, luna)", () => {
+		expect(resolveModel("sol", CATALOG).flagValue).toBe("gpt-6.1-sol");
+		expect(resolveModel("luna", CATALOG).flagValue).toBe("gpt-6-luna");
+		expect(resolveModel("6 luna", CATALOG).flagValue).toBe("gpt-6-luna");
+	});
+
 	it("migrates pinned deprecated versions via the catalog upgrade pointer", () => {
 		const r = resolveModel("5.6 mini", CATALOG);
 		expect(r.flagValue).toBe("gpt-6-luna");
@@ -110,6 +126,46 @@ describe("resolveModel (GPT-6 catalog)", () => {
 
 	it("passes a family with no catalog models through", () => {
 		expect(resolveModel("6 pro", CATALOG).flagValue).toBe("6 pro");
+	});
+
+	it("resolves hidden catalog entries as exact ids, verbatim", () => {
+		const r = resolveModel("gpt-daybreak-blue-latest", CATALOG);
+		expect(r.flagValue).toBe("gpt-daybreak-blue-latest");
+		expect(r.entry?.full).toBe("gpt-daybreak-blue-latest");
+		expect(resolveModel("codex-auto-review", CATALOG).flagValue).toBe("codex-auto-review");
+	});
+
+	it("never aliases onto a hidden entry", () => {
+		const onlyHiddenFast = [entry("gpt-7-luna", { hidden: true })];
+		expect(resolveModel("mini", onlyHiddenFast)).toEqual({ flagValue: "mini", entry: null });
+	});
+
+	it("passes visible unknown-suffix slugs through verbatim", () => {
+		const withPreview = [...CATALOG, entry("gpt-6-preview")];
+		const r = resolveModel("gpt-6-preview", withPreview);
+		expect(r.flagValue).toBe("gpt-6-preview");
+	});
+
+	it("resolves the carried effort ladder on the picked entry", () => {
+		expect(resolveModel("full", CATALOG).entry?.efforts).toContain("ultra");
+		expect(resolveModel("mini", CATALOG).entry?.efforts).not.toContain("ultra");
+	});
+
+	it("follows multi-hop upgrade chains", () => {
+		expect(resolveModel("gpt-4-alpha", CHAIN).flagValue).toBe("gpt-6.1-sol");
+	});
+
+	it("forwards a dead upgrade target slug instead of the retired model", () => {
+		const dead = [entry("gpt-5-old", { upgrade: "gpt-6-ghost" })];
+		expect(resolveModel("gpt-5-old", dead).flagValue).toBe("gpt-6-ghost");
+	});
+
+	it("terminates on upgrade cycles", () => {
+		const cycle = [
+			entry("gpt-5-a", { upgrade: "gpt-5-b" }),
+			entry("gpt-5-b", { upgrade: "gpt-5-a" }),
+		];
+		expect(resolveModel("gpt-5-a", cycle).flagValue).toBe("gpt-5-b");
 	});
 });
 

@@ -22,6 +22,16 @@ All notable changes to this project will be documented in this file.
   supported ladder before the run starts (e.g. `ultra` on `gpt-6-luna` fails
   fast with the supported list instead of a mid-run codex error). Hidden
   catalog entries (experiments) no longer win alias resolution.
+- **Review hardening on the same paths.** Hidden entries are kept in the
+  discovered list so exact ids match verbatim — dropping them entirely let
+  family aliases hijack an unknown `gpt-*` slug onto the top workhorse model.
+  A migration pointer to a model absent from the catalog now forwards the
+  target slug instead of dispatching the retired one, and the chain walk is
+  cycle-safe via a visited set. Every pre-flight rejection (invalid model
+  value, synonym conflict, unsupported effort, bad cwd) carries a non-zero
+  exit code so the result renders as a failure, not a success glyph. The
+  leading-dash model guard covers config-supplied defaults, not just the
+  tool parameter.
 
 ## [1.0.5] - 2026-09-18
 

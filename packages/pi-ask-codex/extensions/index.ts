@@ -225,6 +225,7 @@ export interface CodexModelEntry {
 	version: string | null; // "6.1" or null if unparseable
 	efforts: string[]; // supported reasoning efforts; empty when unknown
 	upgrade: string | null; // catalog migration target for deprecated models
+	hidden: boolean; // visibility "hide" — exact ids only, never alias-selected
 }
 
 /** Descending numeric version compare. "5.10" > "5.9" (lexical sort would
@@ -347,10 +348,6 @@ async function discoverCodexModels(binary: string): Promise<CodexModelEntry[]> {
 		};
 		const slug = raw.slug;
 		if (typeof slug !== "string" || !slug) continue;
-		// Hidden catalog entries (experiments, internal reviewers) stay
-		// reachable as exact user-typed slugs via the passthrough branch but
-		// never win alias resolution.
-		if (raw.visibility === "hide") continue;
 		const { family, version } = classifySlug(slug);
 		const efforts = Array.isArray(raw.supported_reasoning_levels)
 			? raw.supported_reasoning_levels
@@ -359,25 +356,49 @@ async function discoverCodexModels(binary: string): Promise<CodexModelEntry[]> {
 			: [];
 		const upgrade =
 			typeof raw.upgrade?.model === "string" && raw.upgrade.model ? raw.upgrade.model : null;
-		entries.push({ full: slug, family, version, efforts, upgrade });
+		// Hidden entries stay in the list so exact user-typed ids match
+		// verbatim (and unknown-suffix slugs never fall into alias parsing);
+		// resolveModel excludes them from family-alias candidate pools.
+		entries.push({
+			full: slug,
+			family,
+			version,
+			efforts,
+			upgrade,
+			hidden: raw.visibility === "hide",
+		});
 	}
 	return entries;
 }
 
 /** Follow the catalog's official migration chain (deprecated model -> upgrade
- *  target), bounded to 3 hops. Deprecated models stay listed in
+ *  target), bounded to 3 hops with a visited set so cycles terminate
+ *  deterministically. Deprecated models stay listed in
  *  `codex debug models --bundled` but fail server-side; the upgrade pointer
  *  is the vendor's own replacement, so requests pointing at them migrate
- *  instead of erroring. Unknown or cyclic targets keep the current entry. */
-function followUpgrades(entry: CodexModelEntry, entries: CodexModelEntry[]): CodexModelEntry {
+ *  instead of erroring. A pointer to a model absent from the catalog is
+ *  still forwarded as a string — dispatching the retired slug would
+ *  guarantee a server rejection, while the target may exist server-side. */
+function followUpgrades(
+	entry: CodexModelEntry,
+	entries: CodexModelEntry[],
+): { slug: string; entry: CodexModelEntry } {
 	let current = entry;
+	let slug = entry.full;
+	const visited = new Set<string>([entry.full]);
 	for (let hops = 0; hops < 3; hops++) {
-		if (!current.upgrade) return current;
+		if (!current.upgrade) break;
 		const target = entries.find((e) => e.full === current.upgrade);
-		if (!target || target === current) return current;
+		if (!target) {
+			slug = current.upgrade;
+			break;
+		}
+		if (visited.has(target.full)) break;
+		visited.add(target.full);
 		current = target;
+		slug = target.full;
 	}
-	return current;
+	return { slug, entry: current };
 }
 
 /** Resolve a friendly alias / partial name to an exact --model value. Mirrors
@@ -394,12 +415,16 @@ export function resolveModel(
 	const lower = input.toLowerCase().trim();
 	if (lower === "default" || lower === "") return { flagValue: null, entry: null };
 
+	// Apply the migration chain and build the result in one place so every
+	// branch shares the same upgrade + reporting behavior.
+	const emit = (e: CodexModelEntry) => {
+		const r = followUpgrades(e, entries);
+		return { flagValue: r.slug, entry: r.entry };
+	};
+
 	// 1. Exact slug match against the live catalog (upgrades applied).
 	const exact = entries.find((e) => e.full.toLowerCase() === lower);
-	if (exact) {
-		const picked = followUpgrades(exact, entries);
-		return { flagValue: picked.full, entry: picked };
-	}
+	if (exact) return emit(exact);
 
 	// 2. Parse the alias into family + optional version. Match the family
 	//    keyword as a standalone token (\b) so pinned forms like "6 mini"
@@ -426,8 +451,9 @@ export function resolveModel(
 	const versionMatch = lower.match(/(\d+(?:\.\d+)?)/);
 	const pinnedVersion = versionMatch ? versionMatch[1] : null;
 
-	// 3. Filter by family.
-	let candidates = entries.filter((e) => e.family === family);
+	// 3. Filter by family. Hidden entries (experiments, internal reviewers)
+	//    are in the catalog for exact matching only — they never win aliases.
+	let candidates = entries.filter((e) => e.family === family && !e.hidden);
 	if (candidates.length === 0) {
 		// Family not in the catalog (e.g. no pro models this release) —
 		// passthrough rather than fabricating.
@@ -446,24 +472,21 @@ export function resolveModel(
 			return { flagValue: input, entry: null };
 		}
 		versioned.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-		const picked = followUpgrades(versioned[0], entries);
-		return { flagValue: picked.full, entry: picked };
+		return emit(versioned[0]);
 	}
 	const versions = candidates
 		.map((e) => e.version)
 		.filter((v): v is string => v !== null);
 	if (versions.length === 0) {
 		candidates.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-		const picked = followUpgrades(candidates[0], entries);
-		return { flagValue: picked.full, entry: picked };
+		return emit(candidates[0]);
 	}
 	const uniqueVersions = [...new Set(versions)].sort(compareVersionsDesc);
 	const top = uniqueVersions[0];
 	const topCandidates = candidates
 		.filter((e) => e.version === top)
 		.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-	const picked = followUpgrades(topCandidates[0], entries);
-	return { flagValue: picked.full, entry: picked };
+	return emit(topCandidates[0]);
 }
 
 // --- Status rendering (the useful ideas borrowed from pi-codex) -------------
@@ -960,6 +983,7 @@ export default async function (pi: ExtensionAPI) {
 					],
 					details: {
 						...emptyDetails(null, null),
+						exitCode: 1,
 						stderr: "circular delegation blocked",
 					},
 				};
@@ -973,7 +997,7 @@ export default async function (pi: ExtensionAPI) {
 							text: `Error: codex CLI not found at "${binary}". Install it (npm install -g @openai/codex) or set CODEX_BIN to its path.`,
 						},
 					],
-					details: emptyDetails(null, null),
+					details: { ...emptyDetails(null, null), exitCode: 1 },
 				};
 			}
 
@@ -982,16 +1006,17 @@ export default async function (pi: ExtensionAPI) {
 			// Defensive: reject leading-dash model values that could misbind
 			// on codex's arg parser when spliced as the `-m` value. Same
 			// threat model as SESSION_ID_RE — a leading-dash value can't be a
-			// model id, so refuse it instead of letting it reach argv.
-			if (typeof params.model === "string" && params.model.trim().startsWith("-")) {
+			// model id, so refuse it instead of letting it reach argv. Checks
+			// the EFFECTIVE model (config default included), not just the param.
+			if (requestedModel.trim().startsWith("-")) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: `model value "${params.model}" starts with "-" — not a valid model id. Use a friendly alias (e.g. "full", "mini", "astra", "gpt") or a known slug (e.g. "gpt-6.1-sol").`,
+							text: `model value "${requestedModel}" starts with "-" — not a valid model id. Use a friendly alias (e.g. "full", "mini", "astra", "gpt") or a known slug (e.g. "gpt-6.1-sol").`,
 						},
 					],
-					details: emptyDetails(requestedModel, null),
+					details: { ...emptyDetails(requestedModel, null), exitCode: 1 },
 				};
 			}
 			const resolved = resolveModel(requestedModel, discovered);
@@ -1007,7 +1032,7 @@ export default async function (pi: ExtensionAPI) {
 							text: "thinking and reasoningEffort are synonyms for the same knob - pass one, not both with different values.",
 						},
 					],
-					details: emptyDetails(requestedModel, null),
+					details: { ...emptyDetails(requestedModel, null), exitCode: 1 },
 				};
 			}
 			const reasoningArg = (params.thinking ?? params.reasoningEffort) as string | undefined;
@@ -1032,7 +1057,10 @@ export default async function (pi: ExtensionAPI) {
 							text: `reasoning effort "${reasoning}" is not supported by ${resolved.entry.full}. Supported: ${resolved.entry.efforts.join(", ")}.`,
 						},
 					],
-					details: emptyDetails(requestedModel, resolved.flagValue, reasoning, sandbox),
+					details: {
+						...emptyDetails(requestedModel, resolved.flagValue, reasoning, sandbox),
+						exitCode: 1,
+					},
 				};
 			}
 
@@ -1067,13 +1095,13 @@ export default async function (pi: ExtensionAPI) {
 				if (!stat.isDirectory()) {
 					return {
 						content: [{ type: "text", text: `cwd is not a directory: ${cwd}` }],
-						details: emptyDetails(requestedModel, resolved.flagValue),
+						details: { ...emptyDetails(requestedModel, resolved.flagValue), exitCode: 1 },
 					};
 				}
 			} catch {
 				return {
 					content: [{ type: "text", text: `cwd does not exist: ${cwd}` }],
-					details: emptyDetails(requestedModel, resolved.flagValue),
+					details: { ...emptyDetails(requestedModel, resolved.flagValue), exitCode: 1 },
 				};
 			}
 
