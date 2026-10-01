@@ -55,13 +55,18 @@ Transient `error` events (e.g. `"Reconnecting... 1/5"` during a dropped stream) 
 
 ## Model aliases
 
-| User says | Resolves to |
+Aliases resolve at load time against the live catalog from `codex debug models --bundled` — no version strings are hardcoded, so they track whatever Codex currently ships (GPT-6 era: `gpt-6.1-sol` workhorse, `gpt-6-astra` frontier, `gpt-6-luna` fast).
+
+| User says | Resolves to (GPT-6 era catalog) |
 | --- | --- |
-| `default` | omit `--model` (Codex's own default, currently gpt-5.5) |
-| `mini` | gpt-5.4-mini (fast, cheap) |
-| `full` | gpt-5.5 |
-| `gpt` | gpt-5.5 |
-| `gpt-5.4-mini` / `gpt-5.5` | exact passthrough |
+| `default` | omit `--model` (Codex's own default, currently gpt-6.1-sol) |
+| `mini` / `nano` | gpt-6-luna (fast, affordable tier) |
+| `astra` | gpt-6-astra (frontier tier) |
+| `full` / `gpt` | gpt-6.1-sol (workhorse, highest version) |
+| `6 mini`, `6.1 full`, `6 astra` | pinned version + tier |
+| `gpt-6.1-sol` / `gpt-6-astra` | exact passthrough |
+
+Deprecated models stay listed in the catalog but fail server-side. The catalog carries each one's official `upgrade` pointer (`gpt-5.5` → `gpt-6-sol`, `gpt-5.6-luna` → `gpt-6-luna`, ...), and resolution follows it, so a stale pinned id like `5.6 mini` lands on its successor instead of a 400. Hidden catalog entries (experiments, internal reviewers) never win alias resolution but stay reachable as exact ids.
 
 Note: when authenticated with a ChatGPT account (the common case, including the free tier), only some models are available — others return `400: model is not supported when using Codex with a ChatGPT account`. The alias set is intentionally small and points only at known-good names for that auth path. Use API-key auth (`CODEX_API_KEY`) to target other models, and pass the exact id.
 
@@ -80,7 +85,7 @@ Note: when authenticated with a ChatGPT account (the common case, including the 
 | Key | Default | Description |
 | --- | --- | --- |
 | `defaultModel` | `default` | Alias or exact id used when the tool call omits `model`. |
-| `defaultReasoning` | `medium` | Reasoning effort (`minimal` / `low` / `medium` / `high`) passed via `-c model_reasoning_effort`. Lower = faster and cheaper. |
+| `defaultReasoning` | `medium` | Reasoning effort (`low` / `medium` / `high` / `xhigh` / `max` / `ultra`) passed via `-c model_reasoning_effort`. Lower = faster and cheaper. |
 | `defaultSandbox` | `danger-full-access` | Sandbox policy: `danger-full-access` (default, full tool access without prompts), `workspace-write` (edit files in cwd only), or `read-only` (inspect without acting; disable-acting option). |
 
 ### `/codex` command
@@ -93,7 +98,7 @@ Interactive picker for the default model, reasoning effort, and sandbox. If the 
 | --- | --- | --- |
 | `prompt` | yes | Self-contained task. Codex cannot see this conversation. |
 | `model` | no | Alias or exact id (see table above). Omit for the configured default. |
-| `reasoningEffort` | no | `minimal` / `low` / `medium` / `high`. Overrides the configured default. |
+| `reasoningEffort` | no | `low` / `medium` / `high` / `xhigh` / `max` / `ultra`. Overrides the configured default. Validated against the resolved model's supported ladder (e.g. `ultra` is rejected on gpt-6-luna) before the run starts. |
 | `sandbox` | no | `danger-full-access` (default) / `workspace-write` / `read-only`. Overrides the configured default. |
 | `sessionId` | no | Omit for one-shot. Pass a prior call's `details.sessionId` to continue that conversation. |
 | `cwd` | no | Workspace path. Defaults to the current project root. |

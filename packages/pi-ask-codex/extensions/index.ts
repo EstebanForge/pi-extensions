@@ -10,11 +10,14 @@
  * via `codex debug models --bundled`. No version strings are hardcoded — the
  * catalog is fetched once at extension load and the highest version wins.
  *   "default"        -> omit --model (Codex's own default)
- *   "mini" / "nano"  -> highest-version mini family
- *   "full" / "gpt"   -> highest-version main family
- *   "5.6 mini"       -> pinned version + family
- *   "gpt-5.4-mini"   -> exact passthrough (verifies against catalog; falls
+ *   "mini" / "nano"  -> highest-version fast family (luna)
+ *   "astra"          -> highest-version frontier family
+ *   "full" / "gpt"   -> highest-version main family (sol)
+ *   "6 mini"         -> pinned version + family
+ *   "gpt-6.1-sol"    -> exact passthrough (verifies against catalog; falls
  *                       through to codex verbatim if discovery is unavailable)
+ * Deprecated catalog models carry an `upgrade` pointer; resolved requests
+ * auto-migrate to the official upgrade target instead of failing server-side.
  *
  * Config: ~/.pi/agent/ask-codex.json (global) merged over
  *         .pi/ask-codex.json (project). Editable via /codex.
@@ -80,12 +83,13 @@ TWO MODES (you choose):
 
 THINKING / REASONING EFFORT (params: thinking, reasoningEffort - SYNONYMS for one knob):
 - pi calls it thinking, Codex calls it reasoning effort. Same thing. Pass ONE of the two.
-- Values: minimal|low|medium|high. "think harder / peer review on high thinking" -> thinking: "high".
+- Values: low|medium|high|xhigh|max|ultra ("minimal" is retired; support
+  is validated per model — e.g. gpt-6-luna has no ultra).
 - An explicit level beats the configured default. Lowering it is the primary speed/cost lever.`;
 
 // --- Types -----------------------------------------------------------------
 
-type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
 interface Config {
@@ -130,7 +134,10 @@ function tryReadJson(filePath: string): Record<string, unknown> {
 	}
 }
 
-const REASONING_VALUES: ReasoningEffort[] = ["minimal", "low", "medium", "high"];
+/** Current codex reasoning-effort ladder (GPT-6 era). "minimal" is retired:
+ *  no bundled model lists it anymore. Support is validated per model at call
+ *  time against the catalog (gpt-6-luna stops at max, for example). */
+export const REASONING_VALUES: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const SANDBOX_VALUES: SandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
 
 function isReasoningEffort(v: unknown): v is ReasoningEffort {
@@ -198,20 +205,26 @@ function saveConfig(patch: Partial<Config>): SaveResult {
 
 // --- Model discovery + alias resolution ------------------------------------
 
-// Codex slug taxonomy (verified against `codex debug models --bundled`):
-//   gpt-X.Y           -> "main" family (flagship / balanced)
-//   gpt-X.Y-mini      -> "mini" family (fast / cheap)
-//   gpt-X.Y-nano      -> "mini" family (smaller / cheaper)
+// Codex slug taxonomy (verified against `codex debug models --bundled`,
+// codex-cli 0.159.3, GPT-6 era):
+//   gpt-X.Y           -> "main" family (plain, legacy naming)
+//   gpt-X.Y-sol       -> "main" family (sol = everyday workhorse)
+//   gpt-X.Y-terra     -> "main" family (terra = balanced, GPT-5.6 era)
+//   gpt-X.Y-astra     -> "frontier" family (astra = most demanding work)
+//   gpt-X.Y-luna      -> "fast" family (luna = fast / affordable)
+//   gpt-X.Y-mini/nano -> "fast" family (pre-GPT-6 fast tiers)
 //   gpt-X.Y-pro       -> "pro" family (deep reasoning)
 //   gpt-X.Y-codex     -> "codex" family (legacy coding-tuned naming)
-//   gpt-X.Y-{sol,terra,luna} -> "main" family variants (current GPT-5.6 naming)
-// Anything else (e.g. "codex-auto-review") is excluded from resolution.
-type Family = "main" | "mini" | "pro" | "codex" | "other";
+// Anything else (e.g. "gpt-daybreak-blue-latest", "codex-auto-review") is
+// excluded from resolution.
+type Family = "main" | "frontier" | "fast" | "pro" | "codex" | "other";
 
-interface CodexModelEntry {
-	full: string; // exact slug, e.g. "gpt-5.6-sol"
+export interface CodexModelEntry {
+	full: string; // exact slug, e.g. "gpt-6.1-sol"
 	family: Family;
-	version: string | null; // "5.6" or null if unparseable
+	version: string | null; // "6.1" or null if unparseable
+	efforts: string[]; // supported reasoning efforts; empty when unknown
+	upgrade: string | null; // catalog migration target for deprecated models
 }
 
 /** Descending numeric version compare. "5.10" > "5.9" (lexical sort would
@@ -235,33 +248,36 @@ function compareVersionsDesc(a: string, b: string): number {
  *  like `gpt-5.6-mini-pro` are not handled — they fall to "other" and remain
  *  exact-only. If OpenAI introduces compound naming, extend the literal
  *  suffix checks below rather than the regex. */
-function classifySlug(slug: string): { family: Family; version: string | null } {
+export function classifySlug(slug: string): { family: Family; version: string | null } {
 	const m = slug.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
 	if (!m) return { family: "other", version: null };
 	const version = m[1];
 	const suffix = m[2];
 	if (!suffix) return { family: "main", version };
 	const lower = suffix.toLowerCase();
-	if (lower === "mini" || lower === "nano") return { family: "mini", version };
+	// GPT-6 era tiers are suffix variants, not standalone families:
+	// sol (workhorse) and terra (balanced, 5.6-era) are "main"; astra
+	// (frontier) and luna (fast) get their own families so the mini/nano
+	// aliases keep pointing at the affordable tier after the -mini naming
+	// retired. Legacy -mini/-nano slugs land in "fast" too.
+	if (lower === "sol" || lower === "terra") return { family: "main", version };
+	if (lower === "astra") return { family: "frontier", version };
+	if (lower === "luna" || lower === "mini" || lower === "nano") return { family: "fast", version };
 	if (lower === "pro") return { family: "pro", version };
 	if (lower === "codex" || lower.startsWith("codex-")) return { family: "codex", version };
-	// GPT-5.6 variant naming (sol/terra/luna) is main-family. sol is the
-	// flagship, terra balanced, luna fast — distinguished in resolveModel
-	// via MAIN_VARIANT_PRIORITY so ties break deterministically.
-	if (lower === "sol" || lower === "terra" || lower === "luna") return { family: "main", version };
 	return { family: "other", version };
 }
 
 /** Tiebreak priority within the main family at the same version.
- *  sol (flagship) > plain gpt-X.Y (legacy naming) > terra (balanced) >
- *  luna (fast) > anything else. Catalog JSON order from
- *  `codex debug models --bundled` is not part of the contract, so an
- *  explicit priority is required for deterministic flagship selection. */
+ *  sol (workhorse) > plain gpt-X.Y (legacy naming) > terra (balanced) >
+ *  anything else. astra and luna have their own families, so they never
+ *  compete here. Catalog JSON order from `codex debug models --bundled` is
+ *  not part of the contract, so an explicit priority is required for
+ *  deterministic flagship selection. */
 const MAIN_VARIANT_PRIORITY: Record<string, number> = {
 	sol: 0,
 	"": 1, // plain gpt-X.Y (no suffix)
 	terra: 2,
-	luna: 3,
 };
 function mainVariantRank(slug: string): number {
 	const m = slug.match(/^gpt-\d+(?:\.\d+)?(?:-(.+))?$/i);
@@ -323,48 +339,89 @@ async function discoverCodexModels(binary: string): Promise<CodexModelEntry[]> {
 
 	const entries: CodexModelEntry[] = [];
 	for (const m of models) {
-		const slug = (m as { slug?: unknown }).slug;
+		const raw = m as {
+			slug?: unknown;
+			visibility?: unknown;
+			upgrade?: { model?: unknown } | null;
+			supported_reasoning_levels?: Array<{ effort?: unknown }>;
+		};
+		const slug = raw.slug;
 		if (typeof slug !== "string" || !slug) continue;
+		// Hidden catalog entries (experiments, internal reviewers) stay
+		// reachable as exact user-typed slugs via the passthrough branch but
+		// never win alias resolution.
+		if (raw.visibility === "hide") continue;
 		const { family, version } = classifySlug(slug);
-		entries.push({ full: slug, family, version });
+		const efforts = Array.isArray(raw.supported_reasoning_levels)
+			? raw.supported_reasoning_levels
+					.map((l) => (typeof l?.effort === "string" ? l.effort : ""))
+					.filter(Boolean)
+			: [];
+		const upgrade =
+			typeof raw.upgrade?.model === "string" && raw.upgrade.model ? raw.upgrade.model : null;
+		entries.push({ full: slug, family, version, efforts, upgrade });
 	}
 	return entries;
 }
 
+/** Follow the catalog's official migration chain (deprecated model -> upgrade
+ *  target), bounded to 3 hops. Deprecated models stay listed in
+ *  `codex debug models --bundled` but fail server-side; the upgrade pointer
+ *  is the vendor's own replacement, so requests pointing at them migrate
+ *  instead of erroring. Unknown or cyclic targets keep the current entry. */
+function followUpgrades(entry: CodexModelEntry, entries: CodexModelEntry[]): CodexModelEntry {
+	let current = entry;
+	for (let hops = 0; hops < 3; hops++) {
+		if (!current.upgrade) return current;
+		const target = entries.find((e) => e.full === current.upgrade);
+		if (!target || target === current) return current;
+		current = target;
+	}
+	return current;
+}
+
 /** Resolve a friendly alias / partial name to an exact --model value. Mirrors
  *  the antigravity ext's version-sort pattern: aliases pick the highest
- *  version of the named family; pinned versions (e.g. "5.6 mini") select a
- *  specific version. Exact slugs pass through. Returns null to omit --model
- *  entirely (Codex's own default). */
-function resolveModel(
+ *  version of the named family; pinned versions (e.g. "6 mini") select a
+ *  specific version. Exact slugs verify against the catalog. Resolutions that
+ *  land on a deprecated model follow its upgrade pointer. Returns null
+ *  flagValue to omit --model entirely (Codex's own default), and null entry
+ *  whenever the input passes through unverified. */
+export function resolveModel(
 	input: string,
 	entries: CodexModelEntry[],
-): { flagValue: string | null } {
+): { flagValue: string | null; entry: CodexModelEntry | null } {
 	const lower = input.toLowerCase().trim();
-	if (lower === "default" || lower === "") return { flagValue: null };
+	if (lower === "default" || lower === "") return { flagValue: null, entry: null };
 
-	// 1. Exact slug match against the live catalog.
+	// 1. Exact slug match against the live catalog (upgrades applied).
 	const exact = entries.find((e) => e.full.toLowerCase() === lower);
-	if (exact) return { flagValue: exact.full };
+	if (exact) {
+		const picked = followUpgrades(exact, entries);
+		return { flagValue: picked.full, entry: picked };
+	}
 
 	// 2. Parse the alias into family + optional version. Match the family
-	//    keyword as a standalone token (\b) so pinned forms like "5.6 mini"
-//    / "5.4 full" resolve, but compound slugs that happen to contain
+	//    keyword as a standalone token (\b) so pinned forms like "6 mini"
+	//    / "6.1 full" resolve, but compound slugs that happen to contain
 	//    "gpt" or "pro" don't false-match. The exact-slug match above runs
 	//    first, so a full slug like "gpt-5.4-mini" never reaches this
-	//    branch as a family parse. Check specific families (mini/codex/pro)
-//    before the generic "full" / "gpt" so a "gpt-...-mini" intent routes
-//    to mini.
+	//    branch as a family parse. Tier aliases: mini/nano/luna are the
+	//    fast family, astra the frontier family, sol the main family —
+	//    GPT-6 retired the -mini suffix, so the affordable tier is now a
+	//    variant name. Specific families are checked before the generic
+	//    "full" / "gpt" so a "gpt-...-mini" intent routes to fast.
 	let family: Family | null = null;
-	if (/\b(mini|nano)\b/.test(lower)) family = "mini";
+	if (/\b(mini|nano|luna)\b/.test(lower)) family = "fast";
+	else if (/\bastra\b/.test(lower)) family = "frontier";
 	else if (/\bcodex\b/.test(lower)) family = "codex";
 	else if (/\bpro\b/.test(lower)) family = "pro";
-	else if (/\b(full|gpt)\b/.test(lower)) family = "main";
+	else if (/\b(full|gpt|sol)\b/.test(lower)) family = "main";
 
-	// Unknown alias (e.g. a bare version like "5.6") or unparseable input —
+	// Unknown alias (e.g. a bare version like "6") or unparseable input —
 	// passthrough to codex and let it decide. Exact user-typed slugs and
 	// API-key-only model ids keep working this way even when discovery fails.
-	if (family === null) return { flagValue: input };
+	if (family === null) return { flagValue: input, entry: null };
 
 	const versionMatch = lower.match(/(\d+(?:\.\d+)?)/);
 	const pinnedVersion = versionMatch ? versionMatch[1] : null;
@@ -374,7 +431,7 @@ function resolveModel(
 	if (candidates.length === 0) {
 		// Family not in the catalog (e.g. no pro models this release) —
 		// passthrough rather than fabricating.
-		return { flagValue: input };
+		return { flagValue: input, entry: null };
 	}
 
 	// 4. Pin version if specified; otherwise pick the highest version
@@ -386,24 +443,27 @@ function resolveModel(
 		if (versioned.length === 0) {
 			// Pinned version not present in catalog — passthrough so the user's
 			// explicit choice reaches codex even if the version is stale.
-			return { flagValue: input };
+			return { flagValue: input, entry: null };
 		}
 		versioned.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-		return { flagValue: versioned[0].full };
+		const picked = followUpgrades(versioned[0], entries);
+		return { flagValue: picked.full, entry: picked };
 	}
 	const versions = candidates
 		.map((e) => e.version)
 		.filter((v): v is string => v !== null);
 	if (versions.length === 0) {
 		candidates.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-		return { flagValue: candidates[0].full };
+		const picked = followUpgrades(candidates[0], entries);
+		return { flagValue: picked.full, entry: picked };
 	}
 	const uniqueVersions = [...new Set(versions)].sort(compareVersionsDesc);
 	const top = uniqueVersions[0];
 	const topCandidates = candidates
 		.filter((e) => e.version === top)
 		.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-	return { flagValue: topCandidates[0].full };
+	const picked = followUpgrades(topCandidates[0], entries);
+	return { flagValue: picked.full, entry: picked };
 }
 
 // --- Status rendering (the useful ideas borrowed from pi-codex) -------------
@@ -650,7 +710,7 @@ export default async function (pi: ExtensionAPI) {
 
 	// --- /codex: view / change defaults -----------------------------------
 
-	const MODEL_OPTIONS = ["default", "mini", "full"];
+	const MODEL_OPTIONS = ["default", "mini", "astra", "full"];
 	const REASONING_OPTIONS: ReasoningEffort[] = REASONING_VALUES;
 	const SANDBOX_OPTIONS: SandboxMode[] = SANDBOX_VALUES;
 
@@ -683,7 +743,7 @@ export default async function (pi: ExtensionAPI) {
 					id: "defaultModel",
 					label: "Default model",
 					description:
-						"Friendly alias resolved at runtime via `codex debug models --bundled`. 'default' = omit the flag (Codex's own default); 'mini' = highest-version mini family; 'full' = highest-version main family. No version strings are hardcoded — pick whichever is current.",
+						"Friendly alias resolved at runtime via `codex debug models --bundled`. 'default' = omit the flag (Codex's own default); 'mini' = fast tier (luna); 'astra' = frontier tier; 'full' = workhorse tier (sol). No version strings are hardcoded — pick whichever is current.",
 					currentValue: config.defaultModel,
 					values: MODEL_OPTIONS,
 				},
@@ -769,7 +829,7 @@ export default async function (pi: ExtensionAPI) {
 	const modelParam = Type.Optional(
 		Type.String({
 			description:
-				"Model alias or exact id. Friendly: 'default' (omit flag, codex picks), 'mini' (highest-version mini family), 'full' / 'gpt' (highest-version main family). Pin a version: '5.6 mini', '5.4 full'. Exact slugs pass through verbatim (e.g. 'gpt-5.6-sol', or any model your auth allows). Omit for the configured default.",
+				"Model alias or exact id. Friendly: 'default' (omit flag, codex picks), 'mini' (fast tier, gpt-6-luna), 'astra' (frontier tier), 'full' / 'gpt' (workhorse tier, highest version). Pin a version: '6 mini', '6.1 full'. Exact slugs pass through verbatim (e.g. 'gpt-6.1-sol', or any model your auth allows). Deprecated catalog models auto-migrate to their official upgrade target. Omit for the configured default.",
 		}),
 	);
 
@@ -791,7 +851,7 @@ export default async function (pi: ExtensionAPI) {
 			reasoningEffort: Type.Optional(
 				StringEnum(REASONING_VALUES, {
 					description:
-						"Reasoning effort: 'minimal'/'low' (fast, cheap) through 'high' (thorough). Overrides the configured default. Lowering this is the primary lever for speed/cost.",
+						"Reasoning effort: 'low' (fast, cheap) through 'ultra' (maximum depth). Overrides the configured default. Lowering this is the primary lever for speed/cost. Validated against the resolved model's supported ladder.",
 				}),
 			),
 			thinking: Type.Optional(
@@ -928,7 +988,7 @@ export default async function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `model value "${params.model}" starts with "-" — not a valid model id. Use a friendly alias (e.g. "full", "mini", "gpt") or a known slug (e.g. "gpt-5.5").`,
+							text: `model value "${params.model}" starts with "-" — not a valid model id. Use a friendly alias (e.g. "full", "mini", "astra", "gpt") or a known slug (e.g. "gpt-6.1-sol").`,
 						},
 					],
 					details: emptyDetails(requestedModel, null),
@@ -955,6 +1015,26 @@ export default async function (pi: ExtensionAPI) {
 				? reasoningArg
 				: config.defaultReasoning;
 			const sandbox = isSandboxMode(params.sandbox) ? params.sandbox : config.defaultSandbox;
+
+			// Fail visibly BEFORE the run when the effort is not on the
+			// resolved model's supported ladder (e.g. ultra on gpt-6-luna,
+			// which stops at max). Skipped when discovery failed (entry null) —
+			// passthrough philosophy, codex reports the mismatch itself.
+			if (
+				resolved.entry &&
+				resolved.entry.efforts.length > 0 &&
+				!resolved.entry.efforts.includes(reasoning)
+			) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `reasoning effort "${reasoning}" is not supported by ${resolved.entry.full}. Supported: ${resolved.entry.efforts.join(", ")}.`,
+						},
+					],
+					details: emptyDetails(requestedModel, resolved.flagValue, reasoning, sandbox),
+				};
+			}
 
 			const start = Date.now();
 			const cwd = params.cwd || ctx.cwd || process.cwd();

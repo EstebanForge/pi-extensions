@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Aliases, examples, and pinned ids no longer point at retired GPT-5.x models.**
+  The GPT-6 catalog renamed the tiers: the affordable tier is now the `luna`
+  variant (`gpt-6-luna`), the frontier tier is `astra`, the workhorse is
+  `gpt-6.1-sol`, and `-mini` slugs are gone. The `mini`/`nano` aliases
+  previously resolved a "mini" family that no longer exists and fell through
+  as a literal `--model mini` (codex error); they now resolve the fast
+  (luna) family. `astra` is a new family + alias, and the reasoning effort
+  ladder tracks the current one: `low|medium|high|xhigh|max|ultra` —
+  `minimal` is retired. Resolution follows the catalog's official `upgrade`
+  pointers, so a stale exact id (`gpt-5.5`, `gpt-5.6-sol`) or pinned version
+  (`5.6 mini`) migrates to its successor instead of failing server-side.
+  Tool/param descriptions, the `/codex` picker, and the README no longer
+  teach `5.6`-era examples. Effort is validated against the resolved model's
+  supported ladder before the run starts (e.g. `ultra` on `gpt-6-luna` fails
+  fast with the supported list instead of a mid-run codex error). Hidden
+  catalog entries (experiments) no longer win alias resolution.
+
 ## [1.0.5] - 2026-09-18
 
 ### Added
