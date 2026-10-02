@@ -80,16 +80,26 @@ function isMcpRenderCandidate(proto: PatchableToolExecutionPrototype): boolean {
 
 // Built-in fallback (issue 47): subagent children re-wrap tool definitions and
 // drop the extension's renderers. When the live definition carries none and
-// the tool name is one we decorate, rebuild the renderers at render time. A
-// definition that still has renderers keeps them, so any working decoration
-// (our own registration or another extension's) is never overridden.
+// the tool name is one we decorate, rebuild the renderers at render time.
+// Guards: a definition with either renderer keeps its rendering as-is (no
+// hybrid splice), and a non-builtin sourceInfo means the name belongs to
+// another extension's tool, which is never ours to decorate.
 function builtInFallbackRenderers(
   proto: PatchableToolExecutionPrototype,
-  rendererKey: "renderCall" | "renderResult",
   getConfig: () => ToolDisplayConfig,
 ): BuiltInDisplayRenderers | undefined {
   const def = proto.toolDefinition;
-  if (!def || typeof def[rendererKey] === "function") {
+  if (!def) {
+    return undefined;
+  }
+  if (
+    typeof def.renderCall === "function"
+    || typeof def.renderResult === "function"
+  ) {
+    return undefined;
+  }
+  const source = getTextField(toRecord(def.sourceInfo), "source");
+  if (source && source !== "builtin") {
     return undefined;
   }
   const toolName = (typeof proto.toolName === "string" && proto.toolName)
@@ -154,7 +164,7 @@ function patchToolExecutionMcpRender(
         ?? (toolName === "mcp" ? "MCP Proxy" : `MCP ${toolName}`);
       return (args, theme) => formatMcpCallLine(toolName, toolLabel, toRecord(args), theme);
     }
-    const builtIn = builtInFallbackRenderers(this, "renderCall", getConfig);
+    const builtIn = builtInFallbackRenderers(this, getConfig);
     if (builtIn) {
       return builtIn.renderCall as CallRenderer;
     }
@@ -168,7 +178,7 @@ function patchToolExecutionMcpRender(
       return (result, options, theme) =>
         renderMcpResult(result as unknown as Parameters<typeof renderMcpResult>[0], options, getConfig(), theme);
     }
-    const builtIn = builtInFallbackRenderers(this, "renderResult", getConfig);
+    const builtIn = builtInFallbackRenderers(this, getConfig);
     if (builtIn) {
       return builtIn.renderResult as ResultRenderer;
     }

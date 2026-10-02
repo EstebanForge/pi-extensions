@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getBuiltInDisplayRenderers } from "../lib/tool-overrides";
-import { DEFAULT_TOOL_DISPLAY_CONFIG } from "../lib/types";
+import { BUILT_IN_TOOL_OVERRIDE_NAMES, DEFAULT_TOOL_DISPLAY_CONFIG, type ToolDisplayConfig } from "../lib/types";
 
 // The patch module reads ToolExecutionComponent.prototype at patch time, so the
 // mock supplies a minimal stand-in whose accessors behave like pi 1.0.0's
@@ -13,8 +13,10 @@ import { DEFAULT_TOOL_DISPLAY_CONFIG } from "../lib/types";
 vi.mock("@earendil-works/pi-coding-agent", () => {
 	class FakeToolExecutionComponent {
 		toolDefinition?: unknown;
-		constructor(toolDefinition?: unknown) {
+		toolName?: string;
+		constructor(toolDefinition?: unknown, toolName?: string) {
 			this.toolDefinition = toolDefinition;
+			this.toolName = toolName;
 		}
 		getCallRenderer(): unknown {
 			return (this.toolDefinition as { renderCall?: unknown } | undefined)?.renderCall;
@@ -29,7 +31,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 const { default: registerToolExecutionMcpPatch } = await import("../lib/tool-execution-patch");
 
 const { ToolExecutionComponent } = (await import("@earendil-works/pi-coding-agent")) as unknown as {
-	ToolExecutionComponent: new (toolDefinition?: unknown) => {
+	ToolExecutionComponent: new (toolDefinition?: unknown, toolName?: string) => {
 		getCallRenderer(): unknown;
 		getResultRenderer(): unknown;
 	};
@@ -43,11 +45,10 @@ const passThroughTheme = {
 const stubPi = { on: () => {} } as unknown as ExtensionAPI;
 
 // Summary mode so the patched result renderer's output can be asserted; the
-// default config hides MCP output entirely.
-registerToolExecutionMcpPatch(stubPi, () => ({
-	...DEFAULT_TOOL_DISPLAY_CONFIG,
-	mcpOutputMode: "summary",
-}));
+// default config hides MCP output entirely. Mutable binding so per-test config
+// swaps reach the patch's lazy getConfig() closure.
+let activeConfig: ToolDisplayConfig = { ...DEFAULT_TOOL_DISPLAY_CONFIG, mcpOutputMode: "summary" };
+registerToolExecutionMcpPatch(stubPi, () => activeConfig);
 
 function renderedText(component: unknown): string {
 	return (component as { render(width: number): string[] })
@@ -125,6 +126,68 @@ test("getBuiltInDisplayRenderers respects the name list and per-tool overrides",
 		})),
 		undefined,
 	);
+});
+
+test("decorates every owned built-in through the component patch", () => {
+	for (const name of BUILT_IN_TOOL_OVERRIDE_NAMES) {
+		const component = new ToolExecutionComponent({ name, description: "stripped by wrapping" });
+		assert.equal(typeof component.getCallRenderer(), "function", name);
+		assert.equal(typeof component.getResultRenderer(), "function", name);
+	}
+});
+
+test("resolves stripped built-ins from the component tool name", () => {
+	// Subagent wrappers can drop the definition's name too; the component's
+	// own toolName then decides.
+	const component = new ToolExecutionComponent(
+		{ description: "stripped: no name, no renderers" },
+		"grep",
+	);
+
+	const callRenderer = component.getCallRenderer() as
+		| ((args: Record<string, unknown>, theme: unknown) => unknown)
+		| undefined;
+	assert.equal(typeof callRenderer, "function");
+	const callLine = callRenderer?.({ pattern: "foo", path: "." }, passThroughTheme);
+	assert.ok(callLine != null);
+	assert.ok(renderedText(callLine).includes("/foo/"), "expected the grep pattern in the rebuilt call line");
+});
+
+test("keeps partially decorated definitions intact", () => {
+	// A definition providing either renderer keeps its mixed rendering; we
+	// never splice one of ours next to a foreign one.
+	const ownRenderCall = (): unknown => null;
+	const component = new ToolExecutionComponent({ name: "grep", renderCall: ownRenderCall });
+
+	assert.equal(component.getCallRenderer(), ownRenderCall);
+	assert.equal(component.getResultRenderer(), undefined);
+});
+
+test("leaves externally owned tools sharing a built-in name alone", () => {
+	const component = new ToolExecutionComponent({
+		name: "grep",
+		description: "someone else's grep",
+		sourceInfo: { source: "extension", path: "/somewhere/else.ts" },
+	});
+
+	assert.equal(component.getCallRenderer(), undefined);
+	assert.equal(component.getResultRenderer(), undefined);
+});
+
+test("disabled per-tool override falls through to the original renderer", () => {
+	const baseline = activeConfig;
+	activeConfig = {
+		...DEFAULT_TOOL_DISPLAY_CONFIG,
+		mcpOutputMode: "summary",
+		registerToolOverrides: { ...DEFAULT_TOOL_DISPLAY_CONFIG.registerToolOverrides, grep: false },
+	};
+	try {
+		const component = new ToolExecutionComponent({ name: "grep", description: "Search file contents" });
+		assert.equal(component.getCallRenderer(), undefined);
+		assert.equal(component.getResultRenderer(), undefined);
+	} finally {
+		activeConfig = baseline;
+	}
 });
 
 test("patched result renderer renders a text result in summary mode", () => {
