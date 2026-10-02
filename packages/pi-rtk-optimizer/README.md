@@ -49,20 +49,6 @@ Multi-stage pipeline to reduce token consumption:
 
 ## Installation
 
-### Local Extension Folder
-
-Place this folder in one of the following locations:
-
-```text
-~/.pi/agent/extensions/pi-rtk-optimizer                 # Global default (when PI_CODING_AGENT_DIR is unset)
-$PI_CODING_AGENT_DIR/extensions/pi-rtk-optimizer        # Global when PI_CODING_AGENT_DIR is set
-.pi/extensions/pi-rtk-optimizer                         # Project-specific
-```
-
-Pi auto-discovers extensions in these paths on startup.
-
-### npm Package
-
 ```bash
 pi install npm:@estebanforge/pi-rtk-optimizer
 ```
