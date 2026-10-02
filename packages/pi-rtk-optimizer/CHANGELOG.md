@@ -1,19 +1,12 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-## [1.0.0] - 2026-10-01
+## 1.0.0 (2026-10-01)
 
 ### Changed
 - Adopted into the @estebanforge/pi-extensions monorepo from MasuRii/pi-rtk-optimizer 0.9.0 (MIT), with upstream credited in the README, LICENSE, and package contributors.
 - Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. Dropped the global type shims (ambient `declare module` stubs for pi, pi-tui, and node builtins) in favor of the real published types.
 
-## [0.9.0] - 2026-07-03
+## 0.9.0 (2026-07-03)
 
 ### Changed
 - Extracted a lazy module loader, shell-quote state machine, compaction state, and content-block helpers. ([4229513](https://github.com/MasuRii/pi-rtk-optimizer/commit/422951343759b47e81443273731469481723365f) [8c39b94](https://github.com/MasuRii/pi-rtk-optimizer/commit/8c39b94965879aef5c39ab74d19c6ff20f437e02))
@@ -31,13 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the emoji and rtk-hook-warning techniques. ([8f07417](https://github.com/MasuRii/pi-rtk-optimizer/commit/8f07417d1d539fd62cb97cd4e30431a45f819642))
 - Removed the unused ripgrep rewrite. ([ccdee3d](https://github.com/MasuRii/pi-rtk-optimizer/commit/ccdee3df3a36246941bace9b138dc93e38a6363b))
 
-## [0.8.3] - 2026-06-16
+## 0.8.3 (2026-06-16)
 
 ### Fixed
 - Added a runtime-agnostic `mock.module` shim so tests using `node:test` module mocking also pass under Bun's `bun:test` compatibility layer.
 - Deep-cloned fallback default config objects in `config-store.ts` to prevent caller mutations from leaking into subsequent config loads.
 
-## [0.8.2] - 2026-06-01
+## 0.8.2 (2026-06-01)
 
 ### Changed
 - Deferred output compactor and configuration modal loading during extension bootstrap.
@@ -45,12 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kept inline test entrypoints on Bun while using a runtime-agnostic test helper for compatibility.
 - Widened Pi peer dependency ranges to include `^0.77.0 || ^0.78.0`.
 
-## [0.8.1] - 2026-05-26
+## 0.8.1 (2026-05-26)
 
 ### Changed
 - Widened `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peer dependency ranges to `^0.74.0 || ^0.75.0`.
 
-## [0.8.0] - 2026-05-22
+## 0.8.0 (2026-05-22)
 
 ### Added
 - Added tabbed `/rtk` settings modal groups with left/right tab navigation and context-aware help for search and value changes.
@@ -59,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Updated package metadata and lockfile version to `0.8.0` and migrated Pi peer dependency metadata to the `@earendil-works` scope.
 
-## [0.7.1] - 2026-05-04
+## 0.7.1 (2026-05-04)
 
 ### Changed
 - Clarified the README architecture inventory for delegated `rtk rewrite` ownership and documented Bun as a development verification prerequisite.
@@ -74,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Normalized compaction technique return handling while preserving existing output behavior.
 - Added lifecycle and vendored modal regression coverage for high-risk extension event paths.
 
-## [0.7.0] - 2026-04-30
+## 0.7.0 (2026-04-30)
 
 ### Added
 - Added opt-in `readCompaction` controls for `read` output so lossy source filtering and smart truncation stay disabled unless explicitly enabled.
@@ -83,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated README and example configuration defaults for safer read-compaction behavior and troubleshooting guidance.
 - Updated `@mariozechner/pi-coding-agent` and `@mariozechner/pi-tui` peer dependencies to ^0.72.0.
 
-## [0.6.0] - 2026-04-27
+## 0.6.0 (2026-04-27)
 
 ### Changed
 - **Breaking:** Command rewriting now delegates rewrite decisions to the installed `rtk rewrite` command, making RTK the source of truth for command support, shell parsing, bypasses, and compound-command behavior instead of the extension's local rewrite rule tables.
@@ -91,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **Breaking:** Removed the rewrite category configuration surface (`rewriteGitGithub`, `rewriteFilesystem`, `rewriteRust`, `rewriteJavaScript`, `rewritePython`, `rewriteGo`, `rewriteContainers`, `rewriteNetwork`, and `rewritePackageManagers`) from configuration normalization, examples, settings UI, and documentation. Configure rewrite policy in RTK itself instead of this extension.
 
-## [0.5.5] - 2026-04-24
+## 0.5.5 (2026-04-24)
 
 ### Changed
 - Config path resolution now uses Pi's `getAgentDir()` API so `PI_CODING_AGENT_DIR` is respected for extension config paths (thanks to @tynanbe for PR #3).
@@ -104,20 +97,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the unused local asset directory.
 - Removed the `session_switch` event refresh handler.
 
-## [0.5.3] - 2026-04-01
+## 0.5.3 (2026-04-01)
 
 ### Changed
 - Updated README.md with new background image source URL
 - Aligned npm keywords for better package discoverability
 - Added Related Pi Extensions cross-linking section to README
 
-## [0.5.2] - 2026-04-01
+## 0.5.2 (2026-04-01)
 
 ### Changed
 - Updated `@mariozechner/pi-coding-agent` and `@mariozechner/pi-tui` peer dependencies to ^0.64.0
 - Improved RTK note message to guide users through '/rtk' toggle in Pi TUI
 
-## [0.5.1] - 2026-03-24
+## 0.5.1 (2026-03-24)
 
 ### Fixed
 - RTK_DB_PATH environment variable now correctly scoped to rewritten producer commands only — Windows commands now use subshell scoping `{ RTK_DB_PATH=...; ... }` instead of leaking the prefix into the rewritten command
@@ -135,7 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added test coverage for RTK_DB_PATH scoping on Windows vs Unix platforms
 - Verified env prefix is preserved through the rewrite pipeline
 
-## [0.5.0] - 2026-03-23
+## 0.5.0 (2026-03-23)
 
 ### Added
 - RTK_DB_PATH environment variable support for rewritten commands — enables RTK history database isolation per session
@@ -154,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added tests for output compactor behavior with RTK diagnostics
 - Added tests for emoji stripping in RTK output
 
-## [0.4.0] - 2026-03-12
+## 0.4.0 (2026-03-12)
 
 ### Added
 - Command rewrite bypass system with safety patterns for dangerous operations
@@ -170,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved command rewriter test coverage
 - Removed deprecated `compat-commands` module
 
-## [0.3.3] - 2026-03-07
+## 0.3.3 (2026-03-07)
 
 ### Added
 - Added rewrite bypass rules for structured `gh` output commands and non-interactive container shell sessions.
@@ -188,24 +181,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved userscript metadata blocks during source filtering.
 - Limited RTK-missing command suppression to rewrite mode so suggest mode still produces guidance.
 
-## [0.3.2] - 2026-03-04
+## 0.3.2 (2026-03-04)
 
 ### Fixed
 - Use absolute GitHub raw URL for README image to fix npm display
 
-## [0.3.1] - 2026-03-04
+## 0.3.1 (2026-03-04)
 
 ### Changed
 - Rewrote README.md with professional documentation standards
 - Added comprehensive feature documentation, configuration reference, and usage examples
 
-## [0.3.0] - 2026-03-02
+## 0.3.0 (2026-03-02)
 
 ### Changed
 - Renamed extension/package from `rtk-integration` to `pi-rtk-optimizer` to better reflect its full purpose: RTK command rewrite plus tool-output compaction optimization.
 - Updated extension identity references across config path resolution, modal UI labeling, installation commands, package metadata, and build check artifact naming.
 
-## [0.2.0] - 2026-03-02
+## 0.2.0 (2026-03-02)
 
 ### Changed
 - Reorganized extension into a publish-ready package layout:
