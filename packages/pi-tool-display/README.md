@@ -1,18 +1,11 @@
-<div align="center">
-
 # @estebanforge/pi-tool-display
 
-[![npm version](https://img.shields.io/npm/v/@estebanforge/pi-tool-display?style=for-the-badge)](https://www.npmjs.com/package/@estebanforge/pi-tool-display)
-[![License](https://img.shields.io/npm/l/@estebanforge/pi-tool-display?style=for-the-badge)](LICENSE)
+OpenCode-style tool rendering for the [Pi coding agent](https://pi.dev).
 
-OpenCode-style tool rendering for the [Pi coding agent](https://github.com/mariozechner/pi).
-
-</div>
-
-> **Origin**: this extension was created by [MasuRii](https://github.com/MasuRii) as
-> [pi-tool-display](https://github.com/MasuRii/pi-tool-display) (MIT). Upstream went inactive,
-> so this fork lives on inside the @estebanforge monorepo and is maintained here. All credit
-> for the original design and implementation goes to MasuRii.
+> **Origin**: this extension is a fork of [pi-tool-display](https://github.com/MasuRii/pi-tool-display)
+> by [MasuRii](https://github.com/MasuRii) (MIT). Upstream went inactive, so this fork lives on
+> inside the @estebanforge monorepo and is maintained here. All credit for the original design
+> and implementation goes to MasuRii.
 
 `pi-tool-display` keeps tool calls compact by default, adds richer diff rendering for file edits, and improves a few core chat UI details such as thinking labels and the native user prompt box.
 

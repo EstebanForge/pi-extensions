@@ -1,20 +1,13 @@
-<div align="center">
-
 # @estebanforge/pi-rtk-optimizer
 
-[![npm version](https://img.shields.io/npm/v/@estebanforge/pi-rtk-optimizer?style=for-the-badge)](https://www.npmjs.com/package/@estebanforge/pi-rtk-optimizer)
-[![License](https://img.shields.io/npm/l/@estebanforge/pi-rtk-optimizer?style=for-the-badge)](LICENSE)
+RTK command rewriting and tool output compaction extension for the Pi coding agent.
 
-> RTK command rewriting and tool output compaction extension for the Pi coding agent.
-
-> **Origin**: this extension was created by [MasuRii](https://github.com/MasuRii) as
-> [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer) (MIT). Upstream went inactive,
-> so this fork lives on inside the @estebanforge monorepo and is maintained here. All credit
-> for the original design and implementation goes to MasuRii.
+> **Origin**: this extension is a fork of [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer)
+> by [MasuRii](https://github.com/MasuRii) (MIT). Upstream went inactive, so this fork lives on
+> inside the @estebanforge monorepo and is maintained here. All credit for the original design
+> and implementation goes to MasuRii.
 
 **pi-rtk-optimizer** automatically rewrites `bash` tool commands to their `rtk` equivalents and compacts noisy tool output (`bash`, `read`, `grep`) to reduce context window usage while preserving actionable information for the AI agent.
-
-</div>
 
 ## Features
 
@@ -298,11 +291,11 @@ Inspired by:
 
 ## Related Pi Extensions
 
-- [pi-tool-display](https://github.com/MasuRii/pi-tool-display) — Compact tool rendering and diff visualization
+- [@estebanforge/pi-tool-display](../pi-tool-display) — Compact tool rendering and diff visualization (maintained fork of MasuRii's pi-tool-display, in this monorepo)
 - [pi-permission-system](https://github.com/MasuRii/pi-permission-system) — Permission enforcement for tool and command access
 - [pi-smart-voice-notify](https://github.com/MasuRii/pi-smart-voice-notify) — Multi-channel TTS and sound notifications
 - [pi-image-tools](https://github.com/MasuRii/pi-image-tools) — Image attachment and inline preview
 
 ## License
 
-[MIT](LICENSE) © MasuRii
+[MIT](LICENSE) © MasuRii, EstebanForge
