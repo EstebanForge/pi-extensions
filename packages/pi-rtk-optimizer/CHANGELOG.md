@@ -2,9 +2,15 @@
 
 ## 1.0.0 (2026-10-01)
 
+### Added
+- pi-unified-exec compatibility: `exec_command` and `write_stdin` now get rtk rewrite and bash-style output compaction, so shell output stays compact when unified-exec replaces the built-in bash tool. The command is read from the `cmd` input field; without unified-exec installed, behavior is unchanged. Ported from upstream PR [#23](https://github.com/MasuRii/pi-rtk-optimizer/pull/23).
+
 ### Changed
 - Adopted into the @estebanforge/pi-extensions monorepo from MasuRii/pi-rtk-optimizer 0.9.0 (MIT), with upstream credited in the README, LICENSE, and package contributors.
 - Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. Dropped the global type shims (ambient `declare module` stubs for pi, pi-tui, and node builtins) in favor of the real published types.
+
+### Fixed
+- Tab navigation in the RTK settings modal now uses pi-tui's `matchesKey`, so left/right arrows switch tabs under the kitty keyboard protocol (Ghostty, kitty, WezTerm re-encode bare arrows as `\x1b[1;1D`/`\x1b[1;1C`, which the old byte compare dropped). Modified arrows still reach the settings list. Ported from upstream PR [#18](https://github.com/MasuRii/pi-rtk-optimizer/pull/18).
 
 ## 0.9.0 (2026-07-03)
 
