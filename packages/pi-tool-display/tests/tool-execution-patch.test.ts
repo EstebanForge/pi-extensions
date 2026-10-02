@@ -41,7 +41,12 @@ const passThroughTheme = {
 
 const stubPi = { on: () => {} } as unknown as ExtensionAPI;
 
-registerToolExecutionMcpPatch(stubPi, () => DEFAULT_TOOL_DISPLAY_CONFIG);
+// Summary mode so the patched result renderer's output can be asserted; the
+// default config hides MCP output entirely.
+registerToolExecutionMcpPatch(stubPi, () => ({
+	...DEFAULT_TOOL_DISPLAY_CONFIG,
+	mcpOutputMode: "summary",
+}));
 
 function renderedText(component: unknown): string {
 	return (component as { render(width: number): string[] })
@@ -70,6 +75,44 @@ test("patches MCP tool components with tool-display renderers", () => {
 
 test("leaves built-in tool components on their original renderers", () => {
 	const component = new ToolExecutionComponent({ name: "bash", description: "Run shell commands" });
+
+	assert.equal(component.getCallRenderer(), undefined);
+	assert.equal(component.getResultRenderer(), undefined);
+});
+
+test("patched result renderer renders a text result in summary mode", () => {
+	const component = new ToolExecutionComponent({ name: "mcp", description: "Model Context Protocol tools" });
+
+	const resultRenderer = component.getResultRenderer() as
+		| ((result: unknown, options: unknown, theme: unknown) => unknown)
+		| undefined;
+	assert.equal(typeof resultRenderer, "function");
+
+	// Summary mode's expanded preview carries the output lines; the default
+	// config would hide MCP output entirely.
+	const rendered = resultRenderer?.(
+		{ content: [{ type: "text", text: "mcp output line" }] },
+		{ expanded: true, isPartial: false },
+		passThroughTheme,
+	);
+	assert.ok(rendered != null);
+	assert.ok(renderedText(rendered).includes("mcp output line"));
+});
+
+test("reload shutdown restores the original prototype accessors", async () => {
+	const handlers = new Map<string, (event: unknown) => Promise<void>>();
+	const pi = {
+		on: (eventName: string, handler: (event: unknown) => Promise<void>) => {
+			handlers.set(eventName, handler);
+		},
+	} as unknown as ExtensionAPI;
+
+	registerToolExecutionMcpPatch(pi, () => DEFAULT_TOOL_DISPLAY_CONFIG);
+
+	const component = new ToolExecutionComponent({ name: "mcp", description: "Model Context Protocol tools" });
+	assert.equal(typeof component.getCallRenderer(), "function");
+
+	await handlers.get("session_shutdown")?.({ reason: "reload" });
 
 	assert.equal(component.getCallRenderer(), undefined);
 	assert.equal(component.getResultRenderer(), undefined);

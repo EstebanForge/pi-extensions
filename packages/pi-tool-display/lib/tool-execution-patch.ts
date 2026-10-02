@@ -50,7 +50,12 @@ interface PatchableToolExecutionPrototype {
   builtInToolDefinition?: unknown;
 }
 
-function getToolExecutionPrototype(): PatchableToolExecutionPrototype {
+function getToolExecutionPrototype(): PatchableToolExecutionPrototype | undefined {
+  // Guarded access: an unexpected export shape must degrade to "no patch",
+  // not crash extension load.
+  if (!ToolExecutionComponent?.prototype) {
+    return undefined;
+  }
   return ToolExecutionComponent.prototype as unknown as PatchableToolExecutionPrototype;
 }
 
@@ -73,7 +78,8 @@ function patchToolExecutionMcpRender(
 ): void {
   const proto = getToolExecutionPrototype();
   if (
-    typeof proto.getCallRenderer !== "function"
+    !proto
+    || typeof proto.getCallRenderer !== "function"
     || typeof proto.getResultRenderer !== "function"
   ) {
     return;
@@ -140,6 +146,9 @@ function patchToolExecutionMcpRender(
 
 function restoreToolExecutionMcpRender(): void {
   const proto = getToolExecutionPrototype();
+  if (!proto) {
+    return;
+  }
   const originalCall = proto.__piToolDisplayOriginalGetCallRenderer;
   const originalResult = proto.__piToolDisplayOriginalGetResultRenderer;
   if (typeof originalCall === "function") {
