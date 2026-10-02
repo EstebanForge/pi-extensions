@@ -4,7 +4,7 @@
 
 ### Changed
 - Adopted into the @estebanforge/pi-extensions monorepo from MasuRii/pi-tool-display 0.5.0 (MIT), with upstream credited in the README, LICENSE, and package contributors.
-- Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. The `tool-display-api-consumer` subpath export is unchanged.
+- Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. The `tool-display-api-consumer` subpath export is unchanged. Peer dependencies floored at `^1.0.0`.
 
 ## 0.5.0 (2026-07-03)
 

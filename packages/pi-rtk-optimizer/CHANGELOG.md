@@ -7,7 +7,7 @@
 
 ### Changed
 - Adopted into the @estebanforge/pi-extensions monorepo from MasuRii/pi-rtk-optimizer 0.9.0 (MIT), with upstream credited in the README, LICENSE, and package contributors.
-- Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. Dropped the global type shims (ambient `declare module` stubs for pi, pi-tui, and node builtins) in favor of the real published types.
+- Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. Dropped the global type shims (ambient `declare module` stubs for pi, pi-tui, and node builtins) in favor of the real published types. Peer dependencies floored at `^1.0.0`.
 
 ### Fixed
 - Tab navigation in the RTK settings modal now uses pi-tui's `matchesKey`, so left/right arrows switch tabs under the kitty keyboard protocol (Ghostty, kitty, WezTerm re-encode bare arrows as `\x1b[1;1D`/`\x1b[1;1C`, which the old byte compare dropped). Modified arrows still reach the settings list. Ported from upstream PR [#18](https://github.com/MasuRii/pi-rtk-optimizer/pull/18).
