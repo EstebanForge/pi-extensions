@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 (2026-10-02)
 
 ### Added
 - Eagerly preload the settings-modal and output-compactor modules so `/rtk` also works on agent distributions compiled to standalone binaries, whose load-time module rewriting misses lazily imported files. No behavior change under the standard runtime. Ported from upstream PR [#26](https://github.com/MasuRii/pi-rtk-optimizer/pull/26).
