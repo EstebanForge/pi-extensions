@@ -148,6 +148,7 @@ A starter template is included at `config/config.example.json`.
 | `diffSplitMinWidth` | number | `120` | Minimum width before auto mode prefers split diffs |
 | `diffCollapsedLines` | number | `24` | Diff lines shown before collapsing |
 | `diffWordWrap` | boolean | `true` | Wrap long diff lines when needed |
+| `allowExternalDiffPreviews` | boolean | `false` | Allow pending edit/write diff previews for target paths outside workspace |
 | `showTruncationHints` | boolean | `false` | Show truncation indicators for compacted output |
 | `showRtkCompactionHints` | boolean | `false` | Show RTK compaction hints when RTK metadata exists |
 
@@ -168,6 +169,11 @@ Use `registerToolOverrides` to control which built-in tools this extension owns:
   }
 }
 ```
+
+> **Subagent note**: when this extension owns a built-in tool, re-registering replaces the original
+> definition, and sessions spawned as children by subagent extensions can end up without those
+> built-ins. If you run subagents and see missing tools in child sessions, set the flags above to
+> `false` for the affected tools; rendering still works for the tools pi itself provides.
 
 Set any entry to `false` if another extension should handle that tool instead.
 
@@ -259,6 +265,7 @@ Notes:
   "diffSplitMinWidth": 120,
   "diffCollapsedLines": 24,
   "diffWordWrap": true,
+  "allowExternalDiffPreviews": false,
   "showTruncationHints": false,
   "showRtkCompactionHints": false
 }

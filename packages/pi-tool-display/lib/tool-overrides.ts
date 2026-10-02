@@ -43,6 +43,7 @@ import {
   buildPendingWritePreviewData,
   readWorkspaceUtf8File,
   type PendingDiffPreviewData,
+  type ReadWorkspaceOptions,
 } from "./pending-diff-preview.js";
 import {
   buildPromptSnippetFromDescription,
@@ -91,7 +92,7 @@ interface RuntimeToolDefinition {
   [key: string]: unknown;
 }
 
-interface RenderTheme {
+export interface RenderTheme {
   fg(color: string, text: string): string;
   bg?(color: string, text: string): string;
   bold(text: string): string;
@@ -369,12 +370,13 @@ function createLazyClonedParameters(bootstrapTools: BuiltInTools): Record<keyof 
 function captureExistingWriteContent(
   cwd: string,
   rawPath: unknown,
+  options?: ReadWorkspaceOptions,
 ): { existed: boolean; content?: string } {
   if (typeof rawPath !== "string" || !rawPath.trim()) {
     return { existed: false };
   }
 
-  const existing = readWorkspaceUtf8File(cwd, rawPath);
+  const existing = readWorkspaceUtf8File(cwd, rawPath, options);
   return {
     existed: existing.exists,
     content: existing.content,
@@ -1153,7 +1155,7 @@ function formatArgCountSuffix(argCount: number, theme: RenderTheme): string {
     : theme.fg("muted", ` (${argCount} ${pluralize(argCount, "arg")})`);
 }
 
-function formatMcpCallLine(
+export function formatMcpCallLine(
   toolName: string,
   toolLabel: string,
   args: Record<string, unknown>,
@@ -1195,7 +1197,7 @@ function getMcpTruncationDetails(details: unknown): {
   };
 }
 
-function renderMcpResult(
+export function renderMcpResult(
   result: ToolRenderInput,
   options: ToolRenderResultOptions,
   config: ToolDisplayConfig,
@@ -1407,7 +1409,7 @@ function renderEditDisplayCall(
     context,
     EDIT_PENDING_PREVIEW_STATE_KEY,
     previewKey,
-    () => buildPendingEditPreviewData(args, context.cwd ?? process.cwd()),
+    () => buildPendingEditPreviewData(args, context.cwd ?? process.cwd(), { allowExternalDiffPreviews: getConfig().allowExternalDiffPreviews }),
   );
   return buildPendingDiffCallComponent(summaryText, previewData, context, getConfig(), theme);
 }
@@ -1761,7 +1763,9 @@ export function registerToolDisplayOverrides(
     parameters: clonedParameters.write,
     prepareArguments: getToolPrepareArguments(bootstrapTools.write),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const previous = captureExistingWriteContent(ctx.cwd, params.path);
+      const previous = captureExistingWriteContent(ctx.cwd, params.path, {
+        allowExternalDiffPreviews: getConfig().allowExternalDiffPreviews,
+      });
       recordWriteExecutionMeta(writeExecutionMetaByToolCallId, toolCallId, {
         fileExistedBeforeWrite: previous.existed,
         previousContent: previous.content,
@@ -1795,7 +1799,7 @@ export function registerToolDisplayOverrides(
         context,
         WRITE_PENDING_PREVIEW_STATE_KEY,
         previewKey,
-        () => buildPendingWritePreviewData(args, context.cwd ?? process.cwd()),
+        () => buildPendingWritePreviewData(args, context.cwd ?? process.cwd(), { allowExternalDiffPreviews: getConfig().allowExternalDiffPreviews }),
       );
       return buildPendingDiffCallComponent(summaryText, previewData, context, getConfig(), theme);
     },
