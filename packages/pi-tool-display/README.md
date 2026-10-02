@@ -170,10 +170,10 @@ Use `registerToolOverrides` to control which built-in tools this extension owns:
 }
 ```
 
-> **Subagent note**: when this extension owns a built-in tool, re-registering replaces the original
-> definition, and sessions spawned as children by subagent extensions can end up without those
-> built-ins. If you run subagents and see missing tools in child sessions, set the flags above to
-> `false` for the affected tools; rendering still works for the tools pi itself provides.
+> **Subagent note**: child sessions spawned by subagent extensions re-wrap tool definitions and
+> can lose the display renderers attached at registration time. This extension detects that case
+> at render time and rebuilds its renderers from the tool name, so owned built-ins keep their
+> display in child sessions. If you still see plain rendering there, check the flags above.
 
 Set any entry to `false` if another extension should handle that tool instead.
 

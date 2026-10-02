@@ -6,10 +6,10 @@
 - MCP tool rendering is back: a render-time patch on `ToolExecutionComponent` decides per component from the live tool definition, restoring rendering that Pi 1.0.0's per-extension `registerTool` and renderer-less `getAllTools()` projections had silently disabled. Ported from upstream PR [#31](https://github.com/MasuRii/pi-tool-display/pull/31).
 - Collapsed thinking label is recolored with the theme accent via `setHiddenThinkingLabel`, re-applied on session start so `/reload` keeps it. Ported from upstream PR [#46](https://github.com/MasuRii/pi-tool-display/pull/46) (issue [#45](https://github.com/MasuRii/pi-tool-display/issues/45)).
 - `allowExternalDiffPreviews` config (default off) lets pending edit/write previews read target files outside the active workspace. Ported from upstream PR [#40](https://github/MasuRii/pi-tool-display/pull/40) (issue [#39](https://github.com/MasuRii/pi-tool-display/issues/39)).
+- Subagent child sessions keep the fork's built-in tool rendering: when a child's wrapped definition arrives without its renderers, they are rebuilt at render time from the tool name (upstream issue [#47](https://github.com/MasuRii/pi-tool-display/issues/47)). Built-in renderer factories are now shared between registration and the render-time patch.
 
 ### Fixed
 - Pending diff previews no longer reject workspace-internal paths whose directories are symlinks; the workspace check now compares canonical paths.
-- README documents a `registerToolOverrides` workaround for subagent child sessions losing owned built-in tools (upstream issue [#47](https://github.com/MasuRii/pi-tool-display/issues/47)); the deep fix is deferred.
 
 ## 1.0.0 (2026-10-01)
 

@@ -1578,6 +1578,229 @@ function tryGetAllTools(pi: ExtensionAPI, debugMessage: string): unknown[] | und
   }
 }
 
+export interface BuiltInDisplayRenderers {
+  renderCall: (args: Record<string, unknown>, theme: RenderTheme, context?: ToolRenderContextLike) => unknown;
+  renderResult: (
+    result: Record<string, unknown>,
+    options: ToolRenderResultOptions,
+    theme: RenderTheme,
+    context?: ToolRenderContextLike,
+  ) => unknown;
+}
+
+const EMPTY_WRITE_EXECUTION_META = new Map<string, WriteExecutionMeta>();
+
+const buildSearchCallSuffix = (args: Record<string, unknown>): { scope: string; limitSuffix: string } => {
+  return { scope: getSearchScope(args), limitSuffix: args.limit !== undefined ? ` (limit ${args.limit})` : "" };
+};
+
+// Renderers for the built-in tools this extension decorates. Single source of
+// truth for both registration-time wrapping and the ToolExecutionComponent
+// patch: when a subagent child's wrapped definition arrives without its
+// renderers (upstream issue 47), the patch rebuilds them from the tool name.
+export function getBuiltInDisplayRenderers(
+  toolName: string,
+  getConfig: () => ToolDisplayConfig,
+  writeExecutionMetaByToolCallId?: Map<string, WriteExecutionMeta>,
+): BuiltInDisplayRenderers | undefined {
+  if (!(BUILT_IN_TOOL_OVERRIDE_NAMES as readonly string[]).includes(toolName)) {
+    return undefined;
+  }
+  if (!getConfig().registerToolOverrides[toolName as BuiltInToolOverrideName]) {
+    return undefined;
+  }
+
+  const renderSearchToolResult = (
+    result: ToolRenderInput,
+    options: ToolRenderResultOptions,
+    theme: RenderTheme,
+    unitLabel: string,
+    pluralLabel?: string,
+  ): Text => {
+    return renderSearchResult(result as never, options, getConfig(), theme, unitLabel, result.details as GrepToolDetails | FindToolDetails | LsToolDetails | undefined, pluralLabel);
+  };
+
+  switch (toolName) {
+    case "read":
+      return {
+        renderCall(args, theme) {
+          return renderReadDisplayCall(args, theme);
+        },
+        renderResult(result, options, theme) {
+          return renderReadDisplayResult(result, options, getConfig(), theme);
+        },
+      };
+    case "grep":
+      return {
+        renderCall(args, theme) {
+          const scope = getSearchScope(args);
+          const globSuffix = args.glob ? ` (${args.glob})` : "";
+          const limitSuffix = args.limit !== undefined ? ` limit ${args.limit}` : "";
+          return formatSearchCallLine("grep", `/${args.pattern}/`, ` in ${scope}${globSuffix}${limitSuffix}`, theme);
+        },
+        renderResult(result, options, theme) {
+          return renderSearchToolResult(result, options, theme, "match", "matches");
+        },
+      };
+    case "find":
+      return {
+        renderCall(args, theme) {
+          const { scope, limitSuffix } = buildSearchCallSuffix(args);
+          return formatSearchCallLine("find", args.pattern as string, ` in ${scope}${limitSuffix}`, theme);
+        },
+        renderResult(result, options, theme) {
+          return renderSearchToolResult(result, options, theme, "result");
+        },
+      };
+    case "ls":
+      return {
+        renderCall(args, theme) {
+          const { scope, limitSuffix } = buildSearchCallSuffix(args);
+          return formatSearchCallLine("ls", scope, limitSuffix, theme);
+        },
+        renderResult(result, options, theme) {
+          return renderSearchToolResult(result, options, theme, "entry", "entries");
+        },
+      };
+    case "edit":
+      return {
+        renderCall(args, theme, context) {
+          return renderEditDisplayCall(args, theme, context, {}, getConfig);
+        },
+        renderResult(result, options, theme, context) {
+          return renderEditDisplayResult(result as never, options, theme, context, {}, getConfig);
+        },
+      };
+    case "write":
+      return {
+        renderCall(args, theme, context) {
+          const content = getToolContentArg(args);
+          const lineCount = countWriteContentLines(content);
+          const sizeBytes = getWriteContentSizeBytes(content);
+          const path = shortenPath(getToolPathArg(args));
+          const suffix = shouldRenderWriteCallSummary({
+            hasContent: content !== undefined,
+            hasDetailedResultHeader: false,
+          })
+            ? formatWriteCallSuffix(lineCount, sizeBytes, theme)
+            : "";
+          const summaryText = `${theme.fg("toolTitle", theme.bold("write"))} ${theme.fg("accent", path || "...")}${suffix}`;
+          if (!context?.argsComplete || !context?.isPartial) {
+            return textResult(summaryText);
+          }
+
+          const previewKey = JSON.stringify({ path: getToolPathArg(args) ?? null, content: content ?? null });
+          const previewData = resolvePendingDiffPreview(
+            context,
+            WRITE_PENDING_PREVIEW_STATE_KEY,
+            previewKey,
+            () => buildPendingWritePreviewData(args, context.cwd ?? process.cwd(), { allowExternalDiffPreviews: getConfig().allowExternalDiffPreviews }),
+          );
+          return buildPendingDiffCallComponent(summaryText, previewData, context, getConfig(), theme);
+        },
+        renderResult(result, options, theme, context) {
+          const content = getToolContentArg(context?.args);
+          const lineCount = countWriteContentLines(content);
+          const { fallbackText, earlyResult } = handleEditOrWriteResult(result, options, context, theme, lineCount, "writing", "Write failed.");
+          if (earlyResult) {
+            return earlyResult;
+          }
+
+          const config = getConfig();
+          const executionMeta = getWriteExecutionMeta(
+            context,
+            writeExecutionMetaByToolCallId ?? EMPTY_WRITE_EXECUTION_META,
+          );
+          return renderWriteDiffResult(
+            content,
+            {
+              expanded: options.expanded,
+              filePath: getToolPathArg(context?.args),
+              previousContent: executionMeta?.previousContent,
+              fileExistedBeforeWrite: executionMeta?.fileExistedBeforeWrite ?? false,
+            },
+            config,
+            theme,
+            fallbackText,
+          );
+        },
+      };
+    case "bash":
+      return {
+        renderCall(args, theme, context) {
+          return renderBashCall(args, theme, context as never);
+        },
+        renderResult(result, options, theme, context) {
+          const config = getConfig();
+          const details = result.details as BashToolDetails | undefined;
+          const rawOutput = extractTextOutput(result);
+
+          if (options.isPartial) {
+            return renderBashLivePreview(rawOutput, options, config, theme, details);
+          }
+
+          if (isToolError(result, context)) {
+            return renderBashErrorResult(rawOutput, options, config, theme, details);
+          }
+
+          const lines = prepareOutputLines(rawOutput, options);
+
+          if (lines.length === 0) {
+            let text = formatBashNoOutputLine(getStringField(context?.args, "command"), theme);
+            if (config.showTruncationHints) {
+              text += formatBashTruncationHints(details, theme);
+            }
+            return textResult(text);
+          }
+
+          if (config.bashOutputMode === "summary") {
+            if (options.expanded) {
+              const maxLines = getExpandedPreviewLineLimit(lines, config);
+              return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
+            }
+
+            let summary = formatBashSummary(
+              lines,
+              details,
+              theme,
+              config.showTruncationHints,
+            );
+            summary += formatExpandHint(theme);
+            if (config.showTruncationHints) {
+              summary += formatBashTruncationHints(details, theme);
+            }
+            return textResult(summary);
+          }
+
+          if (config.bashOutputMode === "preview") {
+            const maxLines = options.expanded
+              ? getExpandedPreviewLineLimit(lines, config)
+              : config.previewLines;
+            return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
+          }
+
+          if (!options.expanded && config.bashCollapsedLines === 0) {
+            let hidden = theme.fg("muted", "↳ output hidden");
+            if (config.showTruncationHints) {
+              hidden += formatBashTruncationHints(details, theme);
+            }
+            return textResult(hidden);
+          }
+
+          const maxLines = options.expanded
+            ? lines.length
+            : config.bashCollapsedLines;
+          let text = buildPreviewText(lines, maxLines, theme, options.expanded);
+          if (config.showTruncationHints) {
+            text += formatBashTruncationHints(details, theme);
+          }
+          return textResult(text);
+        },
+      };
+  }
+  return undefined;
+}
+
 export function registerToolDisplayOverrides(
   pi: ExtensionAPI,
   getConfig: ConfigGetter,
@@ -1651,80 +1874,39 @@ export function registerToolDisplayOverrides(
     };
   }
 
-  const renderSearchToolResult = (
-    result: ToolRenderInput,
-    options: ToolRenderResultOptions,
-    theme: RenderTheme,
-    unitLabel: string,
-    pluralLabel?: string,
-  ): Text => {
-    const config = getConfig();
-    return renderSearchResult(result as never, options, config, theme, unitLabel, result.details as GrepToolDetails | FindToolDetails | LsToolDetails | undefined, pluralLabel);
-  };
-
-  const buildSearchCallSuffix = (args: Record<string, unknown>): { scope: string; limitSuffix: string } => {
-    return { scope: getSearchScope(args), limitSuffix: args.limit !== undefined ? ` (limit ${args.limit})` : "" };
-  };
-
   registerIfOwned("read", () => {
     registerRuntimeTool(pi, {
       name: "read",
       label: "read",
       ...createBuiltinToolBase("read"),
-      renderCall(args, theme) {
-        return renderReadDisplayCall(args, theme);
-      },
-      renderResult(result, options, theme) {
-        return renderReadDisplayResult(result, options, getConfig(), theme);
-      },
+      ...getBuiltInDisplayRenderers("read", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 
   registerIfOwned("grep", () => {
     registerRuntimeTool(pi, {
       name: "grep",
-    label: "grep",
-    ...createBuiltinToolBase("grep"),
-    renderCall(args, theme) {
-      const scope = getSearchScope(args);
-      const globSuffix = args.glob ? ` (${args.glob})` : "";
-      const limitSuffix =
-        args.limit !== undefined ? ` limit ${args.limit}` : "";
-      return formatSearchCallLine("grep", `/${args.pattern}/`, ` in ${scope}${globSuffix}${limitSuffix}`, theme);
-    },
-    renderResult(result, options, theme) {
-      return renderSearchToolResult(result, options, theme, "match", "matches");
-    },
+      label: "grep",
+      ...createBuiltinToolBase("grep"),
+      ...getBuiltInDisplayRenderers("grep", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 
   registerIfOwned("find", () => {
     registerRuntimeTool(pi, {
       name: "find",
-    label: "find",
-    ...createBuiltinToolBase("find"),
-    renderCall(args, theme) {
-      const { scope, limitSuffix } = buildSearchCallSuffix(args);
-      return formatSearchCallLine("find", args.pattern as string, ` in ${scope}${limitSuffix}`, theme);
-    },
-    renderResult(result, options, theme) {
-      return renderSearchToolResult(result, options, theme, "result");
-    },
+      label: "find",
+      ...createBuiltinToolBase("find"),
+      ...getBuiltInDisplayRenderers("find", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 
   registerIfOwned("ls", () => {
     registerRuntimeTool(pi, {
       name: "ls",
-    label: "ls",
-    ...createBuiltinToolBase("ls"),
-    renderCall(args, theme) {
-      const { scope, limitSuffix } = buildSearchCallSuffix(args);
-      return formatSearchCallLine("ls", scope, limitSuffix, theme);
-    },
-    renderResult(result, options, theme) {
-      return renderSearchToolResult(result, options, theme, "entry", "entries");
-    },
+      label: "ls",
+      ...createBuiltinToolBase("ls"),
+      ...getBuiltInDisplayRenderers("ls", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 
@@ -1745,12 +1927,7 @@ export function registerToolDisplayOverrides(
         onUpdate as never,
       );
     },
-    renderCall(args, theme, context) {
-      return renderEditDisplayCall(args, theme, context, {}, getConfig);
-    },
-    renderResult(result, options, theme, context) {
-      return renderEditDisplayResult(result as never, options, theme, context, {}, getConfig);
-    },
+    ...getBuiltInDisplayRenderers("edit", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 
@@ -1778,134 +1955,16 @@ export function registerToolDisplayOverrides(
         onUpdate as never,
       );
     },
-    renderCall(args, theme, context) {
-      const content = getToolContentArg(args);
-      const lineCount = countWriteContentLines(content);
-      const sizeBytes = getWriteContentSizeBytes(content);
-      const path = shortenPath(getToolPathArg(args));
-      const suffix = shouldRenderWriteCallSummary({
-        hasContent: content !== undefined,
-        hasDetailedResultHeader: false,
-      })
-        ? formatWriteCallSuffix(lineCount, sizeBytes, theme)
-        : "";
-      const summaryText = `${theme.fg("toolTitle", theme.bold("write"))} ${theme.fg("accent", path || "...")}${suffix}`;
-      if (!context?.argsComplete || !context?.isPartial) {
-        return textResult(summaryText);
-      }
-
-      const previewKey = JSON.stringify({ path: getToolPathArg(args) ?? null, content: content ?? null });
-      const previewData = resolvePendingDiffPreview(
-        context,
-        WRITE_PENDING_PREVIEW_STATE_KEY,
-        previewKey,
-        () => buildPendingWritePreviewData(args, context.cwd ?? process.cwd(), { allowExternalDiffPreviews: getConfig().allowExternalDiffPreviews }),
-      );
-      return buildPendingDiffCallComponent(summaryText, previewData, context, getConfig(), theme);
-    },
-    renderResult(result, options, theme, context) {
-      const content = getToolContentArg(context?.args);
-      const lineCount = countWriteContentLines(content);
-      const { fallbackText, earlyResult } = handleEditOrWriteResult(result, options, context, theme, lineCount, "writing", "Write failed.");
-      if (earlyResult) {
-        return earlyResult;
-      }
-
-      const config = getConfig();
-      const executionMeta = getWriteExecutionMeta(
-        context,
-        writeExecutionMetaByToolCallId,
-      );
-      return renderWriteDiffResult(
-        content,
-        {
-          expanded: options.expanded,
-          filePath: getToolPathArg(context?.args),
-          previousContent: executionMeta?.previousContent,
-          fileExistedBeforeWrite: executionMeta?.fileExistedBeforeWrite ?? false,
-        },
-        config,
-        theme,
-        fallbackText,
-      );
-    },
+    ...getBuiltInDisplayRenderers("write", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 
   registerIfOwned("bash", () => {
     registerRuntimeTool(pi, {
       name: "bash",
-    label: "bash",
-    ...createBuiltinToolBase("bash"),
-    renderCall(args, theme, context) {
-      return renderBashCall(args, theme, context as never);
-    },
-    renderResult(result, options, theme, context) {
-      const config = getConfig();
-      const details = result.details as BashToolDetails | undefined;
-      const rawOutput = extractTextOutput(result);
-
-      if (options.isPartial) {
-        return renderBashLivePreview(rawOutput, options, config, theme, details);
-      }
-
-      if (isToolError(result, context)) {
-        return renderBashErrorResult(rawOutput, options, config, theme, details);
-      }
-
-      const lines = prepareOutputLines(rawOutput, options);
-
-      if (lines.length === 0) {
-        let text = formatBashNoOutputLine(getStringField(context?.args, "command"), theme);
-        if (config.showTruncationHints) {
-          text += formatBashTruncationHints(details, theme);
-        }
-        return textResult(text);
-      }
-
-      if (config.bashOutputMode === "summary") {
-        if (options.expanded) {
-          const maxLines = getExpandedPreviewLineLimit(lines, config);
-          return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
-        }
-
-        let summary = formatBashSummary(
-          lines,
-          details,
-          theme,
-          config.showTruncationHints,
-        );
-        summary += formatExpandHint(theme);
-        if (config.showTruncationHints) {
-          summary += formatBashTruncationHints(details, theme);
-        }
-        return textResult(summary);
-      }
-
-      if (config.bashOutputMode === "preview") {
-        const maxLines = options.expanded
-          ? getExpandedPreviewLineLimit(lines, config)
-          : config.previewLines;
-        return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
-      }
-
-      if (!options.expanded && config.bashCollapsedLines === 0) {
-        let hidden = theme.fg("muted", "↳ output hidden");
-        if (config.showTruncationHints) {
-          hidden += formatBashTruncationHints(details, theme);
-        }
-        return textResult(hidden);
-      }
-
-      const maxLines = options.expanded
-        ? lines.length
-        : config.bashCollapsedLines;
-      let text = buildPreviewText(lines, maxLines, theme, options.expanded);
-      if (config.showTruncationHints) {
-        text += formatBashTruncationHints(details, theme);
-      }
-      return textResult(text);
-    },
+      label: "bash",
+      ...createBuiltinToolBase("bash"),
+      ...getBuiltInDisplayRenderers("bash", getConfig, writeExecutionMetaByToolCallId),
     });
   });
 

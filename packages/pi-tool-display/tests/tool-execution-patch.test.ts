@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getBuiltInDisplayRenderers } from "../lib/tool-overrides";
 import { DEFAULT_TOOL_DISPLAY_CONFIG } from "../lib/types";
 
 // The patch module reads ToolExecutionComponent.prototype at patch time, so the
 // mock supplies a minimal stand-in whose accessors behave like pi 1.0.0's
-// (prototype methods, per-instance toolDefinition). The mocked binding is
-// imported dynamically and typed structurally: the real class type does not
-// describe the mock.
+// (prototype methods reading the live toolDefinition, per-instance). The
+// mocked binding is imported dynamically and typed structurally: the real
+// class type does not describe the mock.
 
 vi.mock("@earendil-works/pi-coding-agent", () => {
 	class FakeToolExecutionComponent {
@@ -15,11 +16,11 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 		constructor(toolDefinition?: unknown) {
 			this.toolDefinition = toolDefinition;
 		}
-		getCallRenderer(): undefined {
-			return undefined;
+		getCallRenderer(): unknown {
+			return (this.toolDefinition as { renderCall?: unknown } | undefined)?.renderCall;
 		}
-		getResultRenderer(): undefined {
-			return undefined;
+		getResultRenderer(): unknown {
+			return (this.toolDefinition as { renderResult?: unknown } | undefined)?.renderResult;
 		}
 	}
 	return { ToolExecutionComponent: FakeToolExecutionComponent };
@@ -73,11 +74,57 @@ test("patches MCP tool components with tool-display renderers", () => {
 	assert.equal(typeof resultRenderer, "function");
 });
 
-test("leaves built-in tool components on their original renderers", () => {
-	const component = new ToolExecutionComponent({ name: "bash", description: "Run shell commands" });
+test("decorates stripped built-in definitions at render time", () => {
+	// Subagent children re-wrap tool definitions and drop the extension's
+	// renderers (upstream issue 47). The patch rebuilds them from the name.
+	const component = new ToolExecutionComponent({ name: "grep", description: "Search file contents" });
+
+	const callRenderer = component.getCallRenderer() as
+		| ((args: Record<string, unknown>, theme: unknown) => unknown)
+		| undefined;
+	assert.equal(typeof callRenderer, "function");
+	const callLine = callRenderer?.({ pattern: "foo", path: "." }, passThroughTheme);
+	assert.ok(callLine != null);
+	assert.ok(renderedText(callLine).includes("/foo/"), "expected the grep pattern in the rebuilt call line");
+
+	const resultRenderer = component.getResultRenderer();
+	assert.equal(typeof resultRenderer, "function");
+});
+
+test("keeps a definition that still carries its own renderers", () => {
+	const ownRenderCall = (args: Record<string, unknown>, theme: unknown): unknown => args;
+	const ownRenderResult = (result: unknown, options: unknown, theme: unknown): unknown => result;
+	const component = new ToolExecutionComponent({
+		name: "grep",
+		description: "Search file contents",
+		renderCall: ownRenderCall,
+		renderResult: ownRenderResult,
+	});
+
+	assert.equal(component.getCallRenderer(), ownRenderCall);
+	assert.equal(component.getResultRenderer(), ownRenderResult);
+});
+
+test("leaves tools without overrides on their original renderers", () => {
+	const component = new ToolExecutionComponent({ name: "mystery_tool", description: "Not ours" });
 
 	assert.equal(component.getCallRenderer(), undefined);
 	assert.equal(component.getResultRenderer(), undefined);
+});
+
+test("getBuiltInDisplayRenderers respects the name list and per-tool overrides", () => {
+	assert.equal(typeof getBuiltInDisplayRenderers("grep", () => DEFAULT_TOOL_DISPLAY_CONFIG)?.renderCall, "function");
+	assert.equal(
+		getBuiltInDisplayRenderers("mystery_tool", () => DEFAULT_TOOL_DISPLAY_CONFIG),
+		undefined,
+	);
+	assert.equal(
+		getBuiltInDisplayRenderers("grep", () => ({
+			...DEFAULT_TOOL_DISPLAY_CONFIG,
+			registerToolOverrides: { ...DEFAULT_TOOL_DISPLAY_CONFIG.registerToolOverrides, grep: false },
+		})),
+		undefined,
+	);
 });
 
 test("patched result renderer renders a text result in summary mode", () => {

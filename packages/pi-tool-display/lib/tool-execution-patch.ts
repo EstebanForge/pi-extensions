@@ -4,17 +4,21 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { onReloadShutdown } from "./extension-lifecycle.js";
 import {
+  type BuiltInDisplayRenderers,
   type RenderTheme,
   formatMcpCallLine,
+  getBuiltInDisplayRenderers,
   renderMcpResult,
 } from "./tool-overrides.js";
 import { getTextField, isMcpToolCandidate, toRecord } from "./tool-metadata.js";
 import type { ToolDisplayConfig } from "./types.js";
 
-// Render MCP tools at render time by patching ToolExecutionComponent's renderer
-// accessors. Pi's per-extension registerTool and renderer-less getAllTools()
-// projections make the registration-time decoration paths miss MCP tools; this
-// patch decides per component instance, reading the live toolDefinition.
+// Render MCP tools and stripped built-ins at render time by patching
+// ToolExecutionComponent's renderer accessors. Pi's per-extension registerTool
+// and renderer-less getAllTools() projections make the registration-time
+// decoration paths miss MCP tools, and subagent children re-wrap tool
+// definitions without their renderers (upstream issue 47). This patch decides
+// per component instance, reading the live toolDefinition.
 
 const PATCH_VERSION = 1;
 const PATCH_OWNER = {};
@@ -46,6 +50,7 @@ interface PatchableToolExecutionPrototype {
   __piToolDisplayOriginalGetResultRenderer?: () => ResultRenderer | undefined;
   __piToolDisplayMcpPatchVersion?: number;
   __piToolDisplayMcpPatchOwner?: object;
+  toolName?: string;
   toolDefinition?: ToolDefLike;
   builtInToolDefinition?: unknown;
 }
@@ -71,6 +76,28 @@ function isMcpRenderCandidate(proto: PatchableToolExecutionPrototype): boolean {
     return false;
   }
   return isMcpToolCandidate(def);
+}
+
+// Built-in fallback (issue 47): subagent children re-wrap tool definitions and
+// drop the extension's renderers. When the live definition carries none and
+// the tool name is one we decorate, rebuild the renderers at render time. A
+// definition that still has renderers keeps them, so any working decoration
+// (our own registration or another extension's) is never overridden.
+function builtInFallbackRenderers(
+  proto: PatchableToolExecutionPrototype,
+  rendererKey: "renderCall" | "renderResult",
+  getConfig: () => ToolDisplayConfig,
+): BuiltInDisplayRenderers | undefined {
+  const def = proto.toolDefinition;
+  if (!def || typeof def[rendererKey] === "function") {
+    return undefined;
+  }
+  const toolName = (typeof proto.toolName === "string" && proto.toolName)
+    || getTextField(def, "name");
+  if (!toolName) {
+    return undefined;
+  }
+  return getBuiltInDisplayRenderers(toolName, getConfig);
 }
 
 function patchToolExecutionMcpRender(
@@ -127,6 +154,10 @@ function patchToolExecutionMcpRender(
         ?? (toolName === "mcp" ? "MCP Proxy" : `MCP ${toolName}`);
       return (args, theme) => formatMcpCallLine(toolName, toolLabel, toRecord(args), theme);
     }
+    const builtIn = builtInFallbackRenderers(this, "renderCall", getConfig);
+    if (builtIn) {
+      return builtIn.renderCall as CallRenderer;
+    }
     return originalGetCallRenderer?.call(this);
   };
 
@@ -136,6 +167,10 @@ function patchToolExecutionMcpRender(
       // structural reader, so the cast is a boundary marker, not a loophole.
       return (result, options, theme) =>
         renderMcpResult(result as unknown as Parameters<typeof renderMcpResult>[0], options, getConfig(), theme);
+    }
+    const builtIn = builtInFallbackRenderers(this, "renderResult", getConfig);
+    if (builtIn) {
+      return builtIn.renderResult as ResultRenderer;
     }
     return originalGetResultRenderer?.call(this);
   };
