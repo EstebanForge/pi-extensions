@@ -229,6 +229,41 @@ runTest("test output fallback counts unicode pass and fail symbols", () => {
 	assert.ok(result?.includes("FAIL: 2 failed"));
 });
 
+// Vitest 5.x prints "Tests  4 failed | 39 passed (43)": failed first, pipe-separated.
+// The generic comma-order patterns misread it and hid real failures behind a PASS line.
+runTest("test output parses vitest 5 summary with failures before passed", () => {
+	const result = aggregateTestOutput(
+		" Tests  4 failed | 39 passed (43) \n",
+		"npx vitest run",
+	);
+
+	assert.ok(result?.includes("PASS: 39 passed"));
+	assert.ok(result?.includes("FAIL: 4 failed"));
+});
+
+runTest("test output parses vitest 5 summary with skipped", () => {
+	const result = aggregateTestOutput(" Tests  2 passed | 1 skipped (3) \n", "npx vitest run");
+
+	assert.ok(result?.includes("PASS: 2 passed"));
+	assert.ok(result?.includes("SKIP: 1 skipped"));
+	assert.ok(!result?.includes("FAIL:"));
+});
+
+// A failed exit whose output parsed as 0 failures must not read as a clean pass.
+runTest("test output warns when exit failed but no failures parsed", () => {
+	const result = aggregateTestOutput(" Tests  12 passed (12) \n", "npx vitest run", true);
+
+	assert.ok(result?.includes("WARNING"));
+	assert.ok(result?.includes("treat this run as FAILED"));
+	assert.ok(result?.includes("PASS: 12 passed"));
+});
+
+runTest("test output stays clean when exit passed with zero parsed failures", () => {
+	const result = aggregateTestOutput(" Tests  12 passed (12) \n", "npx vitest run", false);
+
+	assert.ok(!result?.includes("WARNING"));
+});
+
 runTest("command detection ignores env prefixes, blank lines, and chained suffixes", () => {
 	assert.equal(normalizeCommandForDetection("NODE_ENV=test FOO=bar npm test && echo done"), "npm test");
 	assert.equal(normalizeCommandForDetection("\n\n PYTHONPATH=src git status\n echo later"), "git status");

@@ -20,6 +20,13 @@ import { shouldRequireRtkAvailabilityForCommandHandling, shouldSkipCommandHandli
 import { sanitizeStreamingBashExecutionResult } from "./tool-execution-sanitizer.js";
 import type { RtkIntegrationConfig, RuntimeStatus } from "./types.js";
 import { applyWindowsBashCompatibilityFixes } from "./windows-command-helpers.js";
+// Eagerly pull the lazy-loaded modules into the load-time module graph. Hosts
+// that compile the agent to a standalone binary rewrite bare @earendil-works/*
+// imports at load time and miss anything only reachable through import(),
+// which broke /rtk on those hosts (upstream PR #26). Real pi resolves lazily
+// imported relatives fine, so this only costs two module loads at startup.
+import "./config-modal.js";
+import "./output-compactor.js";
 
 function trimMessage(raw: string, maxLength = 220): string {
 	const clean = raw.replace(/\s+/g, " ").trim();
@@ -547,6 +554,7 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 				{
 					toolName: event.toolName,
 					input: event.input,
+					isError: event.isError,
 					content: event.content,
 				},
 				config,

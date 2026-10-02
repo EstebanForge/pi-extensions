@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Eagerly preload the settings-modal and output-compactor modules so `/rtk` also works on agent distributions compiled to standalone binaries, whose load-time module rewriting misses lazily imported files. No behavior change under the standard runtime. Ported from upstream PR [#26](https://github.com/MasuRii/pi-rtk-optimizer/pull/26).
+
+### Fixed
+- Test-output aggregation now parses vitest 5 summaries (`Tests  4 failed | 39 passed (43)`), where the old comma-order patterns hid real failures behind a false PASS line. When the command exits with a failure status but zero failures parse from the output, the summary now carries an explicit warning instead of a clean result. Ported from upstream PR [#27](https://github.com/MasuRii/pi-rtk-optimizer/pull/27).
+
 ## 1.0.0 (2026-10-01)
 
 ### Added
