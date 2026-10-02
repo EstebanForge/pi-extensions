@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_TOOL_DISPLAY_CONFIG } from "../lib/types";
 
 // The patch module reads ToolExecutionComponent.prototype at patch time, so the
 // mock supplies a minimal stand-in whose accessors behave like pi 1.0.0's
-// (prototype methods, per-instance toolDefinition).
+// (prototype methods, per-instance toolDefinition). The mocked binding is
+// imported dynamically and typed structurally: the real class type does not
+// describe the mock.
 
 vi.mock("@earendil-works/pi-coding-agent", () => {
 	class FakeToolExecutionComponent {
@@ -24,6 +26,13 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 });
 
 const { default: registerToolExecutionMcpPatch } = await import("../lib/tool-execution-patch");
+
+const { ToolExecutionComponent } = (await import("@earendil-works/pi-coding-agent")) as unknown as {
+	ToolExecutionComponent: new (toolDefinition?: unknown) => {
+		getCallRenderer(): unknown;
+		getResultRenderer(): unknown;
+	};
+};
 
 const passThroughTheme = {
 	fg: (_color: string, text: string): string => text,
@@ -45,7 +54,9 @@ function renderedText(component: unknown): string {
 test("patches MCP tool components with tool-display renderers", () => {
 	const component = new ToolExecutionComponent({ name: "mcp", description: "Model Context Protocol tools" });
 
-	const callRenderer = component.getCallRenderer();
+	const callRenderer = component.getCallRenderer() as
+		| ((args: Record<string, unknown>, theme: unknown) => unknown)
+		| undefined;
 	assert.equal(typeof callRenderer, "function");
 	const callLine = callRenderer?.({ query: "issues" }, passThroughTheme);
 	assert.ok(callLine != null);
