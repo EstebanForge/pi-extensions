@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-tool-display",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Compact tool call rendering, diff visualization, and output truncation extension for Pi coding agent. Hides, collapses, and truncates verbose tool output for cleaner TUI display. (fork of MasuRii extension)",
   "keywords": [
     "pi-package",
