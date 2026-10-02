@@ -185,47 +185,6 @@ When `read` output uses Pi hashline/anchor prefixes, the compactor treats each a
 
 ## Technical Details
 
-### Architecture
-
-```
-index.ts                         # Pi auto-discovery entrypoint
-src/
-├── index.ts                     # Extension bootstrap and event wiring
-├── command-register.ts          # Lazy /rtk command registration
-├── command-completions.ts       # /rtk subcommand completions
-├── command-rewriter.ts          # Command rewrite decision adapter for RTK delegation
-├── rtk-rewrite-provider.ts      # Calls `rtk rewrite` as the rewrite source of truth
-├── rtk-executable-resolver.ts   # Cross-platform rtk executable discovery
-├── runtime-guard.ts             # Runtime availability guard helpers for rewrite mode
-├── rewrite-pipeline-safety.ts   # Shell-safety fixups for rewritten commands
-├── rtk-command-environment.ts   # RTK_DB_PATH scoping for rewritten commands
-├── shell-env-prefix.ts          # Environment assignment parsing helpers
-├── windows-command-helpers.ts   # Windows bash compatibility
-├── output-compactor.ts          # Tool result compaction pipeline
-├── output-metrics.ts            # Savings tracking and reporting
-├── tool-execution-sanitizer.ts  # Streaming bash execution output sanitizer
-├── config-store.ts              # Config load/save with normalization
-├── config-modal.ts              # TUI settings modal and /rtk handler
-├── boolean-format.ts            # Boolean display helpers
-├── constants.ts                 # Shared extension constants
-├── record-utils.ts              # Record/object guards
-├── types.ts                     # Shared config/runtime types
-├── types-shims.d.ts             # Ambient Pi package shims for local typecheck
-├── zellij-modal.ts              # Vendored modal renderer used by settings UI
-└── techniques/                  # Compaction technique implementations
-    ├── ansi.ts                  # ANSI code stripping
-    ├── build.ts                 # Build output filtering
-    ├── command-detection.ts     # Tool command detection helpers
-    ├── git.ts                   # Git output compaction
-    ├── index.ts                 # Technique re-export surface
-    ├── linter.ts                # Linter output aggregation
-    ├── path-utils.ts            # Cross-platform path shortening
-    ├── search.ts                # Search result grouping
-    ├── source.ts                # Source code filtering
-    ├── test-output.ts           # Test output aggregation
-    └── truncate.ts              # Smart and hard truncation
-```
-
 ### Event Hooks
 
 The extension hooks into Pi's event system:
