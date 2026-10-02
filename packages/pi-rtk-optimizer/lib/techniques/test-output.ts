@@ -7,10 +7,14 @@ interface TestSummary {
 	failures: string[];
 }
 
-// Vitest 5.x puts failed BEFORE passed, pipe-separated ("Tests  4 failed | 39 passed (43)"), not the "N passed, M failed" comma-order the generic patterns below assume.
-// Checked first, before the generic patterns.
+// Vitest 5.x summary: "Tests  4 failed | 39 passed (43)" - pipe-separated
+// tokens (any order, some omitted when zero) plus a "(total)" suffix that real
+// vitest output always carries. Requiring the suffix keeps this from matching
+// comma-form summaries or test titles, which the generic patterns below must
+// stay reachable for; it still needs to be checked before them, because they
+// misread "4 failed | 39 passed" as 4 passed.
 const VITEST_SUMMARY_PATTERN =
-	/Tests\s+(?:(\d+)\s*failed\s*\|\s*)?(\d+)\s*passed(?:\s*\|\s*(\d+)\s*skipped)?/i;
+	/Tests\s+((?:\d+\s+(?:failed|passed|skipped|expected fail|todo)\s*(?:\|\s*)?)+)\s*\((\d+)\)/i;
 
 const TEST_COMMAND_PATTERNS = [
 	/^npm\s+test\b/,
@@ -53,11 +57,22 @@ function isFailureStart(line: string): boolean {
 function extractTestStats(output: string): Partial<TestSummary> {
 	const vitestMatch = output.match(VITEST_SUMMARY_PATTERN);
 	if (vitestMatch) {
-		return {
-			failed: Number.parseInt(vitestMatch[1] ?? "0", 10) || 0,
-			passed: Number.parseInt(vitestMatch[2] ?? "0", 10) || 0,
-			skipped: Number.parseInt(vitestMatch[3] ?? "0", 10) || 0,
-		};
+		const stats: Partial<TestSummary> = {};
+		for (const token of vitestMatch[1].split("|")) {
+			const counts = token.match(/(\d+)\s+(failed|passed|skipped)/i);
+			if (!counts) {
+				continue;
+			}
+			const count = Number.parseInt(counts[1], 10);
+			if (counts[2].toLowerCase() === "failed") {
+				stats.failed = count;
+			} else if (counts[2].toLowerCase() === "passed") {
+				stats.passed = count;
+			} else {
+				stats.skipped = count;
+			}
+		}
+		return stats;
 	}
 	for (const pattern of TEST_RESULT_PATTERNS) {
 		const match = output.match(pattern);
@@ -160,8 +175,9 @@ export function aggregateTestOutput(
 
 	const result: string[] = ["Test Results:"];
 	if (isError && summary.failed === 0) {
+		result.push("   FAIL: command exited with a failure status");
 		result.push(
-			"   WARNING: Command exited with a failure status but no failures were parsed from output - do NOT trust '0 failed'; treat this run as FAILED and check raw output.",
+			"   WARNING: no test failures were parsed from the output, so the counts above may be incomplete. Read the raw output before trusting this summary.",
 		);
 	}
 	result.push(`   PASS: ${summary.passed} passed`);

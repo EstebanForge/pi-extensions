@@ -249,12 +249,29 @@ runTest("test output parses vitest 5 summary with skipped", () => {
 	assert.ok(!result?.includes("FAIL:"));
 });
 
+// Vitest omits the passed token entirely when zero tests pass ("Tests  4 failed (4)").
+runTest("test output parses vitest 5 summary with failures only", () => {
+	const result = aggregateTestOutput(" Tests  4 failed (4) \n", "npx vitest run");
+
+	assert.ok(result?.includes("PASS: 0 passed"));
+	assert.ok(result?.includes("FAIL: 4 failed"));
+});
+
+// The vitest pattern requires the "(total)" suffix, so comma-form summaries
+// must still fall through to the generic comma-order patterns.
+runTest("test output keeps comma-form summaries on the generic patterns", () => {
+	const result = aggregateTestOutput("Tests  2 passed, 1 failed\n", "npm test");
+
+	assert.ok(result?.includes("PASS: 2 passed"));
+	assert.ok(result?.includes("FAIL: 1 failed"));
+});
+
 // A failed exit whose output parsed as 0 failures must not read as a clean pass.
 runTest("test output warns when exit failed but no failures parsed", () => {
 	const result = aggregateTestOutput(" Tests  12 passed (12) \n", "npx vitest run", true);
 
+	assert.ok(result?.includes("FAIL: command exited with a failure status"));
 	assert.ok(result?.includes("WARNING"));
-	assert.ok(result?.includes("treat this run as FAILED"));
 	assert.ok(result?.includes("PASS: 12 passed"));
 });
 

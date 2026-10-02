@@ -533,6 +533,39 @@ runTest("build output uses plain-text status markers", () => {
 	assertNoOutputEmoji(compacted);
 });
 
+runTest("failed bash exit surfaces the run-failed warning through the full compactor", () => {
+	const result = compactToolResult(
+		{
+			toolName: "bash",
+			input: { command: "npx vitest run" },
+			isError: true,
+			content: [{ type: "text", text: " Tests  12 passed (12) \n" }],
+		},
+		cloneDefaultConfig(),
+	);
+
+	assert.equal(result.changed, true);
+	const text = firstTextBlock(result.content);
+	assert.ok(text.includes("FAIL: command exited with a failure status"));
+	assert.ok(text.includes("WARNING"));
+	assert.ok(text.includes("PASS: 12 passed"));
+});
+
+runTest("clean bash exit adds no run-failed warning through the full compactor", () => {
+	const result = compactToolResult(
+		{
+			toolName: "bash",
+			input: { command: "npx vitest run" },
+			isError: false,
+			content: [{ type: "text", text: " Tests  12 passed (12) \n" }],
+		},
+		cloneDefaultConfig(),
+	);
+
+	assert.equal(result.changed, true);
+	assert.equal(firstTextBlock(result.content).includes("WARNING"), false);
+});
+
 runTest("git status output uses plain-text labels", () => {
 	const compacted = compactBashOutput(
 		"git status --short --branch",
