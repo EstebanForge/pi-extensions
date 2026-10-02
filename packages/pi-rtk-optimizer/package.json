@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-rtk-optimizer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "RTK command rewriting and tool output compaction extension for the Pi coding agent. Rewrites bash commands to their rtk equivalents and compacts noisy tool output to reduce context window usage. (fork of MasuRii extension)",
   "keywords": [
     "pi-package",
