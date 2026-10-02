@@ -1,19 +1,12 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-## [1.0.0] - 2026-10-01
+## 1.0.0 (2026-10-01)
 
 ### Changed
 - Adopted into the @estebanforge/pi-extensions monorepo from MasuRii/pi-tool-display 0.5.0 (MIT), with upstream credited in the README, LICENSE, and package contributors.
 - Ported to Pi 1.0.0 extension APIs and repackaged: `src/` moved to `lib/`, entry point moved to `extensions/index.ts`, tests moved to `tests/` on vitest. The `tool-display-api-consumer` subpath export is unchanged.
 
-## [0.5.0] - 2026-07-03
+## 0.5.0 (2026-07-03)
 
 ### Added
 - Added an `enabled` config toggle that gates tool override registration, with reload cleanup that disposes overrides and patches on `session_shutdown`. ([c78163d](https://github.com/MasuRii/pi-tool-display/commit/c78163dddc0f94b7a542d2d1e01109c903bc70cc))
@@ -28,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Capped expanded edit/write diff bodies with the existing `expandedPreviewMaxLines` setting and a visible omission hint so large diffs stay bounded in small tmux panes (#23). Thanks to @jmikedupont2 for reporting. ([7e46231](https://github.com/MasuRii/pi-tool-display/commit/7e4623191583f31a056602d8a08f1a4a7accd8b6))
 
-## [0.4.3] - 2026-06-16
+## 0.4.3 (2026-06-16)
 
 ### Added
 - Added `customToolOverrides` for explicit opt-in rendering of non-built-in extension tools, with `generic` as the default kind and optional `mcp` rendering for MCP proxy-style arguments.
@@ -40,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Bash tool display overrides now preserve Pi `settings.json` shell settings (`shellPath` and `shellCommandPrefix`) when rebuilding the bash tool.
 
-## [0.4.2] - 2026-06-01
+## 0.4.2 (2026-06-01)
 
 ### Changed
 - Deferred config modal, settings inspector, and built-in tool metadata loading until needed to reduce startup work.
@@ -50,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Corrected classic-mode diff line-number gutter spacing.
 
-## [0.4.1] - 2026-05-26
+## 0.4.1 (2026-05-26)
 
 ### Added
 - Reload-safe extension lifecycle: `src/disposable.ts` cleanup registry that disposes all tool overrides, prototype patches, timers, and event handlers on `session_shutdown(reason: "reload")`, preventing orphaned pi-mono default rendering after `/reload`.
@@ -67,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Thinking label duplicate-prevention guard prevents re-registering event handlers across reloads; `session_shutdown(reason: "reload")` resets the guard so re-registration works after reload; recursive nested-array handling added for malformed thinking content (#2). Thanks to @agustif for PR #2.
 - `registerDeferredBuiltInToolOverrides()` is now also called on `session_start` (not just `before_agent_start`), fixing a reload bug where read/grep/edit/bash tools fell back to default pi-mono rendering.
 
-## [0.4.0] - 2026-05-22
+## 0.4.0 (2026-05-22)
 
 ### Added
 - Added the `./tool-display-api-consumer` subpath export so other extensions can decorate tool definitions through the runtime tool-display API or queue decorations until `pi-tool-display` is loaded.
@@ -77,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deferred built-in tool override registration until the built-in owner is available and refreshed cached built-in tools on session lifecycle changes.
 - Redacted secret-like debug payload values and switched debug writes to asynchronous buffered file logging.
 
-## [0.3.6] - 2026-05-04
+## 0.3.6 (2026-05-04)
 
 ### Added
 - Documented the `debug` config flag for opt-in file diagnostics under the runtime-created `debug/` directory with terminal debug output kept disabled.
@@ -91,12 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened pending write metadata tracking so preview and execution state do not leak across tool call lifecycles.
 - Improved tool override preview reads and write state handling for safer partial-render updates.
 
-## [0.3.5] - 2026-04-27
+## 0.3.5 (2026-04-27)
 
 ### Changed
 - Removed the deleted bundled screenshot asset from published package contents and removed the corresponding README project-structure reference to `assets/pi-tool-display.png`.
 
-## [0.3.4] - 2026-04-24
+## 0.3.4 (2026-04-24)
 
 ### Added
 - Added projected pending diff previews for partial `edit` and `write` tool calls so the TUI can show `pending edit`, `pending overwrite`, and `pending create` diffs before execution finishes
@@ -110,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored native user message box spacing on recent Pi releases by extracting markdown through the newer nested `Box` wrapper and stripping OSC 133 prompt markers from fallback content normalization
 - Limited fallback OSC stripping to OSC 133 prompt markers so OSC 8 hyperlinks and other non-prompt OSC sequences remain intact in user message rendering
 
-## [0.3.2] - 2026-04-15
+## 0.3.2 (2026-04-15)
 
 ### Added
 - `diffIndicatorMode` config option with three styles: `bars` (persistent vertical indicators), `classic` (+/- markers on first row only), and `none` (no indicator column)
@@ -130,13 +123,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Classic mode now shows +/- only on first visual row, with spacing on wrapped continuation lines
 - Corrected ANSI background reset detection so RGB color sequences containing component value `49` no longer break inline diff emphasis background rendering (thanks to @michaelrommel for reporting issue #8)
 
-## [0.3.1] - 2026-04-01
+## 0.3.1 (2026-04-01)
 
 ### Changed
 - Updated npm keywords and package metadata for improved discoverability
 - Added Related Pi Extensions cross-linking section to README
 
-## [0.3.0] - 2026-04-01
+## 0.3.0 (2026-04-01)
 
 ### Added
 - `prepareArguments` delegate support for built-in tool overrides (read, grep, find, ls, edit, write, bash)
@@ -160,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added tests for diff renderer width handling with line backgrounds
 - Added tests for tool-overrides configuration and prepareArguments delegation
 
-## [0.2.0] - 2026-03-24
+## 0.2.0 (2026-03-24)
 
 ### Added
 - `bashOutputMode` config option with three modes: `opencode` (classic collapse), `summary` (line count only), `preview` (show lines)
@@ -188,7 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added test coverage for spinner state management and elapsed time formatting
 - Added tests for modal icon detection with various terminal environments
 
-## [0.1.12] - 2026-03-23
+## 0.1.12 (2026-03-23)
 
 ### Added
 - `tool-metadata.ts` module with shared utilities: `toRecord`, `getTextField`, `isMcpToolCandidate`, `extractPromptMetadata`
@@ -212,7 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added tests for tool-overrides config and registration behavior
 - Added tests for capabilities module with MCP detection scenarios
 
-## [0.1.11] - 2026-03-13
+## 0.1.11 (2026-03-13)
 
 ### Changed
 - Refactored `sequenceAffectsBackground` to `sequenceResetsBackground` with simpler logic that only detects background reset sequences (codes 0 and 49)
@@ -220,12 +213,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 - Added test coverage for diff-renderer width handling
 
-## [0.1.10] - 2026-03-13
+## 0.1.10 (2026-03-13)
 
 ### Fixed
 - Add npm override for file-type >=21.3.1 to resolve CVE (infinite loop in ASF parser)
 
-## [0.1.9] - 2026-03-13
+## 0.1.9 (2026-03-13)
 
 ### Added
 - Write overwrite diff guard to skip expensive diff computation for large files (4000+ lines or 1M+ cells)
@@ -241,14 +234,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prevented UI slowdown on very large file writes by showing guard message instead of computing expensive diffs
 - Avoided redundant markdown parser instantiation for repeated renders of the same user message
 
-## [0.1.8] - 2026-03-12
+## 0.1.8 (2026-03-12)
 
 ### Changed
 - Extracted diff presentation logic into dedicated `diff-presentation.ts` module with `DiffPresentationMode`, `buildDiffSummaryText`, `normalizeDiffRenderWidth`, and `resolveDiffPresentationMode` utilities
 - Improved compact line rendering with dedicated marker and prefix functions
 - Added width-safe diff rendering utilities for consistent terminal width handling
 
-## [0.1.7] - 2026-03-07
+## 0.1.7 (2026-03-07)
 
 ### Added
 - Added line-width safety utilities for diff rendering so collapsed and expanded diff output can be clamped to the current pane width.
@@ -266,12 +259,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored final-message thinking label persistence on `message_end` so themed labels remain consistent after streaming and across session reloads.
 - Improved native user message box rendering so markdown content, ANSI-only blank lines, and background fill behave more consistently.
 
-## [0.1.6] - 2026-03-04
+## 0.1.6 (2026-03-04)
 
 ### Fixed
 - Use absolute GitHub raw URL for README image to fix npm display
 
-## [0.1.5] - 2026-03-04
+## 0.1.5 (2026-03-04)
 
 ### Added
 - Thinking labels feature that prefixes AI reasoning blocks with themed "Thinking:" labels for better readability
@@ -281,7 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added comprehensive feature documentation, configuration reference, and usage examples
 - Simplified settings modal by removing less-used advanced options (expandedPreviewMaxLines, diffSplitMinWidth, diffCollapsedLines, tool ownership toggles)
 
-## [0.1.4] - 2026-03-02
+## 0.1.4 (2026-03-02)
 
 ### Added
 - Auto-detection of MCP and RTK capabilities to conditionally expose related UI/config controls.
@@ -292,7 +285,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime rendering now force-disables MCP output mode and RTK hint rendering when those capabilities are unavailable.
 - Native user message box is now user-configurable via `enableNativeUserMessageBox` in config and `/tool-display` settings.
 
-## [0.1.3] - 2026-03-02
+## 0.1.3 (2026-03-02)
 
 ### Added
 - Added per-tool ownership config via `registerToolOverrides` for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write` so users can avoid tool ownership conflicts with other extensions.
@@ -303,13 +296,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Built-in tool override registration is now conditional per tool based on ownership settings.
 - Updated README configuration/troubleshooting docs for multi-tool extension compatibility.
 
-## [0.1.2] - 2026-03-01
+## 0.1.2 (2026-03-01)
 
 ### Fixed
 - Corrected `write` call rendering state handling so path changes without new content no longer reuse stale line/size metadata from previous writes.
 - Restored write call suffix rendering (`(X lines, Y)`) when content is available, improving call summary consistency.
 
-## [0.1.1] - 2026-03-01
+## 0.1.1 (2026-03-01)
 
 ### Changed
 - Reorganized repository layout to a cleaner package structure:
@@ -320,7 +313,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simplified TypeScript build command to use `tsconfig.json` project mode.
 - Updated README installation heading now that npm package is published.
 
-## [0.1.0] - 2026-03-01
+## 0.1.0 (2026-03-01)
 
 ### Added
 - Public repository scaffolding (`README.md`, `LICENSE`, `CHANGELOG.md`, `.gitignore`, `.npmignore`).
