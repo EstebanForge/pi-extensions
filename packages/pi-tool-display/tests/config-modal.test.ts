@@ -97,6 +97,36 @@ function createControllerStub(
 // Tests
 // ---------------------------------------------------------------------------
 
+test("'show' summarizes tidy card state from the config", async () => {
+	const { api, getHandler } = createPiStub();
+	const { controller } = createControllerStub({ tidyCards: false });
+	const { ctx, notifications } = createCtxStub(true);
+
+	registerToolDisplayCommand(api, controller);
+	const handler = getHandler();
+	assert.ok(handler);
+
+	await handler("show", ctx);
+
+	assert.ok(notifications[0]?.message.includes("cards=off"));
+});
+
+test("'reset' restores tidy cards to the default on state", async () => {
+	const { api, getHandler } = createPiStub();
+	const { controller, getLastSet } = createControllerStub({ tidyCards: false });
+	const { ctx } = createCtxStub(true);
+
+	registerToolDisplayCommand(api, controller);
+	const handler = getHandler();
+	assert.ok(handler);
+
+	await handler("reset", ctx);
+
+	const last = getLastSet();
+	assert.ok(last.config);
+	assert.equal(last.config!.tidyCards, DEFAULT_TOOL_DISPLAY_CONFIG.tidyCards);
+});
+
 test("registerToolDisplayCommand registers a handler for 'tool-display'", () => {
 	const { api, getHandler } = createPiStub();
 	const { controller } = createControllerStub();

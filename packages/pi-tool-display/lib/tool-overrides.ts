@@ -27,6 +27,13 @@ import { renderBashCall } from "./bash-display.js";
 import { logToolDisplayDebug } from "./debug-logger.js";
 import { registerCleanup } from "./disposable.js";
 import {
+  buildTidyHeaderLine,
+  countDiffChanges,
+  countGrepMatches,
+  firstNonEmptyLine,
+  tidyIcon,
+} from "./tidy-cards.js";
+import {
   compactOutputLines,
   countNonEmptyLines,
   extractTextOutput,
@@ -1391,10 +1398,11 @@ function renderEditDisplayCall(
   context: ToolRenderContextLike | undefined,
   adapter: ToolDisplayAdapter = {},
   getConfig: ConfigGetter,
+  icon?: string,
  ): Text | Container {
   const path = shortenPath(getAdapterPath(args, adapter));
   const lineCount = adapter.getEditLineCount?.(args) ?? getEditLineCount(args);
-  const summaryText = `${theme.fg("toolTitle", theme.bold("edit"))} ${theme.fg("accent", path || "...")}${formatLineCountSuffix(lineCount, theme)}`;
+  const summaryText = `${icon ? `${icon} ` : ""}${theme.fg("toolTitle", theme.bold("edit"))} ${theme.fg("accent", path || "...")}${formatLineCountSuffix(lineCount, theme)}`;
   if (!context?.argsComplete || !context.isPartial) {
     return textResult(summaryText);
   }
@@ -1590,6 +1598,153 @@ export interface BuiltInDisplayRenderers {
 
 const EMPTY_WRITE_EXECUTION_META = new Map<string, WriteExecutionMeta>();
 
+function tidyResultLine(theme: RenderTheme, body: string): string {
+  return `${theme.fg("muted", "  →")} ${body}`;
+}
+
+function tidyTruncationSuffix(
+  details: { truncation?: { truncated?: boolean } } | undefined,
+  config: ToolDisplayConfig,
+  theme: RenderTheme,
+): string {
+  return theme.fg("warning", config.showTruncationHints ? truncationHint(details) : "");
+}
+
+function tidyExpandedBodyText(
+  result: ToolRenderInput,
+  config: ToolDisplayConfig,
+  theme: RenderTheme,
+  error: boolean,
+): string {
+  const rawOutput = extractTextOutput(result);
+  const allLines = compactOutputLines(splitLines(rawOutput), { expanded: true });
+  const lines = allLines.slice(0, getExpandedPreviewLineLimit(allLines, config));
+  const color = error ? "error" : "toolOutput";
+  let text = lines
+    .map((line) => theme.fg(color, sanitizeAnsiForThemedOutput(line)))
+    .join("\n");
+  text += formatExpandedPreviewCapHint(allLines, config, theme);
+  return text;
+}
+
+function tidyErrorSummary(result: ToolRenderInput, theme: RenderTheme): string {
+  const firstLine = firstNonEmptyLine(extractTextOutput(result));
+  // Raw output may carry SGR resets that would break out of the error color.
+  const body = firstLine ? `failed: ${sanitizeAnsiForThemedOutput(firstLine)}` : "failed";
+  return tidyResultLine(theme, theme.fg("error", body));
+}
+
+function tidyCountSummary(
+  toolName: "read" | "grep" | "find" | "ls",
+  result: ToolRenderInput,
+  config: ToolDisplayConfig,
+  theme: RenderTheme,
+): string {
+  const rawOutput = extractTextOutput(result);
+  const details = result.details as { truncation?: { truncated?: boolean } } | undefined;
+  const suffix =
+    tidyTruncationSuffix(details, config, theme) +
+    formatRtkSummarySuffix({ details: result.details, config, theme });
+
+  if (toolName === "grep") {
+    const { matches, files } = countGrepMatches(splitLines(rawOutput));
+    let body = theme.fg("success", `${matches} ${pluralize(matches, "match", "matches")}`);
+    if (files > 0) {
+      body += theme.fg("success", ` in ${files} ${pluralize(files, "file")}`);
+    }
+    return tidyResultLine(theme, body + suffix);
+  }
+
+  if (toolName === "read") {
+    const lines = compactOutputLines(splitLines(rawOutput), { expanded: true });
+    return tidyResultLine(
+      theme,
+      theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`) + suffix,
+    );
+  }
+
+  const count = countNonEmptyLines(splitLines(rawOutput));
+  const label = toolName === "find" ? pluralize(count, "result") : pluralize(count, "entry", "entries");
+  return tidyResultLine(theme, theme.fg("success", `${count} ${label}`) + suffix);
+}
+
+function tidyBashSummary(result: ToolRenderInput, config: ToolDisplayConfig, theme: RenderTheme): string {
+  const lines = compactOutputLines(splitLines(extractTextOutput(result)), { expanded: true });
+  if (lines.length === 0) {
+    return tidyResultLine(theme, theme.fg("muted", "(no output)"));
+  }
+  return tidyResultLine(
+    theme,
+    theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`),
+  );
+}
+
+function tidyEditSummary(result: ToolRenderInput, theme: RenderTheme): string {
+  const diff = toRecord(result.details).diff;
+  if (typeof diff !== "string" || !diff.trim()) {
+    return tidyResultLine(theme, theme.fg("muted", "edited"));
+  }
+  const { added, removed } = countDiffChanges(diff);
+  return tidyResultLine(theme, `${theme.fg("success", `+${added}`)}${theme.fg("error", `/-${removed}`)}`);
+}
+
+function tidyWriteSummary(args: Record<string, unknown> | undefined, theme: RenderTheme): string {
+  const lineCount = countWriteContentLines(getToolContentArg(args));
+  return tidyResultLine(theme, theme.fg("success", `${lineCount} ${pluralize(lineCount, "line")}`));
+}
+
+function renderTidyResult(
+  toolName: BuiltInToolOverrideName,
+  result: ToolRenderInput & { isError?: boolean },
+  options: ToolRenderResultOptions,
+  config: ToolDisplayConfig,
+  theme: RenderTheme,
+  context: ToolRenderContextLike | undefined,
+  classic: () => unknown,
+): unknown {
+  const isError = isToolError(result, context);
+
+  if (toolName === "edit" || toolName === "write") {
+    if (options.isPartial || isError || options.expanded) {
+      return classic();
+    }
+    if (toolName === "edit") {
+      return textResult(tidyEditSummary(result, theme));
+    }
+    return textResult(tidyWriteSummary(toRecord(context?.args), theme));
+  }
+
+  if (options.isPartial) {
+    if (toolName === "bash") {
+      return classic();
+    }
+    return textResult(tidyResultLine(theme, theme.fg("warning", "running…")));
+  }
+
+  const details = result.details as BashToolDetails | undefined;
+  const bashHints =
+    toolName === "bash" && config.showTruncationHints
+      ? formatBashTruncationHints(details, theme)
+      : "";
+
+  if (isError) {
+    // An empty error body expanded to nothing would hide the failure entirely.
+    if (options.expanded && firstNonEmptyLine(extractTextOutput(result))) {
+      return textResult(tidyExpandedBodyText(result, config, theme, true) + bashHints);
+    }
+    return textResult(tidyErrorSummary(result, theme));
+  }
+
+  if (options.expanded) {
+    return textResult(tidyExpandedBodyText(result, config, theme, false) + bashHints);
+  }
+
+  if (toolName === "bash") {
+    return textResult(tidyBashSummary(result, config, theme) + bashHints);
+  }
+  return textResult(tidyCountSummary(toolName as "read" | "grep" | "find" | "ls", result, config, theme));
+}
+
 const buildSearchCallSuffix = (args: Record<string, unknown>): { scope: string; limitSuffix: string } => {
   return { scope: getSearchScope(args), limitSuffix: args.limit !== undefined ? ` (limit ${args.limit})` : "" };
 };
@@ -1624,56 +1779,137 @@ export function getBuiltInDisplayRenderers(
     case "read":
       return {
         renderCall(args, theme) {
+          if (getConfig().tidyCards) {
+            return textResult(buildTidyHeaderLine("read", args, theme));
+          }
           return renderReadDisplayCall(args, theme);
         },
         renderResult(result, options, theme) {
-          return renderReadDisplayResult(result, options, getConfig(), theme);
+          const config = getConfig();
+          if (config.tidyCards) {
+            return renderTidyResult("read", result as never, options, config, theme, undefined, () =>
+              renderReadDisplayResult(result as never, options, config, theme),
+            );
+          }
+          return renderReadDisplayResult(result, options, config, theme);
         },
       };
     case "grep":
       return {
         renderCall(args, theme) {
+          if (getConfig().tidyCards) {
+            return textResult(buildTidyHeaderLine("grep", args, theme));
+          }
           const scope = getSearchScope(args);
           const globSuffix = args.glob ? ` (${args.glob})` : "";
           const limitSuffix = args.limit !== undefined ? ` limit ${args.limit}` : "";
           return formatSearchCallLine("grep", `/${args.pattern}/`, ` in ${scope}${globSuffix}${limitSuffix}`, theme);
         },
         renderResult(result, options, theme) {
+          const config = getConfig();
+          if (config.tidyCards) {
+            return renderTidyResult("grep", result as never, options, config, theme, undefined, () =>
+              renderSearchToolResult(result, options, theme, "match", "matches"),
+            );
+          }
           return renderSearchToolResult(result, options, theme, "match", "matches");
         },
       };
     case "find":
       return {
         renderCall(args, theme) {
+          if (getConfig().tidyCards) {
+            return textResult(buildTidyHeaderLine("find", args, theme));
+          }
           const { scope, limitSuffix } = buildSearchCallSuffix(args);
           return formatSearchCallLine("find", args.pattern as string, ` in ${scope}${limitSuffix}`, theme);
         },
         renderResult(result, options, theme) {
+          const config = getConfig();
+          if (config.tidyCards) {
+            return renderTidyResult("find", result as never, options, config, theme, undefined, () =>
+              renderSearchToolResult(result, options, theme, "result"),
+            );
+          }
           return renderSearchToolResult(result, options, theme, "result");
         },
       };
     case "ls":
       return {
         renderCall(args, theme) {
+          if (getConfig().tidyCards) {
+            return textResult(buildTidyHeaderLine("ls", args, theme));
+          }
           const { scope, limitSuffix } = buildSearchCallSuffix(args);
           return formatSearchCallLine("ls", scope, limitSuffix, theme);
         },
         renderResult(result, options, theme) {
+          const config = getConfig();
+          if (config.tidyCards) {
+            return renderTidyResult("ls", result as never, options, config, theme, undefined, () =>
+              renderSearchToolResult(result, options, theme, "entry", "entries"),
+            );
+          }
           return renderSearchToolResult(result, options, theme, "entry", "entries");
         },
       };
     case "edit":
       return {
         renderCall(args, theme, context) {
-          return renderEditDisplayCall(args, theme, context, {}, getConfig);
+          return renderEditDisplayCall(
+            args,
+            theme,
+            context,
+            {},
+            getConfig,
+            getConfig().tidyCards ? tidyIcon("edit") : undefined,
+          );
         },
         renderResult(result, options, theme, context) {
+          const config = getConfig();
+          if (config.tidyCards) {
+            return renderTidyResult("edit", result as never, options, config, theme, context, () =>
+              renderEditDisplayResult(result as never, options, theme, context, {}, getConfig),
+            );
+          }
           return renderEditDisplayResult(result as never, options, theme, context, {}, getConfig);
         },
       };
-    case "write":
+    case "write": {
+      const classicWriteResult = (
+        result: ToolRenderInput,
+        options: ToolRenderResultOptions,
+        theme: RenderTheme,
+        context: ToolRenderContextLike | undefined,
+      ): unknown => {
+        const content = getToolContentArg(context?.args);
+        const lineCount = countWriteContentLines(content);
+        const { fallbackText, earlyResult } = handleEditOrWriteResult(result, options, context, theme, lineCount, "writing", "Write failed.");
+        if (earlyResult) {
+          return earlyResult;
+        }
+
+        const config = getConfig();
+        const executionMeta = getWriteExecutionMeta(
+          context,
+          writeExecutionMetaByToolCallId ?? EMPTY_WRITE_EXECUTION_META,
+        );
+        return renderWriteDiffResult(
+          content,
+          {
+            expanded: options.expanded,
+            filePath: getToolPathArg(context?.args),
+            previousContent: executionMeta?.previousContent,
+            fileExistedBeforeWrite: executionMeta?.fileExistedBeforeWrite ?? false,
+          },
+          config,
+          theme,
+          fallbackText,
+        );
+      };
       return {
         renderCall(args, theme, context) {
+          const iconPrefix = getConfig().tidyCards ? `${tidyIcon("write")} ` : "";
           const content = getToolContentArg(args);
           const lineCount = countWriteContentLines(content);
           const sizeBytes = getWriteContentSizeBytes(content);
@@ -1684,7 +1920,7 @@ export function getBuiltInDisplayRenderers(
           })
             ? formatWriteCallSuffix(lineCount, sizeBytes, theme)
             : "";
-          const summaryText = `${theme.fg("toolTitle", theme.bold("write"))} ${theme.fg("accent", path || "...")}${suffix}`;
+          const summaryText = `${iconPrefix}${theme.fg("toolTitle", theme.bold("write"))} ${theme.fg("accent", path || "...")}${suffix}`;
           if (!context?.argsComplete || !context?.isPartial) {
             return textResult(summaryText);
           }
@@ -1699,104 +1935,103 @@ export function getBuiltInDisplayRenderers(
           return buildPendingDiffCallComponent(summaryText, previewData, context, getConfig(), theme);
         },
         renderResult(result, options, theme, context) {
-          const content = getToolContentArg(context?.args);
-          const lineCount = countWriteContentLines(content);
-          const { fallbackText, earlyResult } = handleEditOrWriteResult(result, options, context, theme, lineCount, "writing", "Write failed.");
-          if (earlyResult) {
-            return earlyResult;
-          }
-
           const config = getConfig();
-          const executionMeta = getWriteExecutionMeta(
-            context,
-            writeExecutionMetaByToolCallId ?? EMPTY_WRITE_EXECUTION_META,
-          );
-          return renderWriteDiffResult(
-            content,
-            {
-              expanded: options.expanded,
-              filePath: getToolPathArg(context?.args),
-              previousContent: executionMeta?.previousContent,
-              fileExistedBeforeWrite: executionMeta?.fileExistedBeforeWrite ?? false,
-            },
-            config,
-            theme,
-            fallbackText,
-          );
+          if (config.tidyCards) {
+            return renderTidyResult("write", result as never, options, config, theme, context, () =>
+              classicWriteResult(result as never, options, theme, context),
+            );
+          }
+          return classicWriteResult(result as never, options, theme, context);
         },
       };
-    case "bash":
+    }
+    case "bash": {
+      const classicBashResult = (
+        result: ToolRenderInput,
+        options: ToolRenderResultOptions,
+        theme: RenderTheme,
+        context: ToolRenderContextLike | undefined,
+        config: ToolDisplayConfig,
+      ): unknown => {
+        const details = result.details as BashToolDetails | undefined;
+        const rawOutput = extractTextOutput(result);
+
+        if (options.isPartial) {
+          return renderBashLivePreview(rawOutput, options, config, theme, details);
+        }
+
+        if (isToolError(result, context)) {
+          return renderBashErrorResult(rawOutput, options, config, theme, details);
+        }
+
+        const lines = prepareOutputLines(rawOutput, options);
+
+        if (lines.length === 0) {
+          let text = formatBashNoOutputLine(getStringField(context?.args, "command"), theme);
+          if (config.showTruncationHints) {
+            text += formatBashTruncationHints(details, theme);
+          }
+          return textResult(text);
+        }
+
+        if (config.bashOutputMode === "summary") {
+          if (options.expanded) {
+            const maxLines = getExpandedPreviewLineLimit(lines, config);
+            return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
+          }
+
+          let summary = formatBashSummary(
+            lines,
+            details,
+            theme,
+            config.showTruncationHints,
+          );
+          summary += formatExpandHint(theme);
+          if (config.showTruncationHints) {
+            summary += formatBashTruncationHints(details, theme);
+          }
+          return textResult(summary);
+        }
+
+        if (config.bashOutputMode === "preview") {
+          const maxLines = options.expanded
+            ? getExpandedPreviewLineLimit(lines, config)
+            : config.previewLines;
+          return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
+        }
+
+        if (!options.expanded && config.bashCollapsedLines === 0) {
+          let hidden = theme.fg("muted", "↳ output hidden");
+          if (config.showTruncationHints) {
+            hidden += formatBashTruncationHints(details, theme);
+          }
+          return textResult(hidden);
+        }
+
+        const maxLines = options.expanded
+          ? lines.length
+          : config.bashCollapsedLines;
+        let text = buildPreviewText(lines, maxLines, theme, options.expanded);
+        if (config.showTruncationHints) {
+          text += formatBashTruncationHints(details, theme);
+        }
+        return textResult(text);
+      };
       return {
         renderCall(args, theme, context) {
           return renderBashCall(args, theme, context as never);
         },
         renderResult(result, options, theme, context) {
           const config = getConfig();
-          const details = result.details as BashToolDetails | undefined;
-          const rawOutput = extractTextOutput(result);
-
-          if (options.isPartial) {
-            return renderBashLivePreview(rawOutput, options, config, theme, details);
-          }
-
-          if (isToolError(result, context)) {
-            return renderBashErrorResult(rawOutput, options, config, theme, details);
-          }
-
-          const lines = prepareOutputLines(rawOutput, options);
-
-          if (lines.length === 0) {
-            let text = formatBashNoOutputLine(getStringField(context?.args, "command"), theme);
-            if (config.showTruncationHints) {
-              text += formatBashTruncationHints(details, theme);
-            }
-            return textResult(text);
-          }
-
-          if (config.bashOutputMode === "summary") {
-            if (options.expanded) {
-              const maxLines = getExpandedPreviewLineLimit(lines, config);
-              return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
-            }
-
-            let summary = formatBashSummary(
-              lines,
-              details,
-              theme,
-              config.showTruncationHints,
+          if (config.tidyCards) {
+            return renderTidyResult("bash", result as never, options, config, theme, context, () =>
+              classicBashResult(result as never, options, theme, context, config),
             );
-            summary += formatExpandHint(theme);
-            if (config.showTruncationHints) {
-              summary += formatBashTruncationHints(details, theme);
-            }
-            return textResult(summary);
           }
-
-          if (config.bashOutputMode === "preview") {
-            const maxLines = options.expanded
-              ? getExpandedPreviewLineLimit(lines, config)
-              : config.previewLines;
-            return renderBashPreviewWithHints(lines, maxLines, config, theme, options, details);
-          }
-
-          if (!options.expanded && config.bashCollapsedLines === 0) {
-            let hidden = theme.fg("muted", "↳ output hidden");
-            if (config.showTruncationHints) {
-              hidden += formatBashTruncationHints(details, theme);
-            }
-            return textResult(hidden);
-          }
-
-          const maxLines = options.expanded
-            ? lines.length
-            : config.bashCollapsedLines;
-          let text = buildPreviewText(lines, maxLines, theme, options.expanded);
-          if (config.showTruncationHints) {
-            text += formatBashTruncationHints(details, theme);
-          }
-          return textResult(text);
+          return classicBashResult(result as never, options, theme, context, config);
         },
       };
+    }
   }
   return undefined;
 }

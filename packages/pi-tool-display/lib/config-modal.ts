@@ -42,6 +42,7 @@ function summarizeConfig(config: ToolDisplayConfig, capabilities: ToolDisplayCap
 	const preset = detectToolDisplayPreset(config);
 	const parts = [
 		`preset=${preset}`,
+		`cards=${toOnOff(config.tidyCards)}`,
 		`owners={${toolOwnershipSummary(config)}}`,
 		`userBox=${toOnOff(config.enableNativeUserMessageBox)}`,
 		`read=${config.readOutputMode}`,
@@ -116,6 +117,26 @@ function buildInspectorSettings(
 			]),
 			inspectorPath: configPath,
 			searchTerms: ["verbosity", "profile", "layout", "custom", ...TOOL_DISPLAY_PRESETS],
+		},
+		{
+			id: "tidyCards",
+			label: "Tidy tool cards",
+			currentValue: toOnOff(config.tidyCards),
+			values: ["on", "off"],
+			inspectorTitle: "Tidy Tool Cards",
+			inspectorSummary: [
+				"Renders built-in tool calls as compact two-line cards: an icon and target on the first line, a short result summary on the second.",
+				"Cards stay collapsed by default; Ctrl+O expands a card to the full tool output or diff, matching Pi's native expansion.",
+			],
+			inspectorOptions: [
+				"on — compact collapsed tool cards (tidy style)",
+				"off — classic tool header and output modes",
+			],
+			inspectorAdvanced: buildAdvancedNotes(config, capabilities, [
+				"Turning this off keeps every other feature active: output modes, diffs, pending previews, and thinking labels are unchanged.",
+			]),
+			inspectorPath: configPath,
+			searchTerms: ["tidy", "compact", "collapsed", "cards", "ctrl+o", "expand"],
 		},
 		{
 			id: "readOutputMode",
@@ -344,6 +365,11 @@ function applySetting(config: ToolDisplayConfig, id: string, value: string): Too
 			const parsed = parseToolDisplayPreset(value);
 			return parsed ? applyPreset(parsed) : config;
 		}
+		case "tidyCards":
+			return {
+				...config,
+				tidyCards: value === "on",
+			};
 		case "enableNativeUserMessageBox":
 			return {
 				...config,

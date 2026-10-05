@@ -206,6 +206,7 @@ export function normalizeToolDisplayConfig(raw: unknown): ToolDisplayConfig {
 
 	return {
 		enabled: toBoolean(source.enabled, DEFAULT_TOOL_DISPLAY_CONFIG.enabled),
+		tidyCards: toBoolean(source.tidyCards, DEFAULT_TOOL_DISPLAY_CONFIG.tidyCards),
 		registerToolOverrides: normalizeToolOverrideOwnership(
 			source.registerToolOverrides,
 			source.registerReadToolOverride,

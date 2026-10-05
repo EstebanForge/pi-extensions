@@ -63,6 +63,7 @@ function configsEqual(a: ToolDisplayConfig, b: ToolDisplayConfig): boolean {
 	return (
 		toolOverrideOwnershipEqual(a, b) &&
 		customToolOverridesEqual(a, b) &&
+		a.tidyCards === b.tidyCards &&
 		a.enableNativeUserMessageBox === b.enableNativeUserMessageBox &&
 		a.readOutputMode === b.readOutputMode &&
 		a.searchOutputMode === b.searchOutputMode &&

@@ -40,6 +40,8 @@ function buildConfig(overrides: Partial<ToolDisplayConfig>): ToolDisplayConfig {
 	return {
 		...DEFAULT_TOOL_DISPLAY_CONFIG,
 		...overrides,
+		// Classic rendering is the subject of this suite; tidy cards have their own tests.
+		tidyCards: false,
 		registerToolOverrides: {
 			...DEFAULT_TOOL_DISPLAY_CONFIG.registerToolOverrides,
 			...overrides.registerToolOverrides,

@@ -9,6 +9,8 @@ OpenCode-style tool rendering for the [Pi coding agent](https://pi.dev).
 
 `pi-tool-display` keeps tool calls compact by default, adds richer diff rendering for file edits, and improves a few core chat UI details such as thinking labels and the native user prompt box.
 
+Built-in tool calls render as **tidy cards**: a one-line header with an icon, tool name, and target, plus a one-line result summary. Cards stay collapsed; `Ctrl+O` expands one to the full output or diff using Pi's native expansion.
+
 <img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/777944a2-18b2-4642-b035-2c703a5abb1b" />
 
 <img width="978" height="670" alt="image" src="https://github.com/user-attachments/assets/122b69ce-6c99-4aaa-ba93-236f97a1d8b4" />
@@ -20,7 +22,8 @@ OpenCode-style tool rendering for the [Pi coding agent](https://pi.dev).
 
 ## Features
 
-- **Compact built-in tool rendering** for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write`
+- **Tidy tool cards (on by default)** for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write`: icon + target header, one-line result summary, collapsed by default, and full output on `Ctrl+O`
+- **Compact built-in tool rendering** for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write` when tidy cards are off
 - **MCP-aware rendering** with hidden, summary, and preview modes
 - **Opt-in custom tool overrides** for noisy extension tools, defaulting to generic rendering unless `kind: "mcp"` is selected
 - **Adaptive edit/write diffs** with split or unified layouts, syntax highlighting, inline emphasis, and narrow-pane width clamping
@@ -67,6 +70,7 @@ Open the settings modal:
 The modal exposes the day-to-day controls most people change regularly:
 
 - preset profile
+- tidy tool cards
 - read output mode
 - grep/find/ls output mode
 - MCP output mode (when MCP is available)
@@ -133,6 +137,7 @@ A starter template is included at `config/config.example.json`.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `debug` | boolean | `false` | Opt-in file logging for extension diagnostics; missing values are treated as `false` |
+| `tidyCards` | boolean | `true` | Render built-in tool calls as compact collapsed cards; `Ctrl+O` expands to full output. Turn off to fall back to the classic header + output-mode rendering |
 | `registerToolOverrides` | object | all `true` | Built-in tool ownership flags |
 | `customToolOverrides` | object | `{}` | Explicit opt-in rendering rules for non-built-in extension tools |
 | `enableNativeUserMessageBox` | boolean | `true` | Enable bordered user prompt rendering |
@@ -231,6 +236,7 @@ Notes:
 ```json
 {
   "debug": false,
+  "tidyCards": true,
   "registerToolOverrides": {
     "read": true,
     "grep": true,
@@ -276,6 +282,23 @@ Notes:
 Debug logging is disabled by default. Set `debug` to `true` in the extension root `config.json` only when collecting diagnostics; missing or non-`true` values are treated as `false`. When enabled, diagnostics are appended to `debug/debug.log` under a runtime-created `debug/` directory, and no debug output is written to the terminal.
 
 ## Rendering notes
+
+### Tidy tool cards
+
+With `tidyCards` on (the default), owned built-in tools render as two-line cards:
+
+```text
+📖 read src/auth.ts
+  → 8 lines
+⚡ (bash keeps its native `$ command` line with the live spinner)
+  → 3 lines
+✏️ edit src/auth.ts (1 line)
+  → +1/-1
+```
+
+The first line is the icon, tool name, and argument target; the second line is a short result summary colored by outcome (green counts, red failures, `+adds/-dels` for edits). `bash` keeps its native `$ command` header with the live spinner, so only its result line becomes a card. Cards are collapsed by default; `Ctrl+O` expands the card in place — reads, searches, and bash show the full output, edits and writes show the full diff renderer. Errors collapse to `→ failed: <first error line>` and expand to the full error output.
+
+Tidy mode replaces the collapsed presentation only: output modes, bash live output while a command streams, pending edit/write previews, RTK and truncation hints, and MCP/custom tool rendering all still apply. Setting `tidyCards: false` restores the classic header + output-mode rendering exactly; no other feature changes. Unlike pi-tidy-tools, no extra model-facing parameter is injected — the card target comes from the tool's own arguments.
 
 ### Edit and write diffs
 

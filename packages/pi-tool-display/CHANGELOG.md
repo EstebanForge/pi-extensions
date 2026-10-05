@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 (2026-10-05)
+
+### Added
+- Tidy tool cards: owned built-in tools (read, grep, find, ls, bash, edit, write) render as two-line cards, with an icon, tool name, and argument target on the first line and a short colored result summary on the second. Cards stay collapsed and `Ctrl+O` expands one in place to the full output, or to the full diff renderer for edit and write. Unlike pi-tidy-tools, no model-facing parameter is injected; card targets come from each tool's own arguments.
+- `tidyCards` config key (default on) with a "Tidy tool cards" toggle at the top of the `/tool-display` modal. Turning it off restores the previous rendering exactly: output modes, bash live output, pending previews, RTK and truncation hints, and MCP/custom tool rendering are unaffected either way. The branch happens at render time, so modal changes apply without `/reload`, and subagent children pick the mode up through the shared renderer factory.
+
 ## 1.1.0 (2026-10-02)
 
 ### Added

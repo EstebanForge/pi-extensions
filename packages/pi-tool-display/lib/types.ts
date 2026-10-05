@@ -46,6 +46,7 @@ export interface CustomToolOverrideConfig {
 
 export interface ToolDisplayConfig {
 	enabled: boolean;
+	tidyCards: boolean;
 	registerToolOverrides: ToolOverrideOwnership;
 	customToolOverrides: Record<string, CustomToolOverrideConfig>;
 	enableNativeUserMessageBox: boolean;
@@ -68,6 +69,7 @@ export interface ToolDisplayConfig {
 
 export const DEFAULT_TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 	enabled: true,
+	tidyCards: true,
 	registerToolOverrides: {
 		read: true,
 		grep: true,
