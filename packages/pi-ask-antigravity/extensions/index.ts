@@ -112,12 +112,16 @@ type Mode = "plan" | "accept-edits";
 // whose full string equals the overlay target, the live entry wins. When it
 // does not (older agy, missing model, plan gate), the overlay entry resolves
 // the alias so the user can still type "sonnet" and get a working answer.
-//   "sonnet"   -> claude-sonnet-4-6
-//   "opus"     -> claude-opus-4-6-thinking
+//   "sonnet"   -> claude-sonnet-5-5 (tiered low/medium/high like Gemini)
+//   "opus"     -> claude-opus-5-5 (tiered low/medium/high like Gemini)
 //   "gpt-oss"  -> gpt-oss-120b-medium
 const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
-	{ full: "claude-sonnet-4-6", family: "other", version: null, tier: null },
-	{ full: "claude-opus-4-6-thinking", family: "other", version: null, tier: null },
+	{ full: "claude-sonnet-5-5-low", family: "other", version: null, tier: "low" },
+	{ full: "claude-sonnet-5-5-medium", family: "other", version: null, tier: "medium" },
+	{ full: "claude-sonnet-5-5-high", family: "other", version: null, tier: "high" },
+	{ full: "claude-opus-5-5-low", family: "other", version: null, tier: "low" },
+	{ full: "claude-opus-5-5-medium", family: "other", version: null, tier: "medium" },
+	{ full: "claude-opus-5-5-high", family: "other", version: null, tier: "high" },
 	{ full: "gpt-oss-120b-medium", family: "other", version: null, tier: null },
 ];
 
@@ -126,8 +130,8 @@ const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
 // not match. The overlay entries are also merged into the live catalog for
 // exact-string passthrough, so this map only needs to cover the short names.
 const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
-	["sonnet", "claude-sonnet-4-6"],
-	["opus", "claude-opus-4-6-thinking"],
+	["sonnet", "claude-sonnet-5-5"],
+	["opus", "claude-opus-5-5"],
 	["gpt-oss", "gpt-oss-120b-medium"],
 ]);
 
@@ -466,14 +470,16 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
 	return sorted[0] ?? preferred;
 }
 
-/** Build the argv-facing resolution from a picked catalog entry. Gemini bases
- *  (slugs starting "gemini-") accept a separate --effort, so split the tier
- *  suffix out of the slug: the base alone (gemini-3.6-flash) is what --model
- *  wants, and the tier goes to --effort. Fixed-thinking families keep agy's
- *  exact slug even when it carries a -medium suffix (gpt-oss-120b-medium):
- *  agy rejects --effort for them, so the suffix stays part of the slug. */
+/** Build the argv-facing resolution from a picked catalog entry. Gemini and
+ *  Claude bases (slugs starting "gemini-"/"claude-") accept a separate
+ *  --effort, so split the tier suffix out of the slug: the base alone
+ *  (claude-sonnet-5-5) is what --model wants, and the tier goes to --effort
+ *  (agy rejects a bare base: "requires --effort"). Fixed-thinking families
+ *  keep agy's exact slug even when it carries a -medium suffix
+ *  (gpt-oss-120b-medium): agy rejects --effort for them, so the suffix stays
+ *  part of the slug. */
 function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
-	if (tier && full.toLowerCase().startsWith("gemini-")) {
+	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
 		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
 	}
 	return { model: full };
@@ -510,6 +516,19 @@ export function resolveModel(
 	//     the model under different casing than the overlay.
 	if (STATIC_SHORT_ALIAS.has(lower)) {
 		const target = STATIC_SHORT_ALIAS.get(lower) as string;
+		// Tiered bases (Claude ships low/medium/high like Gemini): pick the
+		// catalog variant nearest the requested tier. Only gpt-oss resolves to
+		// a fixed full slug.
+		const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${target}-`));
+		if (variants.length > 0) {
+			const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
+			const preferred =
+				preferredTier ??
+				(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
+			const chosen = nearestTier(tiers, preferred);
+			const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
+			return toResolved(picked.full, picked.tier);
+		}
 		const fromCatalog = entries.find((e) => e.full.toLowerCase() === target.toLowerCase());
 		return toResolved(fromCatalog?.full ?? target, fromCatalog?.tier ?? null);
 	}
