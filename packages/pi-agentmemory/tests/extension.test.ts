@@ -134,6 +134,38 @@ describe("status bar resilience", () => {
     expect(res.systemPrompt).toContain("still try the memory tools");
   });
 
+  // Engine watermark state: /health can answer 200 with status "critical"
+  // (older builds) while reads and writes keep serving. That is degraded,
+  // not down — the bar must not read off while the server works.
+  it("bar shows degraded (~) when health answers 200 with status critical", async () => {
+    const { pi, handlers, setStatus } = makeFakePi();
+    await factory(pi);
+    stubFetchQueue([jsonResponse(200, { status: "critical" })]);
+    await handlers.before_agent_start(
+      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      ctxOf(setStatus),
+    );
+    await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 agentmemory~");
+  });
+
+  // A future engine dialect must not read as off while the server serves:
+  // unrecognized status words defer to the livez probe like "unknown" does.
+  it("bar defers to livez when health answers 200 with an unrecognized status", async () => {
+    const { pi, handlers, setStatus } = makeFakePi();
+    await factory(pi);
+    stubFetchQueue([
+      jsonResponse(200, { status: "kryogenic" }), // /health, future word
+      jsonResponse(200, { status: "ok" }), // /livez
+    ]);
+    await handlers.before_agent_start(
+      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      ctxOf(setStatus),
+    );
+    await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 agentmemory~");
+  });
+
   it("bar stays off only when health AND livez both fail", async () => {
     const { pi, handlers, setStatus } = makeFakePi();
     await factory(pi);

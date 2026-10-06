@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.15 (2026-10-06)
+
+### Fixed
+- **The bar no longer reads off while the server serves under memory pressure.** `classifyHealth` mapped every non-healthy, non-degraded status to unhealthy, so a health response of `status: "critical"` — the engine's heap/RSS watermark state, which answers 503 fail-closed (or 200+critical on older builds) while reads and writes keep working — flipped the status line to off and agents obeying the label stopped calling the memory tools. `critical` now classifies as degraded, matching `isServerHealthy` in `server.ts`, which already treats it as reachable. The 503-with-livez path was already correct in 1.0.12; this closes the 200-with-critical path.
+- `tests/extension.test.ts`: health 200 with `status: "critical"` shows "agentmemory~", not off; an unrecognized status word now defers to the livez probe instead of reading off.
+
 ## 1.0.13 (2026-09-10)
 
 ### Fixed

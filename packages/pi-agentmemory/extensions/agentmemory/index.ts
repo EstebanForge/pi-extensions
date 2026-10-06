@@ -38,16 +38,21 @@ type HealthResponse = {
   };
 };
 
-// Classify a health response. `degraded` is operational (server up,
-// reads/writes work) just not pristine — treat as on, not off.
+// Classify a health response. `degraded` and `critical` are operational
+// (server up, reads/writes work) just not pristine — treat as on, not off.
+// `critical` is the engine's heap/RSS watermark state: it answers 503
+// fail-closed (or 200+critical on older builds) while still serving, so
+// it must read the same as degraded. server.ts already treats it as
+// reachable; the bar stays consistent with the tool path.
 type HealthClass = "healthy" | "degraded" | "unhealthy" | "unknown";
 
 function classifyHealth(health: HealthResponse | null): HealthClass {
   if (!health) return "unhealthy";
   const status = health.status || health.health?.status;
   if (status === "healthy") return "healthy";
-  if (status === "degraded") return "degraded";
-  if (status) return "unhealthy";
+  if (status === "degraded" || status === "critical") return "degraded";
+  if (status === "unhealthy") return "unhealthy";
+  // Unrecognized status word (future engine dialect): liveness decides.
   return "unknown";
 }
 
