@@ -149,7 +149,6 @@ test("entriesFromRaw: collapses Gemini and Claude bases, keeps fixed models", ()
 		"claude-opus-5-5-low",
 		"claude-opus-5-5-medium",
 		"claude-opus-5-5-high",
-		"gpt-oss-120b-medium",
 	].join("\n");
 	const summary = entriesFromRaw(raw).map((e) =>
 		e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id,
@@ -160,7 +159,6 @@ test("entriesFromRaw: collapses Gemini and Claude bases, keeps fixed models", ()
 		"gemini-3-1-pro[low/high]",
 		"claude-sonnet-5-5[low/medium/high]",
 		"claude-opus-5-5[low/medium/high]",
-		"gpt-oss-120b-medium",
 	]);
 });
 
@@ -210,7 +208,6 @@ test("entriesFromRaw: splits slug from label in agy's real two-column output", (
 		"claude-sonnet-5-5-low     Claude Sonnet 5.5 (Low)",
 		"claude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)",
 		"claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)",
-		"gpt-oss-120b-medium       GPT-OSS 120B (Medium)",
 	].join("\n");
 	const summary = entriesFromRaw(raw).map((e) =>
 		e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id,
@@ -220,8 +217,20 @@ test("entriesFromRaw: splits slug from label in agy's real two-column output", (
 		"gemini-3-1-pro[low/high]",
 		"claude-opus-5-5[low/medium/high]",
 		"claude-sonnet-5-5[low/medium/high]",
-		"gpt-oss-120b-medium",
 	]);
+});
+
+// Hidden families never register, even while `agy models` still lists them:
+// the single fixed slug goes away upstream next month and nobody used it.
+test("entriesFromRaw: drops hidden families outright", () => {
+	const raw = [
+		"gemini-3.8-flash-high",
+		"gemini-3.8-flash-low",
+		"gpt-oss-120b-medium",
+		"gpt-oss-999b-medium",
+	].join("\n");
+	const ids = entriesFromRaw(raw).map((e) => e.id);
+	assert.deepEqual(ids, ["gemini-3-8-flash"]);
 });
 
 // A banner word split from its line (col1 = "Available") is NOT a model slug.
@@ -256,18 +265,18 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 		id: "claude-sonnet-5-5",
 		efforts: ["low", "medium", "high"],
 	});
-	const gptoss = toPiModel({ full: "gpt-oss-120b-medium", id: "gpt-oss-120b-medium" });
+	const unverified = toPiModel({ full: "futuremodel-x-medium", id: "futuremodel-x-medium" });
 
 	assert.equal(flash.reasoning, true);
 	assert.equal(pro.reasoning, true);
 	assert.equal(claude.reasoning, true);
-	assert.equal(gptoss.reasoning, false);
+	assert.equal(unverified.reasoning, false);
 
 	// off/minimal always hidden (agy has no no-thinking); Pro also hides medium.
 	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null });
 	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null });
 	assert.deepEqual(claude.thinkingLevelMap, { off: null, minimal: null });
-	assert.equal(gptoss.thinkingLevelMap, undefined);
+	assert.equal(unverified.thinkingLevelMap, undefined);
 });
 
 // --- spawnAgyModelsRaw stdout cap -------------------------------------------

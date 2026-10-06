@@ -57,8 +57,7 @@ const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
 // Live catalog entries win on case-insensitive full-string equality; the
 // overlay resolves the alias when agy doesn't list it. Names are agy's stable
 // slugs (the same ids `agy models` prints and `--model` accepts). Claude ships
-// tiered like Gemini now, so the overlay carries the full tier spread; only
-// gpt-oss stays a fixed single slug.
+// tiered like Gemini now, so the overlay carries the full tier spread.
 const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
 	{ full: "claude-sonnet-5-5-low", family: "other", version: null, tier: "low" },
 	{ full: "claude-sonnet-5-5-medium", family: "other", version: null, tier: "medium" },
@@ -66,12 +65,10 @@ const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
 	{ full: "claude-opus-5-5-low", family: "other", version: null, tier: "low" },
 	{ full: "claude-opus-5-5-medium", family: "other", version: null, tier: "medium" },
 	{ full: "claude-opus-5-5-high", family: "other", version: null, tier: "high" },
-	{ full: "gpt-oss-120b-medium", family: "other", version: null, tier: null },
 ];
 const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
 	["sonnet", "claude-sonnet-5-5"],
 	["opus", "claude-opus-5-5"],
-	["gpt-oss", "gpt-oss-120b-medium"],
 ]);
 
 // agy conversation ids are UUID DB-stems. First char must be alphanumeric so a
@@ -174,10 +171,9 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
  *  Claude bases (slugs starting "gemini-"/"claude-") accept a separate
  *  --effort, so split the tier suffix out of the slug: the base alone
  *  (claude-sonnet-5-5) is what --model wants, and the tier goes to --effort
- *  (agy rejects a bare base: "requires --effort"). Fixed-thinking families
- *  keep agy's exact slug even when it carries a -medium suffix
- *  (gpt-oss-120b-medium): agy rejects --effort for them, so the suffix stays
- *  part of the slug. */
+ *  (agy rejects a bare base: "requires --effort"). Only unverified families
+ *  keep agy's exact slug whole, so an unknown suffix can never trigger an
+ *  unsupported --effort. */
 function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
 		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
@@ -205,8 +201,7 @@ export function resolveModel(
 	if (STATIC_SHORT_ALIAS.has(lower)) {
 		const target = STATIC_SHORT_ALIAS.get(lower) as string;
 		// Tiered bases (Claude ships low/medium/high like Gemini): pick the
-		// catalog variant nearest the requested tier. Only gpt-oss resolves to
-		// a fixed full slug.
+		// catalog variant nearest the requested tier.
 		const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${target}-`));
 		if (variants.length > 0) {
 			const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
@@ -273,11 +268,18 @@ export function resolveModel(
 	return toResolved(picked.full, picked.tier);
 }
 
+/** Families dropped outright even while `agy models` still lists them (same
+ *  policy as models.ts HIDDEN_FAMILY_RE): never offered, never resolved. */
+const HIDDEN_FAMILY_RE = /^gpt-oss-/;
+
 /** Parse raw `agy models` text into tool-catalog entries (all families, plus
- *  the static sonnet/opus/gpt-oss overlay). Pure: no spawn. */
+ *  the static sonnet/opus overlay). Pure: no spawn. */
 export function toolModelsFromRaw(raw: string): ModelEntry[] {
 	return mergeCatalog(
-		raw.split("\n").map(parseModelLine).filter((e): e is ModelEntry => e !== null),
+		raw
+			.split("\n")
+			.map(parseModelLine)
+			.filter((e): e is ModelEntry => e !== null && !HIDDEN_FAMILY_RE.test(e.full)),
 	);
 }
 

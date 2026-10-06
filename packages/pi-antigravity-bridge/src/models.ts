@@ -7,16 +7,16 @@
 //   gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)   (+ -low)
 //   gemini-3.1-pro-high       Gemini 3.1 Pro (High)        (Pro has NO medium)
 //   claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)     (+ -medium, -low)
-//   gpt-oss-120b-medium       GPT-OSS 120B (Medium)        (fixed, no tiers)
 //
 // Gemini AND Claude models are collapsed to a BASE slug (gemini-3.8-flash,
 // claude-sonnet-5-5) and exposed with a thinking-effort toggle whose levels
 // match exactly the tiers agy offers that base (verified: Pro rejects medium;
 // Claude 5.5 accepts low/medium/high). The picked level is sent as agy
 // --effort; a bare base slug is INVALID on its own (agy: "requires --effort"),
-// so effort is always passed. Only GPT-OSS keeps agy's exact slug with no
-// toggle: its thinking is fixed and agy rejects --effort for it. Google's
-// Antigravity subscription bills all of these through agy.
+// so effort is always passed. Only unverified families keep agy's exact slug
+// with no toggle, so an unknown future family degrades safely; the retired
+// gpt-oss family is dropped outright (HIDDEN_FAMILY_RE). Google's Antigravity
+// subscription bills all of these through agy.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -82,8 +82,9 @@ export function toAgyEffort(
 }
 
 /** Split an agy slug into (base, tier). tier is null when the slug has no
- *  -high/-medium/-low suffix (claude-sonnet-4-6, gpt-oss-120b-medium's "medium"
- *  IS its suffix here, claude-opus-4-6-thinking is not a tier). */
+ *  -high/-medium/-low suffix - a shape only unverified families should
+ *  produce now, and those stay whole. Every Claude slug carries a tier
+ *  suffix and collapses to its base. */
 const TIER_RE = /^(.+)-(high|medium|low)$/;
 
 /** agy emits clean slug ids (gemini-3.6-flash-high). Validate col1 of each
@@ -103,9 +104,14 @@ const MODEL_LINE_RE = /^[A-Za-z0-9][A-Za-z0-9._]*-[A-Za-z0-9._-]*$/;
  *  rejected ("requires --effort"). */
 const EFFORT_CAPABLE_FAMILIES: readonly RegExp[] = [/^gemini-/, /^claude-/];
 
+/** Families dropped outright, even while `agy models` still lists them: the
+ *  fixed-thinking single slug loses to the cheaper effort-tiered options and
+ *  its removal upstream is already announced, so we stop offering it now. */
+const HIDDEN_FAMILY_RE = /^gpt-oss-/;
+
 export interface AgyModelEntry {
 	/** Exact agy --model string to pass: a base slug ("gemini-3.8-flash") when
-	 *  effort-driven, else agy's full qualified slug ("gpt-oss-120b-medium"). */
+	 *  effort-driven, else agy's full qualified slug (unverified family). */
 	full: string;
 	/** pi model id, e.g. "gemini-3-8-flash". */
 	id: string;
@@ -290,8 +296,9 @@ export async function loadModelCatalogRaw(
  *  Effort-driven bases (>= 2 tier variants in the catalog, verified
  *  effort-capable family) collapse to one BASE-slug entry carrying the tiers
  *  they accept. Models with 0 or 1 tier variants keep agy's exact qualified
- *  slug: a single suffix (gpt-oss-120b-medium) means fixed thinking, where
- *  --effort is unsupported. Insertion order of first-seen bases is preserved. */
+ *  slug: without a verified effort-capable family match, --effort is never
+ *  risked. Hidden families are dropped outright. Insertion order of
+ *  first-seen bases is preserved. */
 export function entriesFromRaw(raw: string): AgyModelEntry[] {
 	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
 	// slug, so split col1 and validate THAT; the label is display-only. A
@@ -301,6 +308,7 @@ export function entriesFromRaw(raw: string): AgyModelEntry[] {
 	for (const line of raw.split("\n")) {
 		const slug = line.trim().split(/\s+/)[0] ?? "";
 		if (!slug || !MODEL_LINE_RE.test(slug)) continue;
+		if (HIDDEN_FAMILY_RE.test(slug)) continue;
 		const m = TIER_RE.exec(slug);
 		const base = m ? (m[1] as string) : slug;
 		const tier = m ? (m[2] as AgyEffort) : null;
@@ -368,8 +376,8 @@ export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> =
 		// sentinel that no built-in provider claims, so it can never collide.
 		baseUrl: "agy-bridge://antigravity",
 		// reasoning=true only for effort-driven bases => pi shows the toggle.
-		// Fixed models (GPT-OSS) get no toggle: their thinking can't be changed
-		// and agy rejects --effort for them.
+		// Unverified families get no toggle: --effort support is unknown, so
+		// none is ever sent.
 		reasoning: effortDriven,
 		...(effortDriven ? { thinkingLevelMap: thinkingLevelMapFor(entry.efforts!) } : {}),
 		// Input advertising comes from the caller (engine-dependent): the ACP
