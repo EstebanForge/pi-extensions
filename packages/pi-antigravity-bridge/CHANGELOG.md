@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.9] - 2026-10-06
+
+### Changed
+
+- **Breaking: Claude models are effort-tiered now, and the ids moved to the Claude 5.5 family.** Google retired Claude 4.6 on Antigravity and ships Claude Opus 5.5 (2026-09-22) and Claude Sonnet 5.5 (2026-09-28) in its place, each with low/medium/high thinking tiers - the same shape Gemini already had. Claude joins the verified effort-capable families (probed live 2026-10: base slug + `--effort` accepted; a bare base is rejected with "requires --effort"), so `claude-opus-5-5` and `claude-sonnet-5-5` register as single toggleable models whose turns always send `--effort`, instead of per-tier fixed ids. The catalog fixtures and the no-`agy models` fallback now carry the current lineup (Gemini 3.8/3.7/3.6 flash, 3.1 pro, Claude 5.5 pair); `gpt-oss-120b-medium` stays the one fixed-thinking model. A pattern pinned to `antigravity/claude-sonnet-4-6` (settings enabledModels, `--model`, or a scoped-model config) matches nothing after agy's upgrade and must move to `antigravity/claude-sonnet-5-5`.
+
 ## [1.7.8] - 2026-09-30
 
 ### Fixed

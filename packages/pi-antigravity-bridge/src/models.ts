@@ -2,20 +2,21 @@
 // they appear in the /model picker as antigravity/<slug>.
 //
 // agy prints TWO columns per line: "<slug>  <display label>". --model takes
-// ONLY the slug (col 1); the label is display-only. Verified live, e.g.:
-//   gemini-3.6-flash-high     Gemini 3.6 Flash (High)
-//   gemini-3.6-flash-medium   Gemini 3.6 Flash (Medium)   (+ -low)
+// ONLY the slug (col 1); the label is display-only. Verified live 2026-10:
+//   gemini-3.8-flash-high     Gemini 3.8 Flash (High)
+//   gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)   (+ -low)
 //   gemini-3.1-pro-high       Gemini 3.1 Pro (High)        (Pro has NO medium)
-//   claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking) (fixed, no tiers)
+//   claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)     (+ -medium, -low)
 //   gpt-oss-120b-medium       GPT-OSS 120B (Medium)        (fixed, no tiers)
 //
-// Gemini models are collapsed to a BASE slug (gemini-3.6-flash) and exposed
-// with a thinking-effort toggle whose levels match exactly the tiers agy
-// offers that base (verified: Pro rejects medium). The picked level is sent as
-// agy --effort; a base slug is INVALID on its own, so effort is always passed.
-// Claude and GPT-OSS keep agy's exact slug with no toggle: their thinking is
-// fixed and agy rejects --effort for them. Google's Antigravity subscription
-// bills all of these through agy.
+// Gemini AND Claude models are collapsed to a BASE slug (gemini-3.8-flash,
+// claude-sonnet-5-5) and exposed with a thinking-effort toggle whose levels
+// match exactly the tiers agy offers that base (verified: Pro rejects medium;
+// Claude 5.5 accepts low/medium/high). The picked level is sent as agy
+// --effort; a bare base slug is INVALID on its own (agy: "requires --effort"),
+// so effort is always passed. Only GPT-OSS keeps agy's exact slug with no
+// toggle: its thinking is fixed and agy rejects --effort for it. Google's
+// Antigravity subscription bills all of these through agy.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -97,14 +98,16 @@ const MODEL_LINE_RE = /^[A-Za-z0-9][A-Za-z0-9._]*-[A-Za-z0-9._-]*$/;
  *  to a base slug with a thinking toggle. Any other family stays as agy's exact
  *  qualified slug (always valid on its own), so an unknown or fixed-thinking
  *  family degrades safely instead of forcing an unsupported --effort. Add a
- *  family here only after confirming base+--effort is accepted for it. */
-const EFFORT_CAPABLE_FAMILIES: readonly RegExp[] = [/^gemini-/];
+ *  family here only after confirming base+--effort is accepted for it.
+ *  Claude 5.5 verified live 2026-10: base+--effort accepted; a bare base is
+ *  rejected ("requires --effort"). */
+const EFFORT_CAPABLE_FAMILIES: readonly RegExp[] = [/^gemini-/, /^claude-/];
 
 export interface AgyModelEntry {
-	/** Exact agy --model string to pass: a base slug ("gemini-3.6-flash") when
-	 *  effort-driven, else agy's full qualified slug ("claude-opus-4-6-thinking"). */
+	/** Exact agy --model string to pass: a base slug ("gemini-3.8-flash") when
+	 *  effort-driven, else agy's full qualified slug ("gpt-oss-120b-medium"). */
 	full: string;
-	/** pi model id, e.g. "gemini-3-6-flash". */
+	/** pi model id, e.g. "gemini-3-8-flash". */
 	id: string;
 	/** Present iff this is an effort-driven base slug. Lists the tiers agy
 	 *  accepts for it; pi's thinking toggle picks among them and we always pass
@@ -284,11 +287,11 @@ export async function loadModelCatalogRaw(
 
 /** Parse raw `agy models` text into the provider's model entries.
  *
- *  Effort-driven Gemini bases (>= 2 tier variants in the catalog) collapse to
- *  one BASE-slug entry carrying the tiers they accept. Models with 0 or 1 tier
- *  variants keep agy's exact qualified slug: a single suffix (gpt-oss-120b-
- *  medium) or none (claude-sonnet-4-6) means fixed thinking, where --effort is
- *  unsupported. Insertion order of first-seen bases is preserved. */
+ *  Effort-driven bases (>= 2 tier variants in the catalog, verified
+ *  effort-capable family) collapse to one BASE-slug entry carrying the tiers
+ *  they accept. Models with 0 or 1 tier variants keep agy's exact qualified
+ *  slug: a single suffix (gpt-oss-120b-medium) means fixed thinking, where
+ *  --effort is unsupported. Insertion order of first-seen bases is preserved. */
 export function entriesFromRaw(raw: string): AgyModelEntry[] {
 	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
 	// slug, so split col1 and validate THAT; the label is display-only. A
@@ -365,8 +368,8 @@ export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> =
 		// sentinel that no built-in provider claims, so it can never collide.
 		baseUrl: "agy-bridge://antigravity",
 		// reasoning=true only for effort-driven bases => pi shows the toggle.
-		// Fixed models (Claude/GPT-OSS) get no toggle: their thinking can't be
-		// changed and agy rejects --effort for them.
+		// Fixed models (GPT-OSS) get no toggle: their thinking can't be changed
+		// and agy rejects --effort for them.
 		reasoning: effortDriven,
 		...(effortDriven ? { thinkingLevelMap: thinkingLevelMapFor(entry.efforts!) } : {}),
 		// Input advertising comes from the caller (engine-dependent): the ACP
@@ -386,9 +389,9 @@ export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> =
  *  can still select a model and get a clear runtime error instead of an empty
  *  list. Update these when agy ships new Gemini versions. */
 export const FALLBACK_MODELS: AgyModelEntry[] = [
-	{ full: "gemini-3.7-flash", id: "gemini-3-7-flash", efforts: ["low", "medium", "high"] },
+	{ full: "gemini-3.8-flash", id: "gemini-3-8-flash", efforts: ["low", "medium", "high"] },
 	{ full: "gemini-3.1-pro", id: "gemini-3-1-pro", efforts: ["low", "high"] },
-	{ full: "claude-sonnet-4-6", id: "claude-sonnet-4-6" },
+	{ full: "claude-sonnet-5-5", id: "claude-sonnet-5-5", efforts: ["low", "medium", "high"] },
 ];
 
 

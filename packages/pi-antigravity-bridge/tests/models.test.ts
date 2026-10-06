@@ -128,40 +128,45 @@ test("loadModelCatalogRaw: corrupt cache is treated as no cache (spawns fresh)",
 
 // --- entriesFromRaw: collapses effort-driven bases, keeps fixed models -------
 
-// Gemini bases with >= 2 tier variants collapse to one BASE-slug entry whose
-// `efforts` lists exactly what agy accepts (Pro keeps only low/high). Models
-// with 0 or 1 tier variants keep agy's exact qualified slug: fixed thinking,
-// where --effort is unsupported.
-test("entriesFromRaw: collapses Gemini bases and keeps fixed models", () => {
+// Gemini and Claude bases with >= 2 tier variants collapse to one BASE-slug
+// entry whose `efforts` lists exactly what agy accepts (Pro keeps only
+// low/high; Claude 5.5 ships low/medium/high). Models with 0 or 1 tier
+// variants keep agy's exact qualified slug: fixed thinking, where --effort is
+// unsupported.
+test("entriesFromRaw: collapses Gemini and Claude bases, keeps fixed models", () => {
 	const raw = [
+		"gemini-3.8-flash-high",
+		"gemini-3.8-flash-medium",
+		"gemini-3.8-flash-low",
 		"gemini-3.6-flash-high",
 		"gemini-3.6-flash-medium",
 		"gemini-3.6-flash-low",
-		"gemini-3.5-flash-high",
-		"gemini-3.5-flash-medium",
-		"gemini-3.5-flash-low",
 		"gemini-3.1-pro-high",
 		"gemini-3.1-pro-low",
-		"claude-sonnet-4-6",
-		"claude-opus-4-6-thinking",
+		"claude-sonnet-5-5-low",
+		"claude-sonnet-5-5-medium",
+		"claude-sonnet-5-5-high",
+		"claude-opus-5-5-low",
+		"claude-opus-5-5-medium",
+		"claude-opus-5-5-high",
 		"gpt-oss-120b-medium",
 	].join("\n");
 	const summary = entriesFromRaw(raw).map((e) =>
 		e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id,
 	);
 	assert.deepEqual(summary, [
+		"gemini-3-8-flash[low/medium/high]",
 		"gemini-3-6-flash[low/medium/high]",
-		"gemini-3-5-flash[low/medium/high]",
 		"gemini-3-1-pro[low/high]",
-		"claude-sonnet-4-6",
-		"claude-opus-4-6-thinking",
+		"claude-sonnet-5-5[low/medium/high]",
+		"claude-opus-5-5[low/medium/high]",
 		"gpt-oss-120b-medium",
 	]);
 });
 
 test("entriesFromRaw: trims and drops blank lines, keeps order", () => {
-	const ids = entriesFromRaw("\n  claude-sonnet-4-6  \n\n").map((e) => e.id);
-	assert.deepEqual(ids, ["claude-sonnet-4-6"]);
+	const ids = entriesFromRaw("\n  claude-sonnet-5-5-high  \n\n").map((e) => e.id);
+	assert.deepEqual(ids, ["claude-sonnet-5-5-high"]);
 });
 
 // Banner/auth lines and leading-dash tokens must never become models (the
@@ -194,27 +199,27 @@ test("entriesFromRaw: drops noise/leading-dash lines; non-gemini families stay q
 // whitespace splits to col1 = itself, so bare slugs still parse).
 test("entriesFromRaw: splits slug from label in agy's real two-column output", () => {
 	const raw = [
-		"gemini-3.6-flash-high     Gemini 3.6 Flash (High)",
-		"gemini-3.6-flash-medium   Gemini 3.6 Flash (Medium)",
-		"gemini-3.6-flash-low      Gemini 3.6 Flash (Low)",
-		"gemini-3.5-flash-high     Gemini 3.5 Flash (High)",
-		"gemini-3.5-flash-medium   Gemini 3.5 Flash (Medium)",
-		"gemini-3.5-flash-low      Gemini 3.5 Flash (Low)",
+		"gemini-3.8-flash-high     Gemini 3.8 Flash (High)",
+		"gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)",
+		"gemini-3.8-flash-low      Gemini 3.8 Flash (Low)",
 		"gemini-3.1-pro-high       Gemini 3.1 Pro (High)",
 		"gemini-3.1-pro-low        Gemini 3.1 Pro (Low)",
-		"claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)",
-		"claude-opus-4-6-thinking  Claude Opus 4.6 (Thinking)",
+		"claude-opus-5-5-low       Claude Opus 5.5 (Low)",
+		"claude-opus-5-5-medium    Claude Opus 5.5 (Medium)",
+		"claude-opus-5-5-high      Claude Opus 5.5 (High)",
+		"claude-sonnet-5-5-low     Claude Sonnet 5.5 (Low)",
+		"claude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)",
+		"claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)",
 		"gpt-oss-120b-medium       GPT-OSS 120B (Medium)",
 	].join("\n");
 	const summary = entriesFromRaw(raw).map((e) =>
 		e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id,
 	);
 	assert.deepEqual(summary, [
-		"gemini-3-6-flash[low/medium/high]",
-		"gemini-3-5-flash[low/medium/high]",
+		"gemini-3-8-flash[low/medium/high]",
 		"gemini-3-1-pro[low/high]",
-		"claude-sonnet-4-6",
-		"claude-opus-4-6-thinking",
+		"claude-opus-5-5[low/medium/high]",
+		"claude-sonnet-5-5[low/medium/high]",
 		"gpt-oss-120b-medium",
 	]);
 });
@@ -246,16 +251,23 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 		id: "gemini-3-1-pro",
 		efforts: ["low", "high"],
 	});
-	const claude = toPiModel({ full: "claude-sonnet-4-6", id: "claude-sonnet-4-6" });
+	const claude = toPiModel({
+		full: "claude-sonnet-5-5",
+		id: "claude-sonnet-5-5",
+		efforts: ["low", "medium", "high"],
+	});
+	const gptoss = toPiModel({ full: "gpt-oss-120b-medium", id: "gpt-oss-120b-medium" });
 
 	assert.equal(flash.reasoning, true);
 	assert.equal(pro.reasoning, true);
-	assert.equal(claude.reasoning, false);
+	assert.equal(claude.reasoning, true);
+	assert.equal(gptoss.reasoning, false);
 
 	// off/minimal always hidden (agy has no no-thinking); Pro also hides medium.
 	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null });
 	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null });
-	assert.equal(claude.thinkingLevelMap, undefined);
+	assert.deepEqual(claude.thinkingLevelMap, { off: null, minimal: null });
+	assert.equal(gptoss.thinkingLevelMap, undefined);
 });
 
 // --- spawnAgyModelsRaw stdout cap -------------------------------------------

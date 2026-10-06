@@ -1,9 +1,9 @@
 // Tests for the AskAntigravity tool's catalog parsing and alias resolution.
 //
 // agy prints TWO columns per line: "<slug>  <display label>". --model takes
-// only the slug (col 1); the label is display-only. Gemini bases split their
-// tier out to a separate --effort (the base slug alone is invalid); fixed
-// families (claude-*, gpt-oss-*) keep agy's exact slug with NO --effort.
+// only the slug (col 1); the label is display-only. Gemini and Claude bases
+// split their tier out to a separate --effort (the base slug alone is
+// invalid); fixed families (gpt-oss-*) keep agy's exact slug with NO --effort.
 // Run: npm test
 
 import assert from "node:assert/strict";
@@ -19,18 +19,23 @@ vi.mock("../src/mcp-registration.js", () => ({
 	acquireBridgeSuppression: () => () => {},
 }));
 
-// The REAL `agy models` stdout shape (verified live via `ct agy models`).
+// The REAL `agy models` stdout shape (verified live 2026-10, trimmed to two
+// flash families).
 const RAW = [
+	"gemini-3.8-flash-high     Gemini 3.8 Flash (High)",
+	"gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)",
+	"gemini-3.8-flash-low      Gemini 3.8 Flash (Low)",
 	"gemini-3.6-flash-high     Gemini 3.6 Flash (High)",
 	"gemini-3.6-flash-medium   Gemini 3.6 Flash (Medium)",
 	"gemini-3.6-flash-low      Gemini 3.6 Flash (Low)",
-	"gemini-3.5-flash-high     Gemini 3.5 Flash (High)",
-	"gemini-3.5-flash-medium   Gemini 3.5 Flash (Medium)",
-	"gemini-3.5-flash-low      Gemini 3.5 Flash (Low)",
 	"gemini-3.1-pro-high       Gemini 3.1 Pro (High)",
 	"gemini-3.1-pro-low        Gemini 3.1 Pro (Low)",
-	"claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)",
-	"claude-opus-4-6-thinking  Claude Opus 4.6 (Thinking)",
+	"claude-opus-5-5-low       Claude Opus 5.5 (Low)",
+	"claude-opus-5-5-medium    Claude Opus 5.5 (Medium)",
+	"claude-opus-5-5-high      Claude Opus 5.5 (High)",
+	"claude-sonnet-5-5-low     Claude Sonnet 5.5 (Low)",
+	"claude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)",
+	"claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)",
 	"gpt-oss-120b-medium       GPT-OSS 120B (Medium)",
 ].join("\n");
 
@@ -39,25 +44,31 @@ const DEFAULT_THINKING = "medium";
 
 test("toolModelsFromRaw: splits the slug (col 1) off the display label", () => {
 	// The label must never reach --model: full is the slug only.
-	const flashHigh = entries.find((e) => e.full === "gemini-3.6-flash-high");
+	const flashHigh = entries.find((e) => e.full === "gemini-3.8-flash-high");
 	assert.deepEqual(flashHigh, {
-		full: "gemini-3.6-flash-high",
+		full: "gemini-3.8-flash-high",
 		family: "flash",
-		version: "3.6",
+		version: "3.8",
 		tier: "high",
 	});
 
-	// "-thinking" and a bare slug are NOT low/medium/high tiers.
-	const opus = entries.find((e) => e.full === "claude-opus-4-6-thinking");
-	assert.equal(opus?.tier, null);
+	// Tiered Claude slugs parse like Gemini: the -low/-medium/-high suffix is
+	// the tier, family "other".
+	const sonnetLow = entries.find((e) => e.full === "claude-sonnet-5-5-low");
+	assert.deepEqual(sonnetLow, {
+		full: "claude-sonnet-5-5-low",
+		family: "other",
+		version: null,
+		tier: "low",
+	});
+	const opus = entries.find((e) => e.full === "claude-opus-5-5-high");
+	assert.equal(opus?.tier, "high");
 	assert.equal(opus?.family, "other");
-	const sonnet = entries.find((e) => e.full === "claude-sonnet-4-6");
-	assert.equal(sonnet?.tier, null);
 });
 
 test("resolveModel: friendly alias splits Gemini base + default effort", () => {
 	assert.deepEqual(resolveModel("flash", entries, DEFAULT_THINKING), {
-		model: "gemini-3.6-flash",
+		model: "gemini-3.8-flash",
 		effort: "medium",
 	});
 	// Pro has no medium variant; its family default is high.
@@ -69,24 +80,27 @@ test("resolveModel: friendly alias splits Gemini base + default effort", () => {
 
 test("resolveModel: explicit tier and pinned version", () => {
 	assert.deepEqual(resolveModel("flash high", entries, DEFAULT_THINKING), {
-		model: "gemini-3.6-flash",
+		model: "gemini-3.8-flash",
 		effort: "high",
 	});
-	assert.deepEqual(resolveModel("3.5 flash low", entries, DEFAULT_THINKING), {
-		model: "gemini-3.5-flash",
+	assert.deepEqual(resolveModel("3.6 flash low", entries, DEFAULT_THINKING), {
+		model: "gemini-3.6-flash",
 		effort: "low",
 	});
 });
 
-test("resolveModel: short aliases resolve to valid agy slugs with NO effort", () => {
-	// Fixed-thinking families: agy rejects --effort, so the slug carries any
-	// tier suffix itself (gpt-oss-120b-medium) and effort is absent.
+test("resolveModel: short aliases pick the tiered Claude entry and split base+effort", () => {
+	// Claude ships low/medium/high like Gemini now: the alias resolves to the
+	// base slug and the tier rides --effort (agy rejects a bare base).
 	assert.deepEqual(resolveModel("sonnet", entries, DEFAULT_THINKING), {
-		model: "claude-sonnet-4-6",
+		model: "claude-sonnet-5-5",
+		effort: "medium",
 	});
 	assert.deepEqual(resolveModel("opus", entries, DEFAULT_THINKING), {
-		model: "claude-opus-4-6-thinking",
+		model: "claude-opus-5-5",
+		effort: "medium",
 	});
+	// gpt-oss stays a fixed full slug with NO effort.
 	assert.deepEqual(resolveModel("gpt-oss", entries, DEFAULT_THINKING), {
 		model: "gpt-oss-120b-medium",
 	});
@@ -100,15 +114,20 @@ test("resolveModel: an exact tiered slug splits to base + effort (not passed who
 		effort: "high",
 	});
 	// A fixed exact slug passes through unchanged.
-	assert.deepEqual(resolveModel("claude-sonnet-4-6", entries, DEFAULT_THINKING), {
-		model: "claude-sonnet-4-6",
+	assert.deepEqual(resolveModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), {
+		model: "gpt-oss-120b-medium",
+	});
+	// Claude tiered slugs split exactly like Gemini's.
+	assert.deepEqual(resolveModel("claude-sonnet-5-5-low", entries, DEFAULT_THINKING), {
+		model: "claude-sonnet-5-5",
+		effort: "low",
 	});
 });
 
 test("resolveModel: explicit preferred tier beats alias tier, default, and clamps to the family", () => {
 	// thinking/effort param wins over the alias's own tier and the default.
 	assert.deepEqual(resolveModel("flash high", entries, DEFAULT_THINKING, "low"), {
-		model: "gemini-3.6-flash",
+		model: "gemini-3.8-flash",
 		effort: "low",
 	});
 	// Pro has no medium variant; the explicit tier clamps to the nearest
@@ -117,9 +136,10 @@ test("resolveModel: explicit preferred tier beats alias tier, default, and clamp
 		model: "gemini-3.1-pro",
 		effort: "high",
 	});
-	// Fixed-thinking families ignore the tier: agy rejects --effort for them.
+	// The explicit tier beats the Claude default and clamps to listed tiers.
 	assert.deepEqual(resolveModel("sonnet", entries, DEFAULT_THINKING, "high"), {
-		model: "claude-sonnet-4-6",
+		model: "claude-sonnet-5-5",
+		effort: "high",
 	});
 });
 
@@ -143,7 +163,8 @@ test("resolveModel: short aliases still resolve when agy omits them (static over
 		].join("\n"),
 	);
 	assert.deepEqual(resolveModel("sonnet", geminiOnly, DEFAULT_THINKING), {
-		model: "claude-sonnet-4-6",
+		model: "claude-sonnet-5-5",
+		effort: "medium",
 	});
 	assert.deepEqual(resolveModel("gpt-oss", geminiOnly, DEFAULT_THINKING), {
 		model: "gpt-oss-120b-medium",
