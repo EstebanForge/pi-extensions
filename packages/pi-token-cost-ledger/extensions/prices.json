@@ -1,5 +1,5 @@
 {
-  "_doc": "API prices per 1M tokens (input / cache-read / output). Source: models.dev catalog.json (canonical first-party providers: zai, anthropic, minimax, google, openai). Fetched 2026-07-22; partial refresh 2026-09-30 (gpt-6.1-sol and claude-sonnet-5-5 added, sonnet rates re-verified). cacheWrite omitted (0) unless a provider charges for it. Tier notes: models with context-tier pricing use the DEFAULT tier (<200K or <512K context), which covers normal coding sessions. Bundled DEFAULT; overridden at runtime by ~/.pi/extensions-data/estebanforge/pi-token-cost-ledger/prices.json if present. To refresh: curl https://models.dev/catalog.json and re-extract first-party costs.",
+  "_doc": "API prices per 1M tokens (input / cache-read / output). Source: models.dev catalog.json (canonical first-party providers: zai, anthropic, minimax, google, openai). Fetched 2026-07-22; partial refresh 2026-09-30 (gpt-6.1-sol and claude-sonnet-5-5 added, sonnet rates re-verified); partial refresh 2026-10-06 (claude-opus-5-5 added). cacheWrite omitted (0) unless a provider charges for it. Tier notes: models with context-tier pricing use the DEFAULT tier (<200K or <512K context), which covers normal coding sessions. Bundled DEFAULT; overridden at runtime by ~/.pi/extensions-data/estebanforge/pi-token-cost-ledger/prices.json if present. To refresh: curl https://models.dev/catalog.json and re-extract first-party costs.",
   "_refresh": "jq -rc '.providers | to_entries[] | .key as $p | select($p|test(\"^(zai|anthropic|minimax|google|openai)$\")) | .value.models // {} | to_entries[] | select(.value.cost != null) | {provider:$p, model:.key, cost:.value.cost, name:.value.name}' ~/tmp/models-dev-catalog.json",
   "_intro_pricing": "claude-sonnet-5 intro $2/$10 window ended ~Aug 2026; the predicted $3/$15 standard never shipped. anthropic.com and models.dev list $2/$10 as the standing rate for sonnet-5 and sonnet-5-5 (verified 2026-09-30).",
 
@@ -17,6 +17,7 @@
   "claude-sonnet-4-6": {"i": 3.0,  "c": 0.30, "o": 15},
   "claude-sonnet-4-5": {"i": 3.0,  "c": 0.30, "o": 15},
   "claude-sonnet-4":   {"i": 3.0,  "c": 0.30, "o": 15},
+  "claude-opus-5-5":   {"i": 4.0,  "c": 0.20, "o": 20},
   "claude-opus-5":     {"i": 5.0,  "c": 0.50, "o": 25},
   "claude-opus-4-8":   {"i": 5.0,  "c": 0.50, "o": 25},
   "claude-opus-4-7":   {"i": 5.0,  "c": 0.50, "o": 25},
