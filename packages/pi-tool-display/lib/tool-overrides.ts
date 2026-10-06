@@ -153,6 +153,7 @@ const EDIT_PENDING_PREVIEW_STATE_KEY = "__piToolDisplayEditPendingPreview";
 const WRITE_PENDING_PREVIEW_STATE_KEY = "__piToolDisplayWritePendingPreview";
 
 const TOOL_DISPLAY_API_KEY = Symbol.for("pi-tool-display.api.v1");
+const TOOL_DISPLAY_OWNED_TOOL_KEY = Symbol.for("pi-tool-display.ownedTool.v1");
 const TOOL_DISPLAY_PENDING_DECORATIONS_KEY = Symbol.for("pi-tool-display.pendingDecorations.v1");
 const TOOL_DISPLAY_REGISTER_TOOL_INTERCEPTOR_KEY = Symbol.for("pi-tool-display.registerToolInterceptor.v1");
 const TOOL_DISPLAY_DECORATED_PROPERTIES = [
@@ -196,6 +197,15 @@ interface PendingToolDisplayDecoration {
 type DecoratedPropertyName = typeof TOOL_DISPLAY_DECORATED_PROPERTIES[number];
 type ToolPropertyDescriptorSnapshot = Partial<Record<DecoratedPropertyName, PropertyDescriptor>>;
 
+type OwnedRuntimeToolDefinition = RuntimeToolDefinition & {
+  [TOOL_DISPLAY_OWNED_TOOL_KEY]?: true;
+};
+
+export function isToolDisplayOwnedTool(tool: unknown): boolean {
+  return typeof tool === "object" && tool !== null
+    && (tool as OwnedRuntimeToolDefinition)[TOOL_DISPLAY_OWNED_TOOL_KEY] === true;
+}
+
 type GlobalWithToolDisplayApi = typeof globalThis & {
   [TOOL_DISPLAY_API_KEY]?: ToolDisplayApi;
   [TOOL_DISPLAY_PENDING_DECORATIONS_KEY]?: PendingToolDisplayDecoration[];
@@ -212,8 +222,43 @@ const decoratedToolDescriptors = new WeakMap<RuntimeToolDefinition, ToolProperty
 const decoratedTools = new Set<RuntimeToolDefinition>();
 
 function registerRuntimeTool(pi: ExtensionAPI, tool: RuntimeToolDefinition): void {
+  (tool as OwnedRuntimeToolDefinition)[TOOL_DISPLAY_OWNED_TOOL_KEY] = true;
   pi.registerTool(tool as unknown as ToolDefinition);
 }
+
+function tryGetActiveTools(pi: ExtensionAPI): string[] | undefined {
+  try {
+    const tools = pi.getActiveTools();
+    return Array.isArray(tools) ? tools.filter((name): name is string => typeof name === "string") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+  // Re-registering a suppressed name (edit/grep taken over by hashline via
+  // setActiveTools) can re-activate it as a fresh registration. Drop whatever
+  // the registration pass added for OUR names so another extension's
+  // exclusions survive without touching unrelated tool activations.
+  function restoreActiveToolExclusions(pi: ExtensionAPI, before: string[] | undefined): void {
+    if (!before) {
+      return;
+    }
+    const after = tryGetActiveTools(pi);
+    if (!after) {
+      return;
+    }
+    const beforeSet = new Set(before);
+    const overrideNames = BUILT_IN_TOOL_OVERRIDE_NAMES as readonly string[];
+    const regained = after.filter((name) => !beforeSet.has(name) && overrideNames.includes(name));
+    if (regained.length === 0) {
+      return;
+    }
+    try {
+      pi.setActiveTools(after.filter((name) => !regained.includes(name)));
+    } catch (error) {
+      logToolDisplayDebug("Failed to restore active tool exclusions after override registration.", error);
+    }
+  }
 
 function captureToolPropertyDescriptors(
   tool: RuntimeToolDefinition,
@@ -2056,7 +2101,7 @@ export function registerToolDisplayOverrides(
   const registeredBuiltInToolOverrides = new Set<BuiltInToolOverrideName>();
 
   const isExternallyOwnedBuiltInTool = (toolName: BuiltInToolOverrideName): boolean => {
-    const allTools = tryGetAllTools(pi, "Built-in tool override ownership discovery unavailable during extension load; registering renderer for pre-bind history rendering.");
+    const allTools = tryGetAllTools(pi, "Built-in tool override ownership discovery unavailable; skipping override registration for this cycle.");
     if (!allTools) {
       return false;
     }
@@ -2091,6 +2136,21 @@ export function registerToolDisplayOverrides(
     register();
     registeredBuiltInToolOverrides.add(toolName);
   };
+
+  // Deferred to the session lifecycle on purpose: pi treats a tool name
+  // registered by two extensions as a fatal conflict at load time, and
+  // ownership discovery can only see extensions that already loaded. Waiting
+  // for session_start lets the check see every competitor (hashline edit
+  // tools own `read`; another one may own more). One pass per extension
+  // instance is final: /reload creates a fresh instance, and re-running the
+  // pass every turn would redo ownership discovery for nothing.
+  let builtInOverridesPassDone = false;
+  const registerBuiltInToolOverrides = (): void => {
+    if (builtInOverridesPassDone) {
+      return;
+    }
+    builtInOverridesPassDone = true;
+    const activeToolsBefore = tryGetActiveTools(pi);
 
   function createBuiltinToolBase(toolName: keyof BuiltInTools) {
     return {
@@ -2202,6 +2262,9 @@ export function registerToolDisplayOverrides(
       ...getBuiltInDisplayRenderers("bash", getConfig, writeExecutionMetaByToolCallId),
     });
   });
+
+    restoreActiveToolExclusions(pi, activeToolsBefore);
+  };
 
   const wrappedCustomToolNames = new Set<string>();
   registerCleanup(() => wrappedCustomToolNames.clear());
@@ -2408,11 +2471,13 @@ export function registerToolDisplayOverrides(
 
   pi.on("session_start", async () => {
     clearWriteExecutionMeta(writeExecutionMetaByToolCallId);
+    registerBuiltInToolOverrides();
     registerMcpToolOverrides();
     scheduleMcpToolOverrideDiscovery();
   });
   pi.on("before_agent_start", async () => {
     clearWriteExecutionMeta(writeExecutionMetaByToolCallId);
+    registerBuiltInToolOverrides();
     registerMcpToolOverrides();
     scheduleMcpToolOverrideDiscovery();
   });

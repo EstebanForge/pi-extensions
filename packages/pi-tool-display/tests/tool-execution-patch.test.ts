@@ -106,6 +106,75 @@ test("keeps a definition that still carries its own renderers", () => {
 	assert.equal(component.getResultRenderer(), ownRenderResult);
 });
 
+test("foreign adapter overrides a hashline replace definition's own renderers", () => {
+	const ownRenderCall = (): unknown => "HASHLINE NATIVE CALL";
+	const ownRenderResult = (): unknown => "HASHLINE NATIVE RESULT";
+	const component = new ToolExecutionComponent({
+		name: "replace",
+		description: "Hashline replace",
+		renderCall: ownRenderCall,
+		renderResult: ownRenderResult,
+		sourceInfo: { source: "extension", path: "/ext/pi-hashline-edit-pro/index.ts" },
+	});
+
+	const callRenderer = component.getCallRenderer() as
+		| ((args: Record<string, unknown>, theme: unknown) => unknown)
+		| undefined;
+	assert.notEqual(callRenderer, ownRenderCall, "hashline tools opt into our cards via hashlineCards");
+	const callLine = callRenderer?.({ path: "src/main.ts" }, passThroughTheme);
+	assert.ok(callLine != null);
+	assert.ok(renderedText(callLine).includes("replace"), "expected our replace card header");
+	assert.ok(renderedText(callLine).includes("src/main.ts"), "expected the target path on the card");
+
+	const resultRenderer = component.getResultRenderer() as
+		| ((result: unknown, options: unknown, theme: unknown) => unknown)
+		| undefined;
+	assert.notEqual(resultRenderer, ownRenderResult);
+	const rendered = renderedText(resultRenderer?.({ content: [{ type: "text", text: "ok" }], details: { diff: "+a\n-b" } }, { expanded: false, isPartial: false }, passThroughTheme));
+	assert.ok(rendered.includes("+1/-1"), `expected diff counts, got: ${rendered}`);
+});
+
+test("foreign adapter leaves a hashline read definition to the built-in read card", () => {
+	const component = new ToolExecutionComponent({
+		name: "read",
+		description: "Hashline read",
+		renderCall: (): unknown => "HASHLINE NATIVE READ",
+		renderResult: (): unknown => "HASHLINE NATIVE READ RESULT",
+		sourceInfo: { source: "extension", path: "/ext/pi-hashline-edit-pro/index.ts" },
+	});
+
+	const callRenderer = component.getCallRenderer() as
+		| ((args: Record<string, unknown>, theme: unknown) => unknown)
+		| undefined;
+	const callLine = renderedText(callRenderer?.({ path: "docs/x.md" }, passThroughTheme));
+	assert.ok(callLine.includes("read"), "expected the read card header");
+	assert.ok(callLine.includes("docs/x.md"), "expected the read path");
+});
+
+test("foreign adapter ignores foreign tools outside the adapter table", () => {
+	const ownRenderCall = (): unknown => "OTHER EXT CALL";
+	const component = new ToolExecutionComponent({
+		name: "read",
+		description: "Another extension's read tool",
+		renderCall: ownRenderCall,
+		sourceInfo: { source: "extension", path: "/ext/pi-some-other-read/index.ts" },
+	});
+
+	assert.equal(component.getCallRenderer(), ownRenderCall, "generic `read` name requires a hashline source path");
+});
+
+test("foreign adapter ignores builtin-sourced definitions", () => {
+	// Core built-ins keep the existing issue-47 fallback path; the foreign
+	// adapter must never claim them.
+	const component = new ToolExecutionComponent({
+		name: "replace",
+		description: "Hypothetical core replace",
+		sourceInfo: { source: "builtin", path: "<builtin:replace>" },
+	});
+
+	assert.equal(component.getCallRenderer(), undefined);
+});
+
 test("leaves tools without overrides on their original renderers", () => {
 	const component = new ToolExecutionComponent({ name: "mystery_tool", description: "Not ours" });
 

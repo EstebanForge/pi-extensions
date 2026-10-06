@@ -43,6 +43,7 @@ function summarizeConfig(config: ToolDisplayConfig, capabilities: ToolDisplayCap
 	const parts = [
 		`preset=${preset}`,
 		`cards=${toOnOff(config.tidyCards)}`,
+		`hashline=${toOnOff(config.hashlineCards)}`,
 		`owners={${toolOwnershipSummary(config)}}`,
 		`userBox=${toOnOff(config.enableNativeUserMessageBox)}`,
 		`read=${config.readOutputMode}`,
@@ -137,6 +138,26 @@ function buildInspectorSettings(
 			]),
 			inspectorPath: configPath,
 			searchTerms: ["tidy", "compact", "collapsed", "cards", "ctrl+o", "expand"],
+		},
+		{
+			id: "hashlineCards",
+			label: "Hashline tool cards",
+			currentValue: toOnOff(config.hashlineCards),
+			values: ["on", "off"],
+			inspectorTitle: "Hashline Tool Cards",
+			inspectorSummary: [
+				"Renders pi-hashline-edit-pro tools (replace, insert, copy, move, replace_match, undo_last_change, anchor_grep, and a hashline-owned read) with the same tidy cards as the built-ins.",
+				"Off keeps the hashline extension's own renderers.",
+			],
+			inspectorOptions: [
+				"on — hashline tools render as tidy cards",
+				"off — hashline tools keep their native rendering",
+			],
+			inspectorAdvanced: buildAdvancedNotes(config, capabilities, [
+				"The cards are render-time adapters, so they never conflict with hashline's tool registration.",
+			]),
+			inspectorPath: configPath,
+			searchTerms: ["hashline", "replace", "insert", "anchor"],
 		},
 		{
 			id: "readOutputMode",
@@ -369,6 +390,11 @@ function applySetting(config: ToolDisplayConfig, id: string, value: string): Too
 			return {
 				...config,
 				tidyCards: value === "on",
+			};
+		case "hashlineCards":
+			return {
+				...config,
+				hashlineCards: value === "on",
 			};
 		case "enableNativeUserMessageBox":
 			return {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 (2026-10-06)
+
+### Added
+- Tidy cards for pi-hashline-edit-pro tools: `replace`, `replace_match`, `insert`, `copy`, `move`, `undo_last_change`, and `anchor_grep` render with the same collapsed card style as the built-in tools, and a hashline-owned `read` gets the standard read card. The cards are render-time adapters on the ToolExecutionComponent patch, so they never touch tool registration; `Ctrl+O` expands into the shared diff renderer. New `hashlineCards` config key (default on) with a "Hashline tool cards" toggle in the `/tool-display` modal.
+
+### Fixed
+- Fixed the fatal extension conflict (`Tool "read" conflicts with ...`) when pi-hashline-edit-pro is enabled alongside pi-tool-display. Built-in tool override registration now waits for the session lifecycle, when the full tool registry is visible, and skips any tool name another extension owns instead of double-registering it. When the registration pass would re-activate a name another extension excluded through active tools (hashline suppresses `edit` and optionally `grep`), the pass reverts the gain, so the other extension's suppression survives in both extension load orders.
+
 ## 1.2.0 (2026-10-05)
 
 ### Added

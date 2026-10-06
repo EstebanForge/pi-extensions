@@ -63,6 +63,14 @@ function createApiStub(
   return { api, capturedTools, capturedCommands, capturedHandlers };
 }
 
+async function runLifecycleHandlers(capturedHandlers: CapturedHandler[]): Promise<void> {
+  for (const handler of capturedHandlers) {
+    if (handler.event === "session_start" || handler.event === "before_agent_start") {
+      await handler.handler({}, {});
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -94,19 +102,17 @@ test("entry point registers tool-display command", () => {
   assert.ok(cmdNames.includes("tool-display"), "tool-display command registered");
 });
 
-test("entry point registers built-in tool overrides", () => {
-  const { api, capturedTools } = createApiStub();
+test("entry point registers built-in tool overrides", async () => {
+  const { api, capturedTools, capturedHandlers } = createApiStub();
   toolDisplayExtension(api);
+  await runLifecycleHandlers(capturedHandlers);
 
   const toolNames = capturedTools.map((t) => t.name);
-  // find, ls, write are registered immediately; read/grep/edit/bash are deferred
-  assert.ok(toolNames.includes("find"), "find tool override registered");
-  assert.ok(toolNames.includes("ls"), "ls tool override registered");
-  assert.ok(toolNames.includes("write"), "write tool override registered");
-
-  // Disabled tools (if config disables them) would not appear; the default
-  // config enables all, so we expect at least these 3 immediately.
-  assert.ok(toolNames.length >= 3, "at least 3 tool overrides registered immediately");
+  // Registration is deferred to the session lifecycle so cross-extension
+  // ownership discovery can see every competitor before we claim a name.
+  for (const name of ["read", "grep", "find", "ls", "bash", "edit", "write"]) {
+    assert.ok(toolNames.includes(name), `${name} tool override registered after lifecycle`);
+  }
 });
 
 test("session_start handler refreshes capabilities and notifies pending errors", async () => {
@@ -138,12 +144,13 @@ test("before_agent_start handler refreshes capabilities without crashing", async
   await assert.doesNotReject(async () => beforeHandler());
 });
 
-test("multiple calls to toolDisplayExtension are idempotent", () => {
+test("multiple calls to toolDisplayExtension are idempotent", async () => {
   const { api, capturedTools, capturedCommands, capturedHandlers } = createApiStub();
 
   // Call twice
   toolDisplayExtension(api);
   toolDisplayExtension(api);
+  await runLifecycleHandlers(capturedHandlers);
 
   // Second call should not throw. Tools may be registered again (that's up
   // to the extension loader to deduplicate), but the extension itself must
@@ -334,15 +341,14 @@ test("overridden tools include renderCall and renderResult functions", () => {
   }
 });
 
-test("overridden tools preserve promptSnippet and promptGuidelines from built-ins", () => {
-  const { api, capturedTools } = createApiStub();
+test("overridden tools preserve promptSnippet and promptGuidelines from built-ins", async () => {
+  const { api, capturedTools, capturedHandlers } = createApiStub();
   toolDisplayExtension(api);
+  await runLifecycleHandlers(capturedHandlers);
 
   const byName = new Map(capturedTools.map((t) => [t.name, t]));
 
-  // read (deferred) won't be registered immediately; it's deferred
-  // So we only check tools registered immediately
-  for (const name of ["find", "ls", "write"] as const) {
+  for (const name of ["read", "grep", "find", "ls", "bash", "edit", "write"] as const) {
     const tool = byName.get(name);
     assert.ok(tool, `${name} is registered`);
     // promptSnippet should be a non-empty string or undefined

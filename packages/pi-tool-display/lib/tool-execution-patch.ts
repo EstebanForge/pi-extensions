@@ -3,11 +3,13 @@ import {
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { onReloadShutdown } from "./extension-lifecycle.js";
+import { getHashlineDisplayRenderers } from "./hashline-display.js";
 import {
   type BuiltInDisplayRenderers,
   type RenderTheme,
   formatMcpCallLine,
   getBuiltInDisplayRenderers,
+  isToolDisplayOwnedTool,
   renderMcpResult,
 } from "./tool-overrides.js";
 import { getTextField, isMcpToolCandidate, toRecord } from "./tool-metadata.js";
@@ -110,6 +112,40 @@ function builtInFallbackRenderers(
   return getBuiltInDisplayRenderers(toolName, getConfig);
 }
 
+// Hashline adapter (foreign tools): apply our tidy cards over another
+// extension's renderers when the config asks for it. The adapter table holds
+// hashline-unique names (replace, insert, ...), so only `read` needs an
+// ownership hint: it is too generic a name to claim from any foreign
+// definition, so it requires the source path to identify hashline-edit-pro.
+function foreignAdapterRenderers(
+  proto: PatchableToolExecutionPrototype,
+  getConfig: () => ToolDisplayConfig,
+): BuiltInDisplayRenderers | undefined {
+  const def = proto.toolDefinition;
+  if (!def) {
+    return undefined;
+  }
+  if (isToolDisplayOwnedTool(def)) {
+    return undefined;
+  }
+  const source = getTextField(toRecord(def.sourceInfo), "source");
+  if (source === "builtin") {
+    return undefined;
+  }
+  const toolName = (typeof proto.toolName === "string" && proto.toolName)
+    || getTextField(def, "name");
+  if (!toolName) {
+    return undefined;
+  }
+  if (toolName === "read") {
+    const sourcePath = getTextField(toRecord(def.sourceInfo), "path") ?? "";
+    if (!/hashline/i.test(sourcePath)) {
+      return undefined;
+    }
+  }
+  return getHashlineDisplayRenderers(toolName, getConfig);
+}
+
 function patchToolExecutionMcpRender(
   getConfig: () => ToolDisplayConfig,
 ): void {
@@ -164,6 +200,10 @@ function patchToolExecutionMcpRender(
         ?? (toolName === "mcp" ? "MCP Proxy" : `MCP ${toolName}`);
       return (args, theme) => formatMcpCallLine(toolName, toolLabel, toRecord(args), theme);
     }
+    const foreign = foreignAdapterRenderers(this, getConfig);
+    if (foreign) {
+      return foreign.renderCall as CallRenderer;
+    }
     const builtIn = builtInFallbackRenderers(this, getConfig);
     if (builtIn) {
       return builtIn.renderCall as CallRenderer;
@@ -177,6 +217,10 @@ function patchToolExecutionMcpRender(
       // structural reader, so the cast is a boundary marker, not a loophole.
       return (result, options, theme) =>
         renderMcpResult(result as unknown as Parameters<typeof renderMcpResult>[0], options, getConfig(), theme);
+    }
+    const foreign = foreignAdapterRenderers(this, getConfig);
+    if (foreign) {
+      return foreign.renderResult as ResultRenderer;
     }
     const builtIn = builtInFallbackRenderers(this, getConfig);
     if (builtIn) {

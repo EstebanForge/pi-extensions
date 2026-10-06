@@ -93,8 +93,9 @@ test("registerToolDisplayOverrides copies built-in prompt metadata onto overridd
 
 	registerToolDisplayOverrides(api, () => DEFAULT_TOOL_DISPLAY_CONFIG);
 	assert.deepEqual(
-		registeredTools.map((tool) => tool.name).sort(),
-		["bash", "edit", "find", "grep", "ls", "read", "write"],
+		registeredTools.map((tool) => tool.name),
+		[],
+		"registration waits for the lifecycle so ownership discovery sees all extensions",
 	);
 	await eventHandlers.before_agent_start?.();
 
@@ -123,17 +124,18 @@ test("registerToolDisplayOverrides copies built-in prompt metadata onto overridd
 	}
 });
 
-test("registerToolDisplayOverrides registers built-in display renderers during extension load for pre-bind history rendering", () => {
-	const { api, registeredTools } = createExtensionApiStub();
+test("registerToolDisplayOverrides registers built-in display renderers with the overrides", async () => {
+	const { api, registeredTools, eventHandlers } = createExtensionApiStub();
 
 	registerToolDisplayOverrides(api, () => DEFAULT_TOOL_DISPLAY_CONFIG);
+	await eventHandlers.before_agent_start?.();
 
 	const byName = new Map(registeredTools.map((tool) => [tool.name, tool]));
 	for (const name of ["read", "grep", "find", "ls", "bash", "edit", "write"] as const) {
 		const registeredTool = byName.get(name);
-		assert.ok(registeredTool, `expected '${name}' to be available before session_start`);
-		assert.equal(typeof registeredTool.renderCall, "function", `${name} has renderCall before session_start`);
-		assert.equal(typeof registeredTool.renderResult, "function", `${name} has renderResult before session_start`);
+		assert.ok(registeredTool, `expected '${name}' to be registered after the lifecycle`);
+		assert.equal(typeof registeredTool.renderCall, "function", `${name} has renderCall`);
+		assert.equal(typeof registeredTool.renderResult, "function", `${name} has renderResult`);
 	}
 });
 
