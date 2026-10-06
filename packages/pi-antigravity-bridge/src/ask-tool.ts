@@ -181,6 +181,33 @@ function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	return { model: full };
 }
 
+/** Resolve a tiered base id - a short-alias target ("claude-sonnet-5-5") or a
+ *  bare base slug the provider itself advertises - to the catalog variant
+ *  nearest the requested tier. A bare base alone is invalid upstream
+ *  ("requires --effort"), so the pick always rides the split in toResolved;
+ *  with no variants in the catalog, the overlay/exact entry or the raw base
+ *  passes through unchanged. */
+function resolveTieredBase(
+	base: string,
+	entries: ModelEntry[],
+	defaultThinking: ThinkingTier,
+	preferredTier: ThinkingTier | undefined,
+): ResolvedModel {
+	const needle = base.toLowerCase();
+	const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${needle}-`));
+	if (variants.length > 0) {
+		const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
+		const preferred =
+			preferredTier ??
+			(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
+		const chosen = nearestTier(tiers, preferred);
+		const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
+		return toResolved(picked.full, picked.tier);
+	}
+	const fromCatalog = entries.find((e) => e.full.toLowerCase() === needle);
+	return toResolved(fromCatalog?.full ?? base, fromCatalog?.tier ?? null);
+}
+
 /** Resolve a friendly alias / partial name to an argv-facing {model, effort?}.
  *  Returns null only when the family is unrecognized; the caller then passes
  *  the raw input straight to agy. */
@@ -199,21 +226,12 @@ export function resolveModel(
 	if (exact) return toResolved(exact.full, exact.tier);
 
 	if (STATIC_SHORT_ALIAS.has(lower)) {
-		const target = STATIC_SHORT_ALIAS.get(lower) as string;
-		// Tiered bases (Claude ships low/medium/high like Gemini): pick the
-		// catalog variant nearest the requested tier.
-		const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${target}-`));
-		if (variants.length > 0) {
-			const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
-			const preferred =
-				preferredTier ??
-				(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
-			const chosen = nearestTier(tiers, preferred);
-			const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
-			return toResolved(picked.full, picked.tier);
-		}
-		const fromCatalog = entries.find((e) => e.full.toLowerCase() === target.toLowerCase());
-		return toResolved(fromCatalog?.full ?? target, fromCatalog?.tier ?? null);
+		return resolveTieredBase(
+			STATIC_SHORT_ALIAS.get(lower) as string,
+			entries,
+			defaultThinking,
+			preferredTier,
+		);
 	}
 
 	let family: Family | null = lower.includes("flash")
@@ -229,7 +247,19 @@ export function resolveModel(
 	if (!family && (/gemini/.test(lower) || lower === "" || lower === "default")) {
 		family = "flash";
 	}
-	if (!family) return null;
+	if (!family) {
+		// A bare base slug the provider itself advertises ("claude-sonnet-5-5",
+		// the id behind the antigravity/ entry in pi's picker) is invalid
+		// upstream without an effort: resolve it to the nearest tier variant
+		// exactly like the short aliases.
+		if (
+			entries.some((e) => e.full.toLowerCase().startsWith(`${lower}-`)) ||
+			entries.some((e) => e.full.toLowerCase() === lower)
+		) {
+			return resolveTieredBase(lower, entries, defaultThinking, preferredTier);
+		}
+		return null;
+	}
 
 	let candidates = entries.filter((e) => e.family === family);
 	if (candidates.length === 0) return null;

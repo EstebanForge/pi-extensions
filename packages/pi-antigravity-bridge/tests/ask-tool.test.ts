@@ -37,10 +37,30 @@ const RAW = [
 	"claude-sonnet-5-5-low     Claude Sonnet 5.5 (Low)",
 	"claude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)",
 	"claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)",
+	"gpt-oss-120b-medium       GPT-OSS 120B (Medium)",
 ].join("\n");
 
 const entries = toolModelsFromRaw(RAW);
 const DEFAULT_THINKING = "medium";
+
+test("toolModelsFromRaw: drops the hidden family even while agy still lists it", () => {
+	assert.ok(RAW.includes("gpt-oss-120b-medium"), "fixture must carry the line the filter removes");
+	assert.equal(entries.some((e) => e.full.startsWith("gpt-oss-")), false);
+});
+
+test("resolveModel: bare base ids resolve to the nearest tier variant", () => {
+	// The provider advertises the bare id (antigravity/claude-sonnet-5-5),
+	// but a bare base is invalid upstream without --effort: the resolver
+	// must pick a variant, not pass the base through raw.
+	assert.deepEqual(resolveModel("claude-sonnet-5-5", entries, DEFAULT_THINKING), {
+		model: "claude-sonnet-5-5",
+		effort: "medium",
+	});
+	assert.deepEqual(resolveModel("claude-opus-5-5", entries, DEFAULT_THINKING, "high"), {
+		model: "claude-opus-5-5",
+		effort: "high",
+	});
+});
 
 test("toolModelsFromRaw: splits the slug (col 1) off the display label", () => {
 	// The label must never reach --model: full is the slug only.

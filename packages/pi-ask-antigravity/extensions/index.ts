@@ -137,6 +137,12 @@ const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
  *  its removal upstream is already announced, so we stop offering it now. */
 const HIDDEN_FAMILY_RE = /^gpt-oss-/;
 
+/** Drop families we refuse to offer. Exported pure so tests exercise the
+ *  same filter the live parse runs; discoverModels applies it per load. */
+export function filterHiddenModels(entries: ModelEntry[]): ModelEntry[] {
+	return entries.filter((e) => !HIDDEN_FAMILY_RE.test(e.full));
+}
+
 /** Merge the live catalog with the static alias overlay. Live entries win on
  *  case-insensitive full-string equality so an updated `agy models` listing
  *  always takes precedence over the hardcoded fallback. */
@@ -486,6 +492,33 @@ function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	return { model: full };
 }
 
+/** Resolve a tiered base id - a short-alias target ("claude-sonnet-5-5") or a
+ *  bare base slug the provider itself advertises - to the catalog variant
+ *  nearest the requested tier. A bare base alone is invalid upstream
+ *  ("requires --effort"), so the pick always rides the split in toResolved;
+ *  with no variants in the catalog, the overlay/exact entry or the raw base
+ *  passes through unchanged. */
+function resolveTieredBase(
+	base: string,
+	entries: ModelEntry[],
+	defaultThinking: ThinkingTier,
+	preferredTier: ThinkingTier | undefined,
+): ResolvedModel {
+	const needle = base.toLowerCase();
+	const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${needle}-`));
+	if (variants.length > 0) {
+		const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
+		const preferred =
+			preferredTier ??
+			(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
+		const chosen = nearestTier(tiers, preferred);
+		const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
+		return toResolved(picked.full, picked.tier);
+	}
+	const fromCatalog = entries.find((e) => e.full.toLowerCase() === needle);
+	return toResolved(fromCatalog?.full ?? base, fromCatalog?.tier ?? null);
+}
+
 /**
  * Resolve a friendly alias / partial name to an argv-facing {model, effort?}.
  * Returns null only when the family is unrecognized; the caller then passes
@@ -516,21 +549,12 @@ export function resolveModel(
 	//     so the "live entries win" guarantee holds even when agy lists
 	//     the model under different casing than the overlay.
 	if (STATIC_SHORT_ALIAS.has(lower)) {
-		const target = STATIC_SHORT_ALIAS.get(lower) as string;
-		// Tiered bases (Claude ships low/medium/high like Gemini): pick the
-		// catalog variant nearest the requested tier.
-		const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${target}-`));
-		if (variants.length > 0) {
-			const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
-			const preferred =
-				preferredTier ??
-				(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
-			const chosen = nearestTier(tiers, preferred);
-			const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
-			return toResolved(picked.full, picked.tier);
-		}
-		const fromCatalog = entries.find((e) => e.full.toLowerCase() === target.toLowerCase());
-		return toResolved(fromCatalog?.full ?? target, fromCatalog?.tier ?? null);
+		return resolveTieredBase(
+			STATIC_SHORT_ALIAS.get(lower) as string,
+			entries,
+			defaultThinking,
+			preferredTier,
+		);
 	}
 
 	// 2. Parse the alias.
@@ -548,7 +572,19 @@ export function resolveModel(
 	if (!family && (/gemini/.test(lower) || lower === "" || lower === "default")) {
 		family = "flash";
 	}
-	if (!family) return null; // unknown family -> let agy handle it
+	if (!family) {
+		// A bare base slug the provider itself advertises ("claude-sonnet-5-5",
+		// the id behind the antigravity/ entry in pi's picker) is invalid
+		// upstream without an effort: resolve it to the nearest tier variant
+		// exactly like the short aliases.
+		if (
+			entries.some((e) => e.full.toLowerCase().startsWith(`${lower}-`)) ||
+			entries.some((e) => e.full.toLowerCase() === lower)
+		) {
+			return resolveTieredBase(lower, entries, defaultThinking, preferredTier);
+		}
+		return null; // unknown family -> let agy handle it
+	}
 
 	// 3. Filter by family.
 	let candidates = entries.filter((e) => e.family === family);
@@ -689,10 +725,9 @@ async function discoverModels(binary: string): Promise<ModelEntry[]> {
 				finish("");
 			}, DISCOVERY_TIMEOUT_MS);
 		});
-		return text
-			.split("\n")
-			.map(parseModelLine)
-			.filter((e): e is ModelEntry => e !== null && !HIDDEN_FAMILY_RE.test(e.full));
+		return filterHiddenModels(
+			text.split("\n").map(parseModelLine).filter((e): e is ModelEntry => e !== null),
+		);
 	} catch {
 		return [];
 	}

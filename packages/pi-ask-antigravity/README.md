@@ -49,15 +49,14 @@ Verbose `agy models` strings (`Gemini 3.5 Flash (Medium)`) are hostile to natura
 | `pro low` | latest Pro, Low |
 | `3.5 flash` | pinned version, default tier |
 | `3.1 pro` | pinned Pro version (→ High) |
-| `sonnet` | Claude Sonnet 4.6 (Thinking) |
-| `opus` | Claude Opus 4.6 (Thinking) |
-| `gpt-oss` | GPT-OSS 120B (Medium) |
+| `sonnet` | Claude Sonnet 5.5, default tier (Medium) |
+| `opus` | Claude Opus 5.5, default tier (Medium) |
 | `Gemini 3.5 Flash (Medium)` | exact passthrough |
 
 - **Latest** = highest version number available for the family.
 - **Default tier**: Flash → Medium, Pro → High. Overridable per-config (below).
 - When a tier is unavailable for a family, the nearest is chosen with ties broken toward the higher tier (so "latest and greatest" wins).
-- The non-Gemini aliases (`sonnet`, `opus`, `gpt-oss`) are a static overlay merged with the live `agy models` catalog. Live entries always win on case-insensitive full-string equality, so an updated `agy` listing takes precedence over the hardcoded fallback.
+- The non-Gemini aliases (`sonnet`, `opus`) are a static overlay (the full low/medium/high tier spread) merged with the live `agy models` catalog. Live entries always win on case-insensitive full-string equality, so an updated `agy` listing takes precedence over the hardcoded fallback. A bare base id (`claude-sonnet-5-5`) resolves to the nearest tier variant; the retired `gpt-oss` family resolves to nothing.
 
 ## Execution modes (`mode`)
 
