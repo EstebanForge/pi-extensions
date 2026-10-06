@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - **Breaking: model aliases track agy's Claude 5.5 tiered catalog.** `sonnet`/`opus` now resolve to `claude-sonnet-5-5`/`claude-opus-5-5` with the tier riding `--effort` (nearest-tier pick against the requested thinking level), replacing the retired fixed `claude-sonnet-4-6`/`claude-opus-4-6-thinking` slugs Google removed from Antigravity. The static overlay carries the full low/medium/high spread so the aliases still resolve when the live catalog omits Claude; `gpt-oss-120b-medium` stays a fixed full slug with no effort. Exact tiered ids (`claude-sonnet-5-5-low`) split to base + effort exactly like Gemini's.
+- **The `gpt-oss` alias and its overlay entry are removed** ahead of upstream's announced removal of that family: nobody used the fixed-thinking slug and it loses to the cheaper tiered options. The alias now resolves to nothing (the raw string passes to agy and fails there) instead of the tool offering a dying model.
 
 ## [1.2.9] - 2026-09-28
 

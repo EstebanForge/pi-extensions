@@ -114,7 +114,6 @@ type Mode = "plan" | "accept-edits";
 // the alias so the user can still type "sonnet" and get a working answer.
 //   "sonnet"   -> claude-sonnet-5-5 (tiered low/medium/high like Gemini)
 //   "opus"     -> claude-opus-5-5 (tiered low/medium/high like Gemini)
-//   "gpt-oss"  -> gpt-oss-120b-medium
 const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
 	{ full: "claude-sonnet-5-5-low", family: "other", version: null, tier: "low" },
 	{ full: "claude-sonnet-5-5-medium", family: "other", version: null, tier: "medium" },
@@ -122,7 +121,6 @@ const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
 	{ full: "claude-opus-5-5-low", family: "other", version: null, tier: "low" },
 	{ full: "claude-opus-5-5-medium", family: "other", version: null, tier: "medium" },
 	{ full: "claude-opus-5-5-high", family: "other", version: null, tier: "high" },
-	{ full: "gpt-oss-120b-medium", family: "other", version: null, tier: null },
 ];
 
 // Short alias → overlay full string. Used by resolveModel to recognize
@@ -132,8 +130,12 @@ const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
 const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
 	["sonnet", "claude-sonnet-5-5"],
 	["opus", "claude-opus-5-5"],
-	["gpt-oss", "gpt-oss-120b-medium"],
 ]);
+
+/** Families dropped outright even while `agy models` still lists them: the
+ *  fixed-thinking single slug loses to the cheaper effort-tiered options and
+ *  its removal upstream is already announced, so we stop offering it now. */
+const HIDDEN_FAMILY_RE = /^gpt-oss-/;
 
 /** Merge the live catalog with the static alias overlay. Live entries win on
  *  case-insensitive full-string equality so an updated `agy models` listing
@@ -474,10 +476,9 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
  *  Claude bases (slugs starting "gemini-"/"claude-") accept a separate
  *  --effort, so split the tier suffix out of the slug: the base alone
  *  (claude-sonnet-5-5) is what --model wants, and the tier goes to --effort
- *  (agy rejects a bare base: "requires --effort"). Fixed-thinking families
- *  keep agy's exact slug even when it carries a -medium suffix
- *  (gpt-oss-120b-medium): agy rejects --effort for them, so the suffix stays
- *  part of the slug. */
+ *  (agy rejects a bare base: "requires --effort"). Only unverified families
+ *  keep agy's exact slug whole, so an unknown suffix can never trigger an
+ *  unsupported --effort. */
 function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
 		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
@@ -505,7 +506,7 @@ export function resolveModel(
 	const exact = entries.find((e) => e.full.toLowerCase() === lower);
 	if (exact) return toResolved(exact.full, exact.tier);
 
-	// 1b. Static short alias ("sonnet" / "opus" / "gpt-oss"). Checked
+	// 1b. Static short alias ("sonnet" / "opus"). Checked
 	//     before the family parser because none of these names contain
 	//     "flash" or "pro" and would otherwise return null below. The
 	//     resolved full string is then re-validated against the catalog
@@ -517,8 +518,7 @@ export function resolveModel(
 	if (STATIC_SHORT_ALIAS.has(lower)) {
 		const target = STATIC_SHORT_ALIAS.get(lower) as string;
 		// Tiered bases (Claude ships low/medium/high like Gemini): pick the
-		// catalog variant nearest the requested tier. Only gpt-oss resolves to
-		// a fixed full slug.
+		// catalog variant nearest the requested tier.
 		const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${target}-`));
 		if (variants.length > 0) {
 			const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
@@ -692,7 +692,7 @@ async function discoverModels(binary: string): Promise<ModelEntry[]> {
 		return text
 			.split("\n")
 			.map(parseModelLine)
-			.filter((e): e is ModelEntry => e !== null);
+			.filter((e): e is ModelEntry => e !== null && !HIDDEN_FAMILY_RE.test(e.full));
 	} catch {
 		return [];
 	}
@@ -952,7 +952,7 @@ export default async function (pi: ExtensionAPI) {
 	// Discovered once at load; frozen for the session. Run /reload after an
 	// `agy update` to refresh. Failure is non-fatal: resolveModel falls back
 	// to passthrough so exact slugs typed by the user still work. The static
-	// alias overlay (sonnet / opus / gpt-oss) is merged on top so those
+	// alias overlay (sonnet / opus) is merged on top so those
 	// aliases resolve even when agy doesn't surface them in the live catalog.
 	const discovered = mergeCatalog(await discoverModels(binary).catch(() => []));
 

@@ -17,8 +17,8 @@ import factory, {
 // flash families):
 // two columns, "<slug>  <display label>". --model takes only the slug (col 1);
 // the label is display-only. Gemini and Claude bases split their tier out to a
-// separate --effort; fixed families (gpt-oss-*) keep agy's exact slug with
-// NO --effort.
+// separate --effort; unverified families keep agy's exact slug with
+// NO --effort, and the retired gpt-oss family is filtered out outright.
 const RAW = [
 	"gemini-3.8-flash-high     Gemini 3.8 Flash (High)",
 	"gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)",
@@ -34,7 +34,6 @@ const RAW = [
 	"claude-sonnet-5-5-low     Claude Sonnet 5.5 (Low)",
 	"claude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)",
 	"claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)",
-	"gpt-oss-120b-medium       GPT-OSS 120B (Medium)",
 ].join("\n");
 
 const entries = mergeCatalog(
@@ -127,10 +126,11 @@ describe("parseModelLine + resolveModel (two-column agy output)", () => {
 			model: "claude-opus-5-5",
 			effort: "medium",
 		});
-		// gpt-oss stays a fixed full slug with NO effort.
-		assert.deepEqual(resolveModel("gpt-oss", entries, DEFAULT_THINKING), {
-			model: "gpt-oss-120b-medium",
-		});
+		// gpt-oss is filtered from the catalog and its alias is gone: resolution
+		// returns null so the caller passes the raw string and agy rejects it
+		// loudly instead of the tool offering a dying model.
+		assert.equal(resolveModel("gpt-oss", entries, DEFAULT_THINKING), null);
+		assert.equal(resolveModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), null);
 	});
 
 	test("resolveModel: an exact tiered slug splits to base + effort (not passed whole)", () => {
@@ -142,10 +142,10 @@ describe("parseModelLine + resolveModel (two-column agy output)", () => {
 			model: "claude-sonnet-5-5",
 			effort: "low",
 		});
-		// A fixed exact slug passes through unchanged.
-		assert.deepEqual(resolveModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), {
-			model: "gpt-oss-120b-medium",
-		});
+		// An exact slug from a filtered family no longer resolves either.
+		assert.equal(resolveModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), null);
+		// Unknown input stays null: the caller passes it raw to agy.
+		assert.equal(resolveModel("futuremodel-9-ultra", entries, DEFAULT_THINKING), null);
 	});
 
 	test("resolveModel: explicit preferred tier beats alias tier, default, and clamps to the family", () => {
@@ -183,9 +183,8 @@ test("resolveModel: short aliases still resolve when agy omits them (static over
 			model: "claude-sonnet-5-5",
 			effort: "medium",
 		});
-		assert.deepEqual(resolveModel("gpt-oss", geminiOnly, DEFAULT_THINKING), {
-			model: "gpt-oss-120b-medium",
-		});
+		// The dropped family is not resurrected by any overlay.
+		assert.equal(resolveModel("gpt-oss", geminiOnly, DEFAULT_THINKING), null);
 	});
 });
 
