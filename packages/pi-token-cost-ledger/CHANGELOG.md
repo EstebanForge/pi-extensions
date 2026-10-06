@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.6 — 2026-10-06
+
+### Added
+- **Price for Claude Opus 5.5.** The Antigravity catalog migration made `claude-opus-5-5` live in sessions while the ledger had no rate for it, so its turns landed in the unpriced bucket. Rates from the live models.dev catalog (2026-10-06): $4 input / $0.20 cache-read / $20 output per 1M. Refresh is update-only by design, so the new id ships with the bundled file.
+
 ## 1.2.5 — 2026-09-30
 
 ### Added
