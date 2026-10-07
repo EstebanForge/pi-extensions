@@ -50,11 +50,15 @@ describe("extractImagePaths", () => {
 		expect(extractImagePaths("no images here, just file.txt and notes.md", "/w")).toEqual([]);
 	});
 
+	it("matches paths after markdown parens and angle brackets", () => {
+		expect(extractImagePaths("![shot](/tmp/shots/two.png)", "/w")).toEqual(["/tmp/shots/two.png"]);
+		expect(extractImagePaths("Saved: <three.webp>", "/w")).toEqual(["/w/three.webp"]);
+	});
+
 	it("matches only the token after the last boundary char", () => {
-		// Ported regex boundary class is [\s"'=]: a quoted path with spaces
-		// yields its final token; parenthesized paths do not match at all.
+		// Boundary class is [\s"'=([<:]: a quoted path with spaces yields its
+		// final token (ported regex semantics, kept intentionally).
 		expect(extractImagePaths('"shot final.png" saved', "/w")).toEqual(["/w/final.png"]);
-		expect(extractImagePaths("(blocked.png)", "/w")).toEqual([]);
 	});
 });
 

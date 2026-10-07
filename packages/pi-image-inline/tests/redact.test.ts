@@ -103,6 +103,22 @@ describe("findStructuredImages", () => {
 		expect(findStructuredImages(wrapper)).toEqual([{ path: IMG_A, width: 5, height: 6 }]);
 	});
 
+	it("aggregates observations across a batch array (multi-image alignment)", () => {
+		const batch = [
+			{ imageObservations: [{ path: IMG_A, pixels: { width: 1, height: 2 } }] },
+			{ imageObservations: [{ path: IMG_B, pixels: { width: 3, height: 4 } }] },
+		];
+		expect(findStructuredImages(batch)).toEqual([
+			{ path: IMG_A, width: 1, height: 2 },
+			{ path: IMG_B, width: 3, height: 4 },
+		]);
+	});
+
+	it("collects sibling imagePath keys and dedupes repeats", () => {
+		const mixed = { first: { imagePath: IMG_A }, second: { imagePath: IMG_A } };
+		expect(findStructuredImages(mixed)).toEqual([{ path: IMG_A }]);
+	});
+
 	it("ignores malformed observations and returns nothing without image data", () => {
 		expect(findStructuredImages({ imageObservations: ["junk", null, 42] })).toEqual([]);
 		expect(findStructuredImages({ hello: "world" })).toEqual([]);

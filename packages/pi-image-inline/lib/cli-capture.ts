@@ -7,7 +7,7 @@
 // Ported from jnsahaj/pi-agent-browser-screenshot (MIT).
 
 export const IMAGE_PATH_RE =
-	/(?:^|[\s"'=])((?:[~./\\]|\/)?[\w~@./\\-]+\.(?:png|jpe?g|webp|gif|bmp))/gi;
+	/(?:^|[\s"'=([<:])((?:[~./\\]|\/)?[\w~@./\\-]+\.(?:png|jpe?g|webp|gif|bmp))/gi;
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 

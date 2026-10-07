@@ -15,7 +15,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import {
 	Container,
 	getCellDimensions,
@@ -26,6 +26,7 @@ import {
 	type ImageDimensions,
 } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { isImagePath, mimeForPath, MAX_FILE_BYTES } from "./cli-capture";
 
 export const IMAGE_PLACEHOLDER = "\u{10eeee}";
 export const MAX_WIDTH_CELLS = 100;
@@ -110,11 +111,14 @@ export function calculateImageCellSize(
 	const maxHeight = Math.max(1, Math.floor(maxHeightCells));
 	const imageWidth = Math.max(1, imageDimensions.widthPx);
 	const imageHeight = Math.max(1, imageDimensions.heightPx);
-	const widthScale = (maxWidth * cellDimensions.widthPx) / imageWidth;
-	const heightScale = (maxHeight * cellDimensions.heightPx) / imageHeight;
+	// 0px cells (unknown terminal pixel size) would produce NaN placements.
+	const cellWidthPx = Math.max(1, cellDimensions.widthPx || 1);
+	const cellHeightPx = Math.max(1, cellDimensions.heightPx || 1);
+	const widthScale = (maxWidth * cellWidthPx) / imageWidth;
+	const heightScale = (maxHeight * cellHeightPx) / imageHeight;
 	const scale = Math.min(widthScale, heightScale);
-	const columns = Math.ceil((imageWidth * scale) / cellDimensions.widthPx);
-	const rows = Math.ceil((imageHeight * scale) / cellDimensions.heightPx);
+	const columns = Math.ceil((imageWidth * scale) / cellWidthPx);
+	const rows = Math.ceil((imageHeight * scale) / cellHeightPx);
 	return {
 		columns: Math.max(1, Math.min(maxWidth, columns)),
 		rows: Math.max(1, Math.min(maxHeight, rows)),
@@ -254,10 +258,23 @@ export function imageComponentFor(
 ): Component {
 	const key = `${path}:${mtimeMs}`;
 	const cached = imageCache.get(key);
-	if (cached) return cached;
+	if (cached) {
+		// Re-insert to refresh recency; Map iteration order is insertion order.
+		imageCache.delete(key);
+		imageCache.set(key, cached);
+		return cached;
+	}
+
+	// Paths come from tool results, i.e. from the model: refuse anything that
+	// is not a regular, reasonably sized image file. The throw is caught by
+	// imageEntryComponent and degrades to its fallback line.
+	if (!isImagePath(path)) throw new Error(`not an image file: ${path}`);
+	const stat = statSync(path, { throwIfNoEntry: false });
+	if (!stat?.isFile()) throw new Error(`not a regular file: ${path}`);
+	if (stat.size > MAX_FILE_BYTES) throw new Error(`image too large: ${path}`);
 
 	const base64 = readFileSync(path).toString("base64");
-	const mimeType = mimeFor(path);
+	const mimeType = mimeForPath(path);
 	const dimensions = getImageDimensions(base64, mimeType);
 
 	let image: Component;
@@ -282,21 +299,6 @@ export function imageComponentFor(
 	}
 	imageCache.set(key, image);
 	return image;
-}
-
-const MIME_BY_EXT: Record<string, string> = {
-	".png": "image/png",
-	".jpg": "image/jpeg",
-	".jpeg": "image/jpeg",
-	".webp": "image/webp",
-	".gif": "image/gif",
-	".bmp": "image/bmp",
-};
-
-function mimeFor(path: string): string {
-	const dot = path.lastIndexOf(".");
-	const ext = dot === -1 ? "" : path.slice(dot).toLowerCase();
-	return MIME_BY_EXT[ext] ?? "image/png";
 }
 
 /** Caption + image container used by the entry renderer. */

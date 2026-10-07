@@ -37,7 +37,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getImageDimensions } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -95,7 +95,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", (event, ctx): ToolResultEventResult | undefined => {
-		if (event.isError) return;
+		if (event.isError) {
+			// Failed commands produce no captures; drop their start-time entry
+			// so the map cannot leak across a long session.
+			cliStartTimes.delete(event.toolCallId);
+			return;
+		}
 
 		if (event.toolName === "read") {
 			// Exempt by default: the model asked for vision explicitly.
@@ -130,12 +135,14 @@ export default function (pi: ExtensionAPI) {
 		const content = event.content as ContentBlock[];
 		if (!content.some((block) => block.type === "image")) return undefined;
 
-		// structuredContent first (typed contract), then details (where the
-		// native tool's presentation actually lands).
-		const structured = [
-			...findStructuredImages(event.structuredContent),
-			...findStructuredImages(event.details),
-		];
+		// structuredContent first (typed contract); details only when it
+		// carries nothing, so the two views of one capture never concatenate
+		// into duplicate facts that would misalign multi-image indexes.
+		const fromStructured = findStructuredImages(event.structuredContent);
+		const structured =
+			fromStructured.length > 0
+				? fromStructured
+				: findStructuredImages(event.details);
 
 		const entries: EntryData[] = [];
 		const result = redactImages(content, (i, block) => {
@@ -166,7 +173,10 @@ export default function (pi: ExtensionAPI) {
 			width: structured?.width,
 			height: structured?.height,
 		};
-		if (!info.path) info.path = cacheImageFile(block);
+		if (!info.path) {
+			const cached = cacheImageFile(block);
+			if (cached) info.path = cached;
+		}
 		if (info.width === undefined || info.height === undefined) {
 			const dims = getImageDimensions(block.data, block.mimeType);
 			if (dims) {
@@ -199,8 +209,9 @@ export default function (pi: ExtensionAPI) {
 			seen.add(candidate);
 			let mtimeMs: number;
 			try {
-				if (statSync(candidate).size > MAX_FILE_BYTES) continue;
-				mtimeMs = statSync(candidate).mtimeMs;
+				const stat = statSync(candidate);
+				if (stat.size > MAX_FILE_BYTES) continue;
+				mtimeMs = stat.mtimeMs;
 			} catch {
 				continue;
 			}
@@ -223,16 +234,22 @@ function mtimeOf(path: string): number {
 /**
  * Last-resort path for image blocks that name no file: write the pixels to a
  * temp cache so the transcript renderer has something to read after resume.
+ * The dir is per-user and 0700, and the write is exclusive, so another local
+ * user can neither plant a symlink nor pre-place a file we would follow.
  */
 function cacheImageFile(block: ImageBlock): string {
 	const hash = createHash("sha1").update(block.data).digest("hex");
 	const ext = extForMime(block.mimeType) ?? "bin";
-	const dir = join(tmpdir(), "pi-image-inline");
+	const dir = join(tmpdir(), `pi-image-inline-${process.getuid?.() ?? "user"}`);
 	try {
-		mkdirSync(dir, { recursive: true });
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		const path = join(dir, `${hash}.${ext}`);
-		if (!existsSync(path)) {
-			writeFileSync(path, Buffer.from(block.data, "base64"));
+		// "wx" fails on any existing entry (including attacker symlinks); an
+		// EEXIST for our own hash means the bytes are already cached.
+		try {
+			writeFileSync(path, Buffer.from(block.data, "base64"), { flag: "wx", mode: 0o600 });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
 		return path;
 	} catch {

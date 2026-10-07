@@ -25,16 +25,9 @@ export interface ImageInfo {
 	height?: number;
 }
 
-/** Capture tools whose image results exist for the user's eyes only. */
 export function isCaptureTool(toolName: string): boolean {
 	return toolName === "agent_browser" || toolName.endsWith("_take_screenshot");
 }
-
-/** Dimension measurer signature (pi-tui's getImageDimensions matches). */
-export type MeasureImage = (
-	base64: string,
-	mimeType: string,
-) => { widthPx: number; heightPx: number } | undefined;
 
 // The capture placeholder wording is locked by the behavior contract; keep it
 // one whole literal per branch so greps and reviews see it intact. The read
@@ -82,12 +75,13 @@ export function redactImages(
  * The native agent_browser tool stores them on its presentation object as
  * `imageObservations[{path, pixels{width,height}}]` with a top-level
  * `imagePath`; that object may arrive via structuredContent or details.
- * Order matches content order for the single-capture case; extra entries
- * are ignored, missing entries fall back to measurement by the caller.
+ * Batch results carry one observation per capture, so ALL branches aggregate
+ * (dedup by path) instead of stopping at the first hit; index i then aligns
+ * with content block i. Missing entries fall back to measurement by the
+ * caller.
  */
 export function findStructuredImages(value: unknown): ImageInfo[] {
-	const found = search(value, 0);
-	return dedupeByPath(found);
+	return dedupeByPath(search(value, 0));
 }
 
 const MAX_SEARCH_DEPTH = 4;
@@ -97,13 +91,11 @@ function search(value: unknown, depth: number): ImageInfo[] {
 		return [];
 	}
 	if (Array.isArray(value)) {
-		// First array element that yields observations wins; keeps batch
-		// envelopes from merging unrelated captures.
+		const hits: ImageInfo[] = [];
 		for (const item of value) {
-			const hit = search(item, depth + 1);
-			if (hit.length > 0) return hit;
+			hits.push(...search(item, depth + 1));
 		}
-		return [];
+		return hits;
 	}
 	const rec = value as Record<string, unknown>;
 	const observations = rec.imageObservations;
@@ -127,11 +119,11 @@ function search(value: unknown, depth: number): ImageInfo[] {
 	if (typeof rec.imagePath === "string") {
 		return [{ path: rec.imagePath }];
 	}
+	const hits: ImageInfo[] = [];
 	for (const child of Object.values(rec)) {
-		const hit = search(child, depth + 1);
-		if (hit.length > 0) return hit;
+		hits.push(...search(child, depth + 1));
 	}
-	return [];
+	return hits;
 }
 
 function numberOf(value: unknown): number | undefined {
