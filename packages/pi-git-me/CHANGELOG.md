@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Two edit tools for your own posted comments: `git_issue_comment_edit` and `git_pr_comment_edit`.** They replace the body of one of YOUR existing comments in place (no delete-and-repost noise): the last one on the thread by default, an older one via `commentId` (REST id). Each tool fetches the current comment first, refuses a comment authored by anyone else, skips the call entirely when the replacement body is identical, and applies via `gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>` behind the same editable review dialog as the other write tools. There is deliberately no create-if-none fallback: posting new comments stays with `git_issue_comment` / `git_pr_comment`. Both engines surface as `/git issue-comment-edit <num>` and `/git pr-comment-edit [num]`.
+
 ## 1.4.0 — 2026-09-23
 
 ### Added

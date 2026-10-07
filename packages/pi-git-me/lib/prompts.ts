@@ -184,6 +184,45 @@ export const ISSUE_COMMENT_BODY_DESCRIPTION =
 export const ISSUE_COMMENT_NUMBER_DESCRIPTION =
   "Issue number to comment on (required). If you do not know one, you MAY run `gh issue list` through the bash/shell tool for READ-ONLY discovery only. Never use the shell to POST the comment — that must go through this tool.";
 
+// ------------------------------------------- comment edit (issue + PR) -----
+// One REST resource serves both surfaces (GitHub models PR conversation
+// comments as issue comments), so the param descriptions are shared and the
+// two tool descriptions differ only in surface wording.
+
+export const COMMENT_EDIT_BODY_DESCRIPTION =
+  "The REPLACEMENT body in Markdown. It fully replaces the existing comment text; nothing is merged or appended. The user can edit this in the review dialog before it is applied.";
+
+export const COMMENT_EDIT_COMMENT_ID_DESCRIPTION =
+  "Optional REST id of an OLDER comment of yours to edit instead of your last one (numeric id from `gh api repos/<owner>/<repo>/issues/<n>/comments`, discoverable read-only via the bash/shell tool). Omit to edit your most recent comment on the thread. Only your own comments are editable; a comment by anyone else is refused.";
+
+export const COMMENT_EDIT_CWD_DESCRIPTION = CWD_DESCRIPTION;
+
+export const ISSUE_COMMENT_EDIT_TITLE = "git: Edit Issue Comment (GitHub via gh)";
+
+export const ISSUE_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comments on a GitHub issue — this tool runs \`gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>\`, it is not a text generator.** USE THIS when your posted issue comment needs a correction or an update: it replaces the comment body in place, keeping the comment's position in the thread (no delete-and-repost noise). By default it targets your LAST comment on the issue; pass commentId to edit an older one. The extension fetches the current comment first, refuses if the comment is not yours, skips the call entirely when the new body is identical, and shows the replacement in an editable preview dialog, applying it only after the user accepts.
+
+Only YOUR OWN comments are editable (the authenticated user must be the author). This tool never creates a comment: posting stays with git_issue_comment.
+
+Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
+
+DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the replacement body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the new body should say, and do NOT ask for approval before calling. Do NOT run \`gh api\` PATCH calls (or \`gh issue comment --edit-last\`) through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
+
+export const ISSUE_COMMENT_EDIT_NUMBER_DESCRIPTION =
+  "Issue number whose comment thread to edit (required). The tool edits your last comment on that issue unless commentId names an older one.";
+
+export const PR_COMMENT_EDIT_TITLE = "git: Edit PR Comment (GitHub via gh)";
+
+export const PR_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comments on a GitHub pull request conversation — this tool runs \`gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>\`, it is not a text generator.** USE THIS when your posted PR conversation comment needs a correction or an update: it replaces the comment body in place, keeping the comment's position in the thread (no delete-and-repost noise). By default it targets your LAST comment on the PR; pass commentId to edit an older one. The extension fetches the current comment first, refuses if the comment is not yours, skips the call entirely when the new body is identical, and shows the replacement in an editable preview dialog, applying it only after the user accepts.
+
+Only YOUR OWN comments are editable (the authenticated user must be the author). This tool never creates a comment: posting stays with git_pr_comment, and review-state events stay with git_pr_review.
+
+Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
+
+DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the replacement body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the new body should say, and do NOT ask for approval before calling. Do NOT run \`gh api\` PATCH calls (or \`gh pr comment --edit-last\`) through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
+
+export const PR_COMMENT_EDIT_NUMBER_DESCRIPTION =
+  "Optional PR number. Defaults to the PR for the current branch. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
+
 // -------------------------------------------------- git issue create ------
 
 export const ISSUE_CREATE_TITLE = "git: Create Issue (GitHub via gh)";

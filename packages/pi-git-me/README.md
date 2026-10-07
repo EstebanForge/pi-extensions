@@ -11,8 +11,10 @@ Use it when you want an agent to **inspect the working state** of a repo (diff, 
 - commit messages → `git_commit`
 - PR titles and bodies → `git_pr_upsert`
 - top-level PR conversation comments → `git_pr_comment`
+- edits to YOUR posted PR conversation comments → `git_pr_comment_edit`
 - PR review events (COMMENT / APPROVE / REQUEST_CHANGES) → `git_pr_review`
 - issue comments → `git_issue_comment`
+- edits to YOUR posted issue comments → `git_issue_comment_edit`
 - new issues → `git_issue_create`
 - new discussions → `git_discussion_create`
 - discussion comments and threaded discussion replies → `git_discussion_comment`
@@ -50,6 +52,8 @@ The git-me tools will not interfere with those; they only handle `git` and `gh` 
 | `git_pr_comment` | write | `gh` | Post a top-level PR conversation comment; attach local images/videos with `images`. Opens an editable preview; applies via `gh pr comment` (does not touch the PR review state — use `git_pr_review` for that). |
 | `git_pr_review` | write | `gh` | Post a PR review event. Opens an editable preview; applies via `gh pr review --comment` (or `--approve` / `--request-changes`). |
 | `git_issue_comment` | write | `gh` | Post a comment on a GitHub issue; attach local images/videos with `images`. Opens an editable preview; applies via `gh issue comment <number> --body`. |
+| `git_issue_comment_edit` | write | `gh` (REST) | Edit one of YOUR existing issue comments in place: your last by default, `commentId` for an older one. Fetches the current body, refuses comments that are not yours, skips identical bodies; applies via `gh api --method PATCH .../issues/comments/<id>`. |
+| `git_pr_comment_edit` | write | `gh` (REST) | Edit one of YOUR existing PR conversation comments in place (same contract as the issue edit tool). |
 | `git_issue_create` | write | `gh` | Create a new GitHub issue (title + body, optional labels/assignees). Opens an editable preview; applies via `gh issue create`. |
 | `git_discussion_create` | write | `gh` (GraphQL) | Start a new GitHub Discussion in a named category. Opens an editable preview; applies via the `createDiscussion` mutation (`gh api graphql`). |
 | `git_discussion_comment` | write | `gh` (GraphQL) | Post a comment on a discussion, or a threaded reply under a comment (`replyTo`); attach local images/videos with `images`. Opens an editable preview; applies via the `addDiscussionComment` mutation. |
@@ -60,7 +64,7 @@ The agent drafts the prose (commit message, PR title/body, PR comment, review bo
 
 The eight write tools gate themselves. A user is present at the TUI:
 
-- **`git_commit`**, **`git_pr_upsert`**, **`git_pr_comment`**, **`git_pr_review`**, **`git_issue_comment`**, **`git_issue_create`**, **`git_discussion_create`**, **`git_discussion_comment`** open an **editable** dialog — trim or rewrite the agent's draft, then accept (Enter) or cancel (Esc).
+- **`git_commit`**, **`git_pr_upsert`**, **`git_pr_comment`**, **`git_pr_comment_edit`**, **`git_pr_review`**, **`git_issue_comment`**, **`git_issue_comment_edit`**, **`git_issue_create`**, **`git_discussion_create`**, **`git_discussion_comment`** open an **editable** dialog — trim or rewrite the agent's draft, then accept (Enter) or cancel (Esc).
 
 In **headless mode** (no interactive UI, e.g. an unsupervised or automated run), the write tools are **refused by default** — the extension will not commit, edit a PR, post a comment, or post a review on your behalf without a human present. Opt in with `/git headless on` (persisted as the `git-allow-headless-write` setting) if you genuinely want unsupervised writes (e.g. scheduled/automation use).
 
@@ -115,7 +119,7 @@ Update any prompt templates or slash-command prefills that named the old tools. 
 | Tool | Required for | How to install |
 | --- | --- | --- |
 | `git` | every tool | any modern Git (>= 2.30 recommended) |
-| `gh` | the eight GitHub-touching tools (`git_pr_info`, `git_pr_upsert`, `git_pr_comment`, `git_pr_review`, `git_issue_comment`, `git_issue_create`, `git_discussion_create`, `git_discussion_comment`) | [cli.github.com](https://cli.github.com) — then `gh auth login` |
+| `gh` | the GitHub-touching tools (`git_pr_info`, `git_pr_upsert`, `git_pr_comment`, `git_pr_comment_edit`, `git_pr_review`, `git_issue_comment`, `git_issue_comment_edit`, `git_issue_create`, `git_discussion_create`, `git_discussion_comment`) | [cli.github.com](https://cli.github.com) — then `gh auth login` |
 
 The extension reads **no environment variables**. There is no token to copy; `gh` is the auth surface. If `gh` is missing, the read tools still work; the GitHub write tools surface a clear error.
 
@@ -134,6 +138,8 @@ The extension reads **no environment variables**. There is no token to copy; `gh
 | `/git pr-comment [num]` | Prefills with a prompt to draft + post a top-level PR conversation comment. |
 | `/git review` | Prefills with a prompt to draft + post a PR review event. |
 | `/git issue-comment <num>` | Prefills with a prompt to draft + post an issue comment. |
+| `/git issue-comment-edit <num>` | Prefills with a prompt to draft a replacement for your comment on that issue. |
+| `/git pr-comment-edit [num]` | Prefills with a prompt to draft a replacement for your comment on the PR. |
 | `/git issue-create <title>` | Prefills with a prompt to draft + open a new issue. |
 | `/git discussion-create <title>` | Prefills with a prompt to draft + start a new discussion (category required). |
 | `/git discussion-comment <num>` | Prefills with a prompt to draft + post a discussion comment or threaded reply. |
