@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "vitest";
+import { afterAll, test } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveConfig } from "../src/config.js";
 import { createStreamSimple, ToolRoundTrips } from "../src/provider.js";
@@ -19,6 +19,13 @@ import { SessionStore } from "../src/sessions.js";
 import type { StreamDriver, DriverTurnRequest } from "../src/driver.js";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import { normalizeContext, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
+
+// Helpers that create temp dirs register them here; vitest's global afterAll
+// removes them (captureTurn and the argv-capturing bin have no natural finally).
+const tempDirs: string[] = [];
+afterAll(() => {
+	for (const d of tempDirs) fs.rmSync(d, { recursive: true, force: true });
+});
 
 function withEnvsSync<T>(values: Record<string, string | undefined>, fn: () => T): T {
 	const prevs = Object.entries(values).map(([k]) => [k, process.env[k]] as const);
@@ -128,9 +135,11 @@ async function captureTurn(
 ): Promise<{ opts?: DriverTurnRequest; events: unknown[] }> {
 	const seen: { opts?: DriverTurnRequest } = {};
 	const driver = capturingDriver(seen);
+	const roDir = fs.mkdtempSync(path.join(os.tmpdir(), "ro-prov-"));
+	tempDirs.push(roDir);
 	const streamSimple = createStreamSimple({
 		entries: [],
-		store: new SessionStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ro-prov-")), "sessions.json")),
+		store: new SessionStore(path.join(roDir, "sessions.json")),
 		driver,
 		// Give the acp path its own captured driver so an acp regression that
 		// skipped the refusal would land here, not silently in deps.driver.
@@ -230,6 +239,7 @@ async function registerTool(): Promise<RegisteredTool> {
 
 function makeArgvCapturingAgyBin(argvFile: string): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ro-agy-bin-"));
+	tempDirs.push(dir);
 	const bin = path.join(dir, "agy");
 	const script = [
 		"#!/usr/bin/env bash",
@@ -342,7 +352,7 @@ test("ask tool: AGY_EXTRA_ARGS cannot re-inject the skip flag on plan runs", asy
 			{
 				AGY_READONLY: undefined,
 				AGY_MODE: "plan",
-				AGY_EXTRA_ARGS: "--dangerously-skip-permissions",
+				AGY_EXTRA_ARGS: "--dangerously-skip-permissions --dangerously-skip-permissions=true",
 				AGY_AGENTS_ROOT: agentsRoot,
 				AGY_BIN: makeArgvCapturingAgyBin(argvFile),
 			},
@@ -350,9 +360,9 @@ test("ask tool: AGY_EXTRA_ARGS cannot re-inject the skip flag on plan runs", asy
 				await tool.execute("t1", { prompt: "look", cwd }, undefined, undefined, { cwd });
 				const argv = fs.readFileSync(argvFile, "utf8").split("\0");
 				assert.equal(
-					argv.includes("--dangerously-skip-permissions"),
+					argv.some((a) => a.startsWith("--dangerously-skip-permissions")),
 					false,
-					"env-injected skip flag must be filtered from plan runs",
+					"env-injected skip flag (bare or =value) must be filtered from plan runs",
 				);
 			},
 		);
@@ -366,8 +376,12 @@ test("saveConfig: env overrides are not baked into the file; null nested keys to
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ro-save-"));
 	const cfgPath = path.join(dir, "config.json");
 	try {
-		// Legacy/hand-edited file: readOnly false on disk, null nested object.
-		fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: false, acp: null }));
+		// Legacy/hand-edited file: readOnly false on disk, null nested objects,
+		// plus a legacy approvals key that normalization must drop.
+		fs.writeFileSync(
+			cfgPath,
+			JSON.stringify({ readOnly: false, acp: null, approvals: { legacy: true } }),
+		);
 		withEnvsSync({ AGY_READONLY: "1" }, () => {
 			const saved = saveConfig({ mode: "accept-edits" }, cfgPath);
 			// The persisted merge follows the FILE (env must not bake in)...
@@ -377,8 +391,9 @@ test("saveConfig: env overrides are not baked into the file; null nested keys to
 			const raw = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
 			assert.equal(raw.readOnly, false, "env-derived values must not persist to disk");
 			assert.equal(raw.mode, "accept-edits");
-			// The null nested object was normalized instead of crashing.
+			// The null nested objects were normalized instead of crashing.
 			assert.deepEqual(raw.acp, { bin: "", usageEstimate: "estimate" });
+			assert.deepEqual(raw.approvals, { gateMode: "auto", mode: "ask" });
 		});
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });

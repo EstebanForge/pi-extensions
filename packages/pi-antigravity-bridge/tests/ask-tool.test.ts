@@ -334,7 +334,7 @@ function withEnvs(
 	})();
 }
 
-test("execute: plan run passes --agent and the skip flag, prompt carries the review guard, agent dir cleaned up", () =>
+test("execute: plan run passes --agent and NO skip flag, prompt carries the review guard, agent dir cleaned up", () =>
 	withEnvs(
 		{ AGY_SKIP_PERMISSIONS: "true" },
 		async () => {

@@ -367,10 +367,10 @@ export function buildFinalPrompt(
 	/** True when the restricted reviewer agent is staged: its empty edit
 	 *  toolset is a damper (the CLI does not enforce review-only, upstream
 	 *  #1181), so the prompt may ALLOW read-only commands. */
-	agentEnforced = false,
+	agentDamper = false,
 ): string {
 	let out = digest ? `(Use compact digests, not full file contents.)\n${prompt}` : prompt;
-	if (mode === "plan") out += agentEnforced ? AGENT_REVIEW_GUARD : PLAN_HEADLESS_GUARD;
+	if (mode === "plan") out += agentDamper ? AGENT_REVIEW_GUARD : PLAN_HEADLESS_GUARD;
 	return out;
 }
 
@@ -763,7 +763,7 @@ export async function registerAskAntigravityTool(
 			// license for the flag.
 			const extra =
 				mode === "plan"
-					? extraRaw.filter((a) => a !== "--dangerously-skip-permissions")
+					? extraRaw.filter((a) => !a.startsWith("--dangerously-skip-permissions"))
 					: extraRaw;
 			if (extra.length) args.push(...extra);
 			if (resolved.model) args.push("--model", resolved.model);

@@ -1397,13 +1397,17 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					}
 					const next = saveConfig({ mode: val as AgyMode });
 					// readOnly fail-closes provider turns regardless of this knob;
-					// never let the confirmation imply turns will run.
-					ui?.notify(
-						next.readOnly
-							? `mode set to ${next.mode}, but readOnly is on: provider turns are refused. /agy readonly off to lift.`
-							: `mode set to ${next.mode}`,
-						"info",
-					);
+					// never let the confirmation imply turns will run. loadConfig, not
+					// next: saveConfig merges the raw file, so an env-only readOnly
+					// would otherwise read as off here.
+					const effectiveReadonly = loadConfig().readOnly;
+					if (effectiveReadonly) {
+						ui?.notify(`mode set to ${next.mode}, but readOnly is on: provider turns are refused. /agy readonly off to lift.`, "info");
+					} else if (val === "plan") {
+						ui?.notify(`mode set to plan: provider turns are REFUSED (the CLI does not gate writes under plan, google-antigravity/antigravity-cli#1181). Only the AskAntigravity tool uses this mode.`, "info");
+					} else {
+						ui?.notify(`mode set to ${next.mode}`, "info");
+					}
 				} else {
 					const cfg = loadConfig();
 					ui?.notify(
@@ -1422,8 +1426,11 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 							: "readOnly off: provider turns follow /agy mode again.",
 						"info",
 					);
-					if (!next.readOnly && process.env.AGY_READONLY) {
-						ui?.notify("AGY_READONLY is set in this environment: it overrides the config and keeps forcing refusals until you unset it.", "warning");
+					// Compare effective vs saved: the env can force either direction
+					// (AGY_READONLY=1 keeps refusals on after /agy readonly off;
+					// AGY_READONLY=0 silently keeps readOnly off after /agy readonly on).
+					if (loadConfig().readOnly !== next.readOnly) {
+						ui?.notify(`AGY_READONLY is set in this environment and overrides the config: readOnly stays ${loadConfig().readOnly ? "on (refusing)" : "off"} until you unset it.`, "warning");
 					}
 				} else {
 					const cfg = loadConfig();
