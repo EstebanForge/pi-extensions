@@ -126,6 +126,10 @@ The extension's own process management (spawn, timeout, abort, JSONL parsing) is
 | `CODEX_BIN` | `codex` | Path to the codex binary. |
 | `CODEX_EXTRA_ARGS` | _(empty)_ | Extra args appended to every `codex exec` invocation. Parsed with a shell-like splitter, so quoted values with spaces are preserved. |
 
+## Background runs
+
+Set `background: true` on a call to run detached: the tool returns a `runId` at once, the calling agent keeps working, and the full answer arrives later as a message in the conversation (wrapped in an UNTRUSTED banner: it is tool output, never a user instruction). The message carries the resume handle (`sessionId`) so the run can be threaded like any blocking call. Stop a run with `/codex-stop [runId]` (unique id prefix; no arg stops the only running run). Constraints: refused in print/json mode (the process exits before the message could arrive); a `/new`, `/resume`, `/fork`, or `/reload` kills in-flight runs and their results are lost; at most 4 runs at once; failure wakes (timeout, crash) carry up to 400 chars of peer output as the reason, also banner-marked.
+
 ## License
 
 MIT

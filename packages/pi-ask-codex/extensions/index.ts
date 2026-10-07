@@ -46,6 +46,13 @@ import {
 import { StringEnum, contentText } from "@earendil-works/pi-ai";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	BackgroundRunRegistry,
+	backgroundFlagText,
+	createStopHandler,
+	createWakeSender,
+	summarizePrompt,
+} from "@estebanforge/pi-ask-shared";
 
 // --- Constants -------------------------------------------------------------
 
@@ -721,6 +728,263 @@ function emptyDetails(
 	};
 }
 
+
+// --- Background-mode plumbing ----------------------------------------------
+// Shared shape for both call styles: blocking awaits it, background lets it
+// run detached and pushes the outcome through the wake sender on close.
+
+const STDERR_BUF_MAX_CHARS = 64_000;
+const STDOUT_BUF_MAX_CHARS = 1_000_000;
+const STATUS_LINES_MAX = 100;
+
+/** Spawn failure (binary vanished between the availability check and spawn). Carries whatever stderr accumulated. */
+class CodexSpawnError extends Error {
+	readonly stderrClean: string;
+	constructor(message: string, stderrClean: string) {
+		super(message);
+		this.stderrClean = stderrClean;
+	}
+}
+
+interface ProcessRunOptions {
+	binary: string;
+	args: string[];
+	workdir: string;
+	timeoutMin: number;
+	startAt: number;
+	/** Mutated in place: sessionId (thread_id), usage. */
+	details: CodexDetails;
+	/** Blocking passes pi's per-run signal; background passes none on purpose: a later Esc must not kill a detached run. */
+	signal?: AbortSignal;
+	/** Blocking only: throttled progress partials. */
+	onPartial?: (text: string) => void;
+	/** Background only: hands over the tree-kill switch as soon as the child exists. */
+	onSpawn?: (kill: () => void) => void;
+}
+
+interface ProcessRunOutcome {
+	exitCode: number;
+	aborted: boolean;
+	timedOut: boolean;
+	/** Final agent message. Already trimmed. */
+	answerText: string;
+	stderrClean: string;
+}
+
+/** Tool-result shape this extension returns; keeps the background helper's literals narrow. */
+interface AskToolResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: CodexDetails;
+}
+
+/**
+ * Spawns codex exec, consumes the --json event stream, and resolves when the
+ * process tree closes. Never leaves timers or listeners behind.
+ */
+async function runCodexProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome> {
+	const { binary, args, workdir, timeoutMin, startAt, details, signal, onPartial, onSpawn } = opts;
+	let finalMessage = "";
+	const statusLines: string[] = [];
+
+	const statusInterval = onPartial
+		? setInterval(() => {
+				const elapsed = Math.floor((Date.now() - startAt) / 1000);
+				const tail = statusLines.slice(-3).join("\n");
+				const text = tail ? `(running ${elapsed}s)\n${tail}` : `(running ${elapsed}s)`;
+				onPartial(text);
+			}, STATUS_INTERVAL_MS)
+		: null;
+
+	let stderrBuf = "";
+	try {
+		const outcome = await new Promise<{
+			exitCode: number;
+			aborted: boolean;
+			timedOut: boolean;
+		}>((resolveP, rejectP) => {
+			const proc = spawn(binary, args, {
+				cwd: workdir,
+				stdio: ["ignore", "pipe", "pipe"],
+				shell: false,
+				detached: true,
+			});
+
+			// Buffer raw bytes; split on newline; parse each complete
+			// line as JSON. Incomplete trailing bytes wait for more data.
+			let stdoutBuf = "";
+			proc.stdout?.setEncoding("utf8");
+			proc.stderr?.setEncoding("utf8");
+
+			const handleLine = (line: string) => {
+				const trimmed = line.trim();
+				if (!trimmed) return;
+				let ev: CodexEvent;
+				try {
+					ev = JSON.parse(trimmed) as CodexEvent;
+				} catch {
+					return; // not JSON — ignore (shouldn't happen with --json)
+				}
+				consumeEvent(ev);
+			};
+
+			/** Apply one parsed event: capture session id, final message, usage; push a status line for item.* events. */
+			const consumeEvent = (ev: CodexEvent) => {
+				switch (ev.type) {
+					case "thread.started":
+						if (ev.thread_id) details.sessionId = ev.thread_id;
+						break;
+					case "item.started": {
+						const line = describeItem(ev, "started");
+						if (line && statusLines.length < STATUS_LINES_MAX) statusLines.push(line);
+						break;
+					}
+					case "item.completed": {
+						// Final agent message: capture as the answer.
+						if (ev.item?.type === "agent_message" && ev.item.text) {
+							finalMessage = ev.item.text;
+						}
+						const line = describeItem(ev, "completed");
+						if (line && statusLines.length < STATUS_LINES_MAX) statusLines.push(line);
+						break;
+					}
+					case "turn.completed":
+						if (ev.usage) {
+							details.usage = {
+								inputTokens: ev.usage.input_tokens ?? 0,
+								outputTokens: ev.usage.output_tokens ?? 0,
+								reasoningTokens: ev.usage.reasoning_output_tokens ?? 0,
+							};
+						}
+						break;
+					case "turn.failed":
+						// Surface the failure message; non-zero exit produces the error branch in shaping.
+						if (ev.error?.message && statusLines.length < STATUS_LINES_MAX) {
+							statusLines.push(`failed: ${shorten(ev.error.message, 200)}`);
+						}
+						break;
+					case "error":
+						// Transient reconnect notices are non-fatal; progress, not failure.
+						if (ev.message && statusLines.length < STATUS_LINES_MAX) statusLines.push(shorten(ev.message, 200));
+						break;
+				}
+			};
+
+			proc.stdout?.on("data", (d: string) => {
+				stdoutBuf += d;
+				// Safety valve for pathological no-newline output; keeps the tail.
+				if (stdoutBuf.length > STDOUT_BUF_MAX_CHARS) stdoutBuf = stdoutBuf.slice(-100_000);
+				let nl: number;
+				while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
+					handleLine(stdoutBuf.slice(0, nl));
+					stdoutBuf = stdoutBuf.slice(nl + 1);
+				}
+			});
+			proc.stderr?.on("data", (d: string) => {
+				if (stderrBuf.length < STDERR_BUF_MAX_CHARS) stderrBuf += d;
+			});
+
+			let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+			let watchdog: ReturnType<typeof setTimeout> | undefined;
+			let settled = false;
+			let timedOut = false;
+
+			const killTree = () => {
+				try {
+					if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+				} catch {}
+				if (!sigkillTimer) {
+					sigkillTimer = setTimeout(() => {
+						try {
+							if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+						} catch {}
+					}, GRACE_AFTER_TIMEOUT_MS);
+				}
+			};
+
+			// Hand the kill switch to the background registry before any terminal event can fire.
+			onSpawn?.(killTree);
+
+			const cleanup = () => {
+				if (watchdog) clearTimeout(watchdog);
+				if (sigkillTimer) clearTimeout(sigkillTimer);
+				if (signal) signal.removeEventListener("abort", onAbort);
+			};
+
+			const onAbort = () => killTree();
+
+			watchdog = setTimeout(() => {
+				timedOut = true;
+				killTree();
+			}, timeoutMin * 60_000);
+
+			if (signal) {
+				if (signal.aborted) killTree();
+				else signal.addEventListener("abort", onAbort, { once: true });
+			}
+
+			const finish = (code: number | null) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				// Flush any trailing line without a newline.
+				if (stdoutBuf.trim()) handleLine(stdoutBuf);
+				resolveP({
+					exitCode: code ?? 0,
+					aborted: !!signal?.aborted,
+					timedOut,
+				});
+			};
+
+			proc.on("error", (err) => {
+				cleanup();
+				rejectP(new CodexSpawnError(err.message, cleanStderr(stderrBuf)));
+			});
+			proc.on("close", finish);
+		});
+		return {
+			...outcome,
+			answerText: finalMessage.trim(),
+			stderrClean: cleanStderr(stderrBuf),
+		};
+	} finally {
+		if (statusInterval) clearInterval(statusInterval);
+	}
+}
+
+/**
+ * Builds the user/model-facing answer text for every terminal outcome.
+ * Pure: same inputs always render the same string, so background wakes and
+ * blocking results stay word-identical for the same run.
+ */
+function shapeFinalText(details: CodexDetails, outcome: ProcessRunOutcome, timeoutMin: number): string {
+	const text = outcome.answerText;
+
+	if (outcome.aborted) {
+		return text ? `codex was aborted. Partial answer:\n\n${text}` : "codex was aborted before producing output.";
+	}
+	if (outcome.timedOut) {
+		const note = `codex exceeded the ${timeoutMin}m timeout and was killed`;
+		return text ? `${text}\n\n[${note}]` : note;
+	}
+	// Non-zero exit: surface the failure even when partial text exists.
+	if (outcome.exitCode !== 0) {
+		const note = details.stderr.trim()
+			? `codex exited with status ${outcome.exitCode}: ${details.stderr.trim()}`
+			: `codex exited with status ${outcome.exitCode}`;
+		return text ? `${text}\n\n[${note}]` : note;
+	}
+
+	// Session footer lets the orchestrating model thread the id without details.
+	const footer = details.sessionId
+		? `\n\n[codex sessionId: ${details.sessionId} — pass as sessionId to continue this conversation]`
+		: "";
+	const usageSuffix = details.usage
+		? `\n[tokens: ${details.usage.inputTokens} in / ${details.usage.outputTokens} out${details.usage.reasoningTokens > 0 ? ` / ${details.usage.reasoningTokens} reasoning` : ""}]`
+		: "";
+
+	return (text || "(codex returned no message)") + footer + usageSuffix;
+}
+
 export default async function (pi: ExtensionAPI) {
 	const binary = resolveCodex();
 	// Run both discovery probes in parallel: each carries its own 8s
@@ -730,6 +994,39 @@ export default async function (pi: ExtensionAPI) {
 		codexAvailable(binary).catch(() => false),
 		discoverCodexModels(binary).catch(() => []),
 	]);
+
+	// --- Background-run state (one set per extension load) -------------------
+	// Pi wipes module state on /new, /resume, /fork and /reload: an in-flight
+	// background run is killed and its result is never delivered. Accepted
+	// trade-off, documented in the README.
+	const registry = new BackgroundRunRegistry({ toolName: "ask-codex" });
+	const kills = new Map<string, () => void>();
+	// Staged-artifact cleanup (contextFile), keyed by run: the session_shutdown
+	// backstop runs these when a hard exit would skip the close-path finally.
+	const cleanups = new Map<string, () => void>();
+	const sendWake = createWakeSender(pi, {
+		customType: "ask-codex-result",
+		isDisposed: () => registry.isDisposed(),
+	});
+	const stopBackground = createStopHandler(registry, {
+		kill: (run) => kills.get(run.runId)?.(),
+		onStopped: (run) =>
+			sendWake({
+				toolLabel: "Codex",
+				runId: run.runId,
+				ok: false,
+				elapsedS: Math.round((Date.now() - run.startedAt) / 1000),
+				error: "stopped via /codex-stop",
+			}),
+	});
+	pi.on("session_shutdown", () => {
+		// Latch first so close-handler wakes stay silent, then kill children,
+		// then sweep staged artifacts (hard exit would skip the close-path cleanup).
+		for (const run of registry.dispose()) kills.get(run.runId)?.();
+		for (const fn of cleanups.values()) fn();
+		cleanups.clear();
+		kills.clear();
+	});
 
 	// --- /codex: view / change defaults -----------------------------------
 
@@ -906,6 +1203,12 @@ export default async function (pi: ExtensionAPI) {
 						"When true, export the current pi conversation (resolved, as markdown) to a temp file inside the workspace and tell Codex to read it first. Default false (isolated one-shot). Opt in only when the user explicitly wants Codex to see the full conversation; it costs Codex tokens to read.",
 				}),
 			),
+			background: Type.Optional(
+				Type.Boolean({
+					description: backgroundFlagText("sessionId"),
+					default: false,
+				}),
+			),
 		}),
 		renderCall(args, theme, _context) {
 			// Show RESOLVED model/reasoning/sandbox (config defaults applied) so
@@ -922,6 +1225,7 @@ export default async function (pi: ExtensionAPI) {
 			const tags: string[] = [`model=${model}`, `reasoning=${reasoning}`, `sandbox=${sandbox}`];
 			if (isContinue) tags.push("continue");
 			if (args.includeContext) tags.push("context=full");
+			if (args.background) tags.push("bg");
 
 			let text = theme.fg("mdLink", theme.bold("AskCodex "));
 			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
@@ -1165,219 +1469,69 @@ export default async function (pi: ExtensionAPI) {
 				stderr: "",
 			};
 
-			// Accumulators parsed from the JSONL stream.
-			let finalMessage = "";
-			const statusLines: string[] = [];
-
-			// Throttled status updates: emit a short composed status on an
-			// interval instead of re-parsing on every stdout chunk.
-			const statusInterval = onUpdate
-				? setInterval(() => {
-						const elapsed = Math.floor((Date.now() - start) / 1000);
-						const tail = statusLines.slice(-3).join("\n");
-						const text = tail
-							? `(running ${elapsed}s)\n${tail}`
-							: `(running ${elapsed}s)`;
-						onUpdate({
-							content: [{ type: "text", text }],
-							details: { ...details, durationMs: Date.now() - start },
-						});
-					}, STATUS_INTERVAL_MS)
-				: null;
-
-			// stderr accumulates inside the spawn closure; declared in the
-			// enclosing scope so both the success path and catch can surface it.
-			let stderrBuf = "";
-			try {
-				const outcome = await new Promise<{
-					exitCode: number;
-					aborted: boolean;
-					timedOut: boolean;
-				}>((resolveP, rejectP) => {
-					const proc = spawn(binary, args, {
-						cwd,
-						stdio: ["ignore", "pipe", "pipe"],
-						shell: false,
-						detached: true,
-					});
-
-					// Buffer raw bytes; split on newline; parse each complete
-					// line as JSON. Incomplete trailing bytes wait for more data.
-					let stdoutBuf = "";
-					proc.stdout?.setEncoding("utf8");
-					proc.stderr?.setEncoding("utf8");
-
-					const handleLine = (line: string) => {
-						const trimmed = line.trim();
-						if (!trimmed) return;
-						let ev: CodexEvent;
+			// Background: hand the run to the registry and return at once. The
+			// result travels back through pi.sendMessage (wake), not this call.
+			if (params.background) {
+				if (ctx.mode === "print" || ctx.mode === "json") {
+					if (contextFile) {
 						try {
-							ev = JSON.parse(trimmed) as CodexEvent;
-						} catch {
-							return; // not JSON — ignore (shouldn't happen with --json)
-						}
-						consumeEvent(ev);
-					};
-
-					/** Apply one parsed event: capture session id, final message,
-					 *  usage; push a status line for item.* events. */
-					const consumeEvent = (ev: CodexEvent) => {
-						switch (ev.type) {
-							case "thread.started":
-								if (ev.thread_id) details.sessionId = ev.thread_id;
-								break;
-							case "item.started": {
-								const line = describeItem(ev, "started");
-								if (line) statusLines.push(line);
-								break;
-							}
-							case "item.completed": {
-								// Final agent message: capture as the answer.
-								if (ev.item?.type === "agent_message" && ev.item.text) {
-									finalMessage = ev.item.text;
-								}
-								const line = describeItem(ev, "completed");
-								if (line) statusLines.push(line);
-								break;
-							}
-							case "turn.completed":
-								if (ev.usage) {
-									details.usage = {
-										inputTokens: ev.usage.input_tokens ?? 0,
-										outputTokens: ev.usage.output_tokens ?? 0,
-										reasoningTokens: ev.usage.reasoning_output_tokens ?? 0,
-									};
-								}
-								break;
-							case "turn.failed":
-								// Surface the failure message; non-zero exit will
-								// produce the error result branch below.
-								if (ev.error?.message) statusLines.push(`failed: ${shorten(ev.error.message, 200)}`);
-								break;
-							case "error":
-								// Transient reconnect notices ("Reconnecting... 1/5")
-								// are non-fatal; surface as progress, not failure.
-								if (ev.message) statusLines.push(shorten(ev.message, 200));
-								break;
-						}
-					};
-
-					proc.stdout?.on("data", (d: string) => {
-						stdoutBuf += d;
-						let nl: number;
-						while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
-							handleLine(stdoutBuf.slice(0, nl));
-							stdoutBuf = stdoutBuf.slice(nl + 1);
-						}
-					});
-					proc.stderr?.on("data", (d: string) => {
-						stderrBuf += d;
-					});
-
-					let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-					let watchdog: ReturnType<typeof setTimeout> | undefined;
-					let settled = false;
-					let timedOut = false;
-
-					const killTree = () => {
-						try {
-							if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+							fs.unlinkSync(contextFile);
 						} catch {}
-						if (!sigkillTimer) {
-							sigkillTimer = setTimeout(() => {
-								try {
-									if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-								} catch {}
-							}, GRACE_AFTER_TIMEOUT_MS);
-						}
-					};
-
-					const cleanup = () => {
-						if (watchdog) clearTimeout(watchdog);
-						if (sigkillTimer) clearTimeout(sigkillTimer);
-						if (signal) signal.removeEventListener("abort", onAbort);
-					};
-
-					const onAbort = () => killTree();
-
-					watchdog = setTimeout(() => {
-						timedOut = true;
-						killTree();
-					}, timeoutMin * 60_000);
-
-					if (signal) {
-						if (signal.aborted) killTree();
-						else signal.addEventListener("abort", onAbort, { once: true });
 					}
-
-					const finish = (code: number | null) => {
-						if (settled) return;
-						settled = true;
-						cleanup();
-						// Flush any trailing line without a newline.
-						if (stdoutBuf.trim()) handleLine(stdoutBuf);
-						resolveP({
-							exitCode: code ?? 0,
-							aborted: !!signal?.aborted,
-							timedOut,
-						});
+					return {
+						content: [
+							{
+								type: "text",
+								text: "background is not available in print/json mode: the process exits before the result message can arrive. Call again without background.",
+							},
+						],
+						details: { ...details },
 					};
-
-					proc.on("error", (err) => {
-						cleanup();
-						rejectP(err);
-					});
-					proc.on("close", finish);
+				}
+				return startBackgroundRun({
+					summary: params.prompt,
+					binary,
+					args,
+					workdir: cwd,
+					timeoutMin,
+					startAt: start,
+					details,
+					contextFile,
+					modelLabel: resolved.flagValue ?? requestedModel,
 				});
+			}
 
-				if (statusInterval) clearInterval(statusInterval);
+			try {
+				const outcome = await runCodexProcess({
+					binary,
+					args,
+					workdir: cwd,
+					timeoutMin,
+					startAt: start,
+					details,
+					signal,
+					onPartial: onUpdate
+						? (text) => {
+								onUpdate({
+									content: [{ type: "text", text }],
+									details: { ...details, durationMs: Date.now() - start },
+								});
+							}
+						: undefined,
+				});
 
 				// Filter noise from stderr (codex prints "Reading additional
 				// input from stdin..." and PATH warnings that aren't errors).
-				details.stderr = cleanStderr(stderrBuf);
+				details.stderr = outcome.stderrClean;
 				details.exitCode = outcome.exitCode;
 				details.aborted = outcome.aborted;
 				details.timedOut = outcome.timedOut;
 				details.durationMs = Date.now() - start;
 
-				const text = finalMessage.trim();
+				const finalText = shapeFinalText(details, outcome, timeoutMin);
 
-				if (outcome.aborted) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: text
-									? `codex was aborted. Partial answer:\n\n${text}`
-									: "codex was aborted before producing output.",
-							},
-						],
-						details,
-					};
-				}
-
-				if (outcome.timedOut) {
-					const note = `codex exceeded the ${timeoutMin}m timeout and was killed`;
-					return {
-						content: [
-							{ type: "text", text: text ? `${text}\n\n[${note}]` : note },
-						],
-						details,
-					};
-				}
-
-				// Non-zero exit: surface the failure even when partial text
-				// exists, instead of returning silent success.
-				if (outcome.exitCode !== 0) {
-					const note = details.stderr.trim()
-						? `codex exited with status ${outcome.exitCode}: ${details.stderr.trim()}`
-						: `codex exited with status ${outcome.exitCode}`;
-					return {
-						content: [
-							{ type: "text", text: text ? `${text}\n\n[${note}]` : note },
-						],
-						details,
-					};
+				if (outcome.aborted || outcome.timedOut || outcome.exitCode !== 0) {
+					return { content: [{ type: "text", text: finalText }], details };
 				}
 
 				// Clear the last partial status line so the running preview
@@ -1387,30 +1541,19 @@ export default async function (pi: ExtensionAPI) {
 					details: { ...details },
 				});
 
-				// Append a session footer so the orchestrating model can see
-				// (and thread) the id without inspecting details.
-				const footer = details.sessionId
-					? `\n\n[codex sessionId: ${details.sessionId} — pass as sessionId to continue this conversation]`
-					: "";
-				const usageSuffix = details.usage
-					? `\n[tokens: ${details.usage.inputTokens} in / ${details.usage.outputTokens} out${details.usage.reasoningTokens > 0 ? ` / ${details.usage.reasoningTokens} reasoning` : ""}]`
-					: "";
-
 				return {
-					content: [{ type: "text", text: (text || "(codex returned no message)") + footer + usageSuffix }],
+					content: [{ type: "text", text: finalText }],
 					details,
 				};
 			} catch (err) {
-				if (statusInterval) clearInterval(statusInterval);
-				details.stderr = cleanStderr(stderrBuf);
+				details.stderr = err instanceof CodexSpawnError ? err.stderrClean : "";
 				details.durationMs = Date.now() - start;
 				const msg = err instanceof Error ? err.message : String(err);
 				return {
 					content: [{ type: "text", text: `failed to run codex: ${msg}` }],
 					details,
 				};
-			}
-			finally {
+			} finally {
 				if (contextFile) {
 					try {
 						fs.unlinkSync(contextFile);
@@ -1419,6 +1562,125 @@ export default async function (pi: ExtensionAPI) {
 			}
 		},
 	});
+	// --- /codex-stop: kill a background run --------------------------------
+
+	pi.registerCommand("codex-stop", {
+		description: "Stop a background AskCodex run (id prefix, or the only running one). Usage: /codex-stop [runId]",
+		handler: async (args, ctx) => {
+			const message = await stopBackground(args ?? "");
+			if (ctx.hasUI) ctx.ui.notify(message, "info");
+		},
+	});
+
+	const startBackgroundRun = (o: {
+		summary: string;
+		binary: string;
+		args: string[];
+		workdir: string;
+		timeoutMin: number;
+		startAt: number;
+		details: CodexDetails;
+		contextFile: string | null;
+		modelLabel: string;
+	}): AskToolResult => {
+		registry.sweep();
+		let run;
+		try {
+			run = registry.start(summarizePrompt(o.summary));
+		} catch (err) {
+			if (o.contextFile) {
+				try {
+					fs.unlinkSync(o.contextFile);
+				} catch {}
+			}
+			const msg = err instanceof Error ? err.message : String(err);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `background refused: ${msg}. Use blocking (omit background) or free a slot with /codex-stop.`,
+					},
+				],
+				details: { ...o.details },
+			};
+		}
+		const runId = run.runId;
+		const cleanupStaging = () => {
+			// The context file must outlive the execute() return in
+			// background mode: codex reads it mid-run.
+			if (o.contextFile) {
+				try {
+					fs.unlinkSync(o.contextFile);
+				} catch {}
+			}
+		};
+		cleanups.set(runId, cleanupStaging);
+		void runCodexProcess({
+			binary: o.binary,
+			args: o.args,
+			workdir: o.workdir,
+			timeoutMin: o.timeoutMin,
+			startAt: o.startAt,
+			details: o.details,
+			onSpawn: (kill) => {
+				kills.set(runId, kill);
+			},
+		})
+			.then((outcome) => {
+				kills.delete(runId);
+				o.details.stderr = outcome.stderrClean;
+				o.details.exitCode = outcome.exitCode;
+				o.details.aborted = outcome.aborted;
+				o.details.timedOut = outcome.timedOut;
+				o.details.durationMs = Date.now() - o.startAt;
+				const finalText = shapeFinalText(o.details, outcome, o.timeoutMin);
+				const elapsedS = Math.round((Date.now() - o.startAt) / 1000);
+				const handle = o.details.sessionId ? `sessionId=${o.details.sessionId}` : undefined;
+				// The settle latch makes /codex-stop and shutdown win races
+				// against this handler: a false return means their wake went out.
+				const settled = registry.settle(runId, {
+					status: outcome.timedOut || outcome.exitCode !== 0 ? "failed" : "done",
+					output: finalText,
+					handle,
+					error: outcome.timedOut
+						? `timeout after ${o.timeoutMin}m`
+						: outcome.exitCode !== 0
+							? `exit status ${outcome.exitCode}`
+							: undefined,
+				});
+				if (!settled) return;
+				if (outcome.timedOut) {
+					const partial = outcome.answerText ? ` Partial output: ${outcome.answerText.slice(0, 400)}` : "";
+					sendWake({ toolLabel: "Codex", runId, ok: false, elapsedS, error: `timeout after ${o.timeoutMin}m.${partial}`, handle });
+				} else if (outcome.exitCode !== 0) {
+					const reason = o.details.stderr.trim().slice(0, 400) || `exit status ${outcome.exitCode}`;
+					sendWake({ toolLabel: "Codex", runId, ok: false, elapsedS, error: reason, handle });
+				} else {
+					sendWake({ toolLabel: "Codex", runId, ok: true, elapsedS, handle }, finalText);
+				}
+			})
+			.catch((err) => {
+				kills.delete(runId);
+				const msg = err instanceof Error ? err.message : String(err);
+				// Settle first: a /codex-stop that won the race owns the wake.
+				const settled = registry.settle(runId, { status: "failed", error: msg });
+				if (!settled) return;
+				sendWake({ toolLabel: "Codex", runId, ok: false, error: `failed to run codex: ${msg}` });
+			})
+			.finally(() => {
+				cleanups.delete(runId);
+				cleanupStaging();
+			});
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Background run ${runId} started (model=${o.modelLabel}). The result arrives as a message when codex finishes; the resume handle (sessionId) comes with it. Do not poll. Continue with other work or end the turn.`,
+				},
+			],
+			details: { ...o.details },
+		};
+	};
 }
 
 /** Drop codex stderr lines that aren't real errors: the stdin-prompt notice

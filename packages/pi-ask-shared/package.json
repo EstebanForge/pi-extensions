@@ -1,0 +1,34 @@
+{
+  "name": "@estebanforge/pi-ask-shared",
+  "version": "0.1.0",
+  "description": "Shared background-run registry, wake sender, stop handler, and tool-description text for the @estebanforge ask extensions. Plain library, no Pi entrypoint: each ask package depends on it and Pi installs it transitively.",
+  "keywords": [
+    "pi",
+    "delegation",
+    "background"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@attitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-ask-shared"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

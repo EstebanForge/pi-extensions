@@ -26,6 +26,9 @@
     "access": "public"
   },
   "type": "module",
+  "dependencies": {
+    "@estebanforge/pi-ask-shared": "^0.1.0"
+  },
   "files": [
     "extensions",
     "README.md",

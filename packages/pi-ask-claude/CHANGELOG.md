@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Background runs (`background`, opt-in, default blocking).** The tool can run detached: it returns a `runId` at once, the calling agent keeps working, and the full answer arrives later as a conversation message with the resume handle, wrapped in an UNTRUSTED banner. Shared `pi-ask-shared` registry drives the run lifecycle (concurrency cap 4, settle-once, TTL sweep) and `/claude-stop [runId]` kills a run. Refused in print/json mode; `/new`/`/resume`/`/fork`/`/reload` kill in-flight runs and lose their results; staged context files are cleaned on every exit path including session shutdown.
+
+
 ## [1.0.2] - 2026-09-10
 
 ### Changed

@@ -50,6 +50,13 @@ import {
 import { StringEnum, contentText } from "@earendil-works/pi-ai";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	BackgroundRunRegistry,
+	backgroundFlagText,
+	createStopHandler,
+	createWakeSender,
+	summarizePrompt,
+} from "@estebanforge/pi-ask-shared";
 
 // --- Constants -------------------------------------------------------------
 
@@ -591,6 +598,275 @@ function emptyDetails(model: string | null, mode: PermissionMode, effort: Effort
 	};
 }
 
+
+// --- Background-mode plumbing ----------------------------------------------
+// Shared shape for both call styles: blocking awaits it, background lets it
+// run detached and pushes the outcome through the wake sender on close.
+
+const STDERR_BUF_MAX_CHARS = 64_000;
+const STDOUT_BUF_MAX_CHARS = 1_000_000;
+const STATUS_LINES_MAX = 100;
+
+/** Spawn failure (binary vanished between the availability check and spawn). Carries whatever stderr accumulated. */
+class ClaudeSpawnError extends Error {
+	readonly stderrClean: string;
+	constructor(message: string, stderrClean: string) {
+		super(message);
+		this.stderrClean = stderrClean;
+	}
+}
+
+interface ProcessRunOptions {
+	binary: string;
+	args: string[];
+	prompt: string;
+	workdir: string;
+	timeoutMin: number;
+	startAt: number;
+	/** Mutated in place: sessionId, usage, resultSubtype, cost, turns. */
+	details: ClaudeDetails;
+	/** Blocking passes pi's per-run signal; background passes none on purpose: a later Esc must not kill a detached run. */
+	signal?: AbortSignal;
+	/** Blocking only: throttled progress partials. */
+	onPartial?: (text: string) => void;
+	/** Background only: hands over the tree-kill switch as soon as the child exists. */
+	onSpawn?: (kill: () => void) => void;
+}
+
+interface ProcessRunOutcome {
+	exitCode: number;
+	aborted: boolean;
+	timedOut: boolean;
+	/** Final result event text, falling back to accumulated assistant text. Already trimmed. */
+	answerText: string;
+	stderrClean: string;
+}
+
+/** Tool-result shape this extension returns; keeps the background helper's literals narrow. */
+interface AskToolResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: ClaudeDetails;
+}
+
+/**
+ * Spawns claude -p, consumes the stream-json events, and resolves when the
+ * process tree closes. Never leaves timers or listeners behind: the internal
+ * finally clears the status interval, cleanup() clears the watchdog and the
+ * abort listener on every terminal path.
+ */
+async function runClaudeProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome> {
+	const { binary, args, prompt, workdir, timeoutMin, startAt, details, signal, onPartial, onSpawn } = opts;
+	let finalMessage = "";
+	let assistantText = ""; // fallback if no result event
+	const statusLines: string[] = [];
+
+	const statusInterval = onPartial
+		? setInterval(() => {
+				const elapsed = Math.floor((Date.now() - startAt) / 1000);
+				const tail = statusLines.slice(-3).join("\n");
+				const text = tail ? `(running ${elapsed}s)\n${tail}` : `(running ${elapsed}s)`;
+				onPartial(text);
+			}, STATUS_INTERVAL_MS)
+		: null;
+
+	let stderrBuf = "";
+	try {
+		const outcome = await new Promise<{
+			exitCode: number;
+			aborted: boolean;
+			timedOut: boolean;
+		}>((resolveP, rejectP) => {
+			const proc = spawn(binary, args, {
+				cwd: workdir,
+				stdio: ["pipe", "pipe", "pipe"],
+				shell: false,
+				detached: true,
+			});
+
+			// Deliver the prompt via stdin (see buildClaudeArgs: variadic flags
+			// would eat a positional). Write then end so claude proceeds
+			// without its 3s stdin-wait. Ignore EPIPE if claude exits first.
+			proc.stdin?.on("error", () => {});
+			proc.stdin?.write(prompt);
+			proc.stdin?.end();
+
+			let stdoutBuf = "";
+			proc.stdout?.setEncoding("utf8");
+			proc.stderr?.setEncoding("utf8");
+
+			const handleLine = (line: string) => {
+				const trimmed = line.trim();
+				if (!trimmed) return;
+				let ev: ClaudeStreamEvent;
+				try {
+					ev = JSON.parse(trimmed) as ClaudeStreamEvent;
+				} catch {
+					return;
+				}
+				consumeEvent(ev);
+			};
+
+			const consumeEvent = (ev: ClaudeStreamEvent) => {
+				// Confirm/repair session id from the init event.
+				if (ev.type === "system" && ev.subtype === "init" && ev.session_id) {
+					if (!details.sessionId) details.sessionId = ev.session_id;
+				}
+				if (ev.type === "result") {
+					if (typeof ev.result === "string") finalMessage = ev.result;
+					if (typeof ev.is_error === "boolean") details.resultIsError = ev.is_error;
+					if (typeof ev.subtype === "string") details.resultSubtype = ev.subtype;
+					if (ev.usage) {
+						details.usage = {
+							inputTokens: ev.usage.input_tokens ?? 0,
+							outputTokens: ev.usage.output_tokens ?? 0,
+							cacheReadTokens: ev.usage.cache_read_input_tokens ?? 0,
+							cacheWriteTokens: ev.usage.cache_creation_input_tokens ?? 0,
+						};
+					}
+					if (typeof ev.total_cost_usd === "number") details.costUsd = ev.total_cost_usd;
+					if (typeof ev.num_turns === "number") details.turns = ev.num_turns;
+					return;
+				}
+				// Accumulate assistant text as a fallback for the final
+				// answer when no `result` event is emitted (timeout/abort).
+				if (ev.type === "assistant" && ev.message?.content) {
+					for (const block of ev.message.content) {
+						if (block.type === "text" && block.text) {
+							assistantText += block.text;
+						}
+					}
+				}
+				const line = describeStreamEvent(ev);
+				if (line && statusLines.length < STATUS_LINES_MAX) statusLines.push(line);
+			};
+
+			proc.stdout?.on("data", (d: string) => {
+				stdoutBuf += d;
+				// Safety valve for pathological no-newline output; keeps the tail.
+				if (stdoutBuf.length > STDOUT_BUF_MAX_CHARS) stdoutBuf = stdoutBuf.slice(-100_000);
+				let nl: number;
+				while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
+					handleLine(stdoutBuf.slice(0, nl));
+					stdoutBuf = stdoutBuf.slice(nl + 1);
+				}
+			});
+			proc.stderr?.on("data", (d: string) => {
+				if (stderrBuf.length < STDERR_BUF_MAX_CHARS) stderrBuf += d;
+			});
+
+			let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+			let watchdog: ReturnType<typeof setTimeout> | undefined;
+			let settled = false;
+			let timedOut = false;
+
+			const killTree = () => {
+				try {
+					if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+				} catch {}
+				if (!sigkillTimer) {
+					sigkillTimer = setTimeout(() => {
+						try {
+							if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+						} catch {}
+					}, GRACE_AFTER_TIMEOUT_MS);
+				}
+			};
+
+			// Hand the kill switch to the background registry before any
+			// terminal event can fire.
+			onSpawn?.(killTree);
+
+			const cleanup = () => {
+				if (watchdog) clearTimeout(watchdog);
+				if (sigkillTimer) clearTimeout(sigkillTimer);
+				if (signal) signal.removeEventListener("abort", onAbort);
+			};
+
+			const onAbort = () => killTree();
+
+			watchdog = setTimeout(() => {
+				timedOut = true;
+				killTree();
+			}, timeoutMin * 60_000);
+
+			if (signal) {
+				if (signal.aborted) killTree();
+				else signal.addEventListener("abort", onAbort, { once: true });
+			}
+
+			const finish = (code: number | null) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				if (stdoutBuf.trim()) handleLine(stdoutBuf);
+				resolveP({
+					exitCode: code ?? 0,
+					aborted: !!signal?.aborted,
+					timedOut,
+				});
+			};
+
+			proc.on("error", (err) => {
+				cleanup();
+				rejectP(new ClaudeSpawnError(err.message, cleanStderr(stderrBuf)));
+			});
+			proc.on("close", finish);
+		});
+		return {
+			...outcome,
+			answerText: (finalMessage || assistantText).trim(),
+			stderrClean: cleanStderr(stderrBuf),
+		};
+	} finally {
+		if (statusInterval) clearInterval(statusInterval);
+	}
+}
+
+/**
+ * Builds the user/model-facing answer text for every terminal outcome.
+ * Pure: same inputs always render the same string, so background wakes and
+ * blocking results stay word-identical for the same run.
+ */
+function shapeFinalText(details: ClaudeDetails, outcome: ProcessRunOutcome, timeoutMin: number): string {
+	const text = outcome.answerText;
+	// claude can exit 0 while the result event carries is_error
+	// (error_during_execution, max_turns, refusal). Surface it so a
+	// failed run is never reported to the orchestrator as a clean answer.
+	const isErrorNote =
+		details.resultIsError && outcome.exitCode === 0
+			? `\n\n[claude reported an error${details.resultSubtype ? `: ${details.resultSubtype}` : ""} — the answer above may be incomplete or unreliable]`
+			: "";
+
+	if (outcome.aborted) {
+		return text ? `claude was aborted. Partial answer:\n\n${text}` : "claude was aborted before producing output.";
+	}
+	if (outcome.timedOut) {
+		const note = `claude exceeded the ${timeoutMin}m timeout and was killed`;
+		return text ? `${text}\n\n[${note}]` : note;
+	}
+	if (outcome.exitCode !== 0) {
+		const note = details.stderr.trim()
+			? `claude exited with status ${outcome.exitCode}: ${details.stderr.trim()}`
+			: `claude exited with status ${outcome.exitCode}`;
+		return text ? `${text}\n\n[${note}]` : note;
+	}
+
+	const footer = details.sessionId
+		? `\n\n[claude sessionId: ${details.sessionId} — pass as sessionId to continue this conversation]`
+		: "";
+	const usageSuffix = details.usage
+		? `\n[tokens: ${details.usage.inputTokens} in / ${details.usage.outputTokens} out${details.usage.cacheReadTokens > 0 ? ` / ${details.usage.cacheReadTokens} cache read` : ""}${details.usage.cacheWriteTokens > 0 ? ` / ${details.usage.cacheWriteTokens} cache write` : ""}]`
+		: "";
+	const costSuffix =
+		details.costUsd != null && details.costUsd > 0
+			? ` [cost: $${details.costUsd.toFixed(4)}${details.turns != null ? `, ${details.turns} turn(s)` : ""}]`
+			: details.turns != null
+				? ` [${details.turns} turn(s)]`
+				: "";
+
+	return (text || "(claude returned no message)") + isErrorNote + footer + usageSuffix + costSuffix;
+}
+
 export default async function (pi: ExtensionAPI) {
 	const binary = resolveClaude();
 	const available = await claudeAvailable(binary).catch(() => false);
@@ -621,6 +897,39 @@ export default async function (pi: ExtensionAPI) {
 		});
 		return;
 	}
+
+	// --- Background-run state (one set per extension load) -------------------
+	// Pi wipes module state on /new, /resume, /fork and /reload: an in-flight
+	// background run is killed and its result is never delivered. Accepted
+	// trade-off, documented in the README.
+	const registry = new BackgroundRunRegistry({ toolName: "ask-claude" });
+	const kills = new Map<string, () => void>();
+	// Staged-artifact cleanup (contextFile), keyed by run: the session_shutdown
+	// backstop runs these when a hard exit would skip the close-path finally.
+	const cleanups = new Map<string, () => void>();
+	const sendWake = createWakeSender(pi, {
+		customType: "ask-claude-result",
+		isDisposed: () => registry.isDisposed(),
+	});
+	const stopBackground = createStopHandler(registry, {
+		kill: (run) => kills.get(run.runId)?.(),
+		onStopped: (run) =>
+			sendWake({
+				toolLabel: "Claude Code",
+				runId: run.runId,
+				ok: false,
+				elapsedS: Math.round((Date.now() - run.startedAt) / 1000),
+				error: "stopped via /claude-stop",
+			}),
+	});
+	pi.on("session_shutdown", () => {
+		// Latch first so close-handler wakes stay silent, then kill children,
+		// then sweep staged artifacts (hard exit would skip the close-path cleanup).
+		for (const run of registry.dispose()) kills.get(run.runId)?.();
+		for (const fn of cleanups.values()) fn();
+		cleanups.clear();
+		kills.clear();
+	});
 
 	// --- /claude: view / change defaults -----------------------------------
 
@@ -806,6 +1115,12 @@ export default async function (pi: ExtensionAPI) {
 					description: `Hard cap on the Claude run in minutes. Default ${DEFAULT_TIMEOUT_MIN}.`,
 				}),
 			),
+			background: Type.Optional(
+				Type.Boolean({
+					description: backgroundFlagText("sessionId"),
+					default: false,
+				}),
+			),
 		}),
 		renderCall(args, theme, context) {
 			// Show RESOLVED model/thinking/mode (config defaults applied) so the
@@ -821,6 +1136,7 @@ export default async function (pi: ExtensionAPI) {
 			if (mode !== cfg.defaultMode) tags.push(`mode=${mode}`);
 			if (isContinue) tags.push("continue");
 			if (args.includeContext) tags.push("context=full");
+			if (args.background) tags.push("bg");
 
 			let text = theme.fg("mdLink", theme.bold("AskClaude "));
 			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
@@ -941,7 +1257,6 @@ export default async function (pi: ExtensionAPI) {
 			}
 			const effort = isEffort(params.thinking) ? params.thinking : config.defaultEffort;
 
-			const start = Date.now();
 			const workdir = params.cwd || ctx.cwd || process.cwd();
 
 			try {
@@ -1019,205 +1334,70 @@ export default async function (pi: ExtensionAPI) {
 				stderr: "",
 			};
 
-			let finalMessage = "";
-			let assistantText = ""; // fallback if no result event
-			const statusLines: string[] = [];
-
-			const statusInterval = onUpdate
-				? setInterval(() => {
-						const elapsed = Math.floor((Date.now() - start) / 1000);
-						const tail = statusLines.slice(-3).join("\n");
-						const text = tail ? `(running ${elapsed}s)\n${tail}` : `(running ${elapsed}s)`;
-						onUpdate({
-							content: [{ type: "text", text }],
-							details: { ...details, durationMs: Date.now() - start },
-						});
-					}, STATUS_INTERVAL_MS)
-				: null;
-
-			let stderrBuf = "";
-			try {
-				const outcome = await new Promise<{
-					exitCode: number;
-					aborted: boolean;
-					timedOut: boolean;
-				}>((resolveP, rejectP) => {
-					const proc = spawn(binary, args, {
-						cwd: workdir,
-						stdio: ["pipe", "pipe", "pipe"],
-						shell: false,
-						detached: true,
-					});
-
-					// Deliver the prompt via stdin (see buildClaudeArgs: variadic flags
-					// would eat a positional). Write then end so claude proceeds
-					// without its 3s stdin-wait. Ignore EPIPE if claude exits first.
-					proc.stdin?.on("error", () => {});
-					proc.stdin?.write(effectivePrompt);
-					proc.stdin?.end();
-
-					let stdoutBuf = "";
-					proc.stdout?.setEncoding("utf8");
-					proc.stderr?.setEncoding("utf8");
-
-					const handleLine = (line: string) => {
-						const trimmed = line.trim();
-						if (!trimmed) return;
-						let ev: ClaudeStreamEvent;
+			// Background: hand the run to the registry and return at once. The
+			// result travels back through pi.sendMessage (wake), not this call.
+			if (params.background) {
+				if (ctx.mode === "print" || ctx.mode === "json") {
+					if (contextFile) {
 						try {
-							ev = JSON.parse(trimmed) as ClaudeStreamEvent;
-						} catch {
-							return;
-						}
-						consumeEvent(ev);
-					};
-
-					const consumeEvent = (ev: ClaudeStreamEvent) => {
-						// Confirm/repair session id from the init event.
-						if (ev.type === "system" && ev.subtype === "init" && ev.session_id) {
-							if (!details.sessionId) details.sessionId = ev.session_id;
-						}
-						if (ev.type === "result") {
-							if (typeof ev.result === "string") finalMessage = ev.result;
-							if (typeof ev.is_error === "boolean") details.resultIsError = ev.is_error;
-							if (typeof ev.subtype === "string") details.resultSubtype = ev.subtype;
-							if (ev.usage) {
-								details.usage = {
-									inputTokens: ev.usage.input_tokens ?? 0,
-									outputTokens: ev.usage.output_tokens ?? 0,
-									cacheReadTokens: ev.usage.cache_read_input_tokens ?? 0,
-									cacheWriteTokens: ev.usage.cache_creation_input_tokens ?? 0,
-								};
-							}
-							if (typeof ev.total_cost_usd === "number") details.costUsd = ev.total_cost_usd;
-							if (typeof ev.num_turns === "number") details.turns = ev.num_turns;
-							return;
-						}
-						// Accumulate assistant text as a fallback for the final
-						// answer when no `result` event is emitted (timeout/abort).
-						if (ev.type === "assistant" && ev.message?.content) {
-							for (const block of ev.message.content) {
-								if (block.type === "text" && block.text) {
-									assistantText += block.text;
-								}
-							}
-						}
-						const line = describeStreamEvent(ev);
-						if (line) statusLines.push(line);
-					};
-
-					proc.stdout?.on("data", (d: string) => {
-						stdoutBuf += d;
-						let nl: number;
-						while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
-							handleLine(stdoutBuf.slice(0, nl));
-							stdoutBuf = stdoutBuf.slice(nl + 1);
-						}
-					});
-					proc.stderr?.on("data", (d: string) => {
-						stderrBuf += d;
-					});
-
-					let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-					let watchdog: ReturnType<typeof setTimeout> | undefined;
-					let settled = false;
-					let timedOut = false;
-
-					const killTree = () => {
-						try {
-							if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+							fs.unlinkSync(contextFile);
 						} catch {}
-						if (!sigkillTimer) {
-							sigkillTimer = setTimeout(() => {
-								try {
-									if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-								} catch {}
-							}, GRACE_AFTER_TIMEOUT_MS);
-						}
-					};
-
-					const cleanup = () => {
-						if (watchdog) clearTimeout(watchdog);
-						if (sigkillTimer) clearTimeout(sigkillTimer);
-						if (signal) signal.removeEventListener("abort", onAbort);
-					};
-
-					const onAbort = () => killTree();
-
-					watchdog = setTimeout(() => {
-						timedOut = true;
-						killTree();
-					}, timeoutMin * 60_000);
-
-					if (signal) {
-						if (signal.aborted) killTree();
-						else signal.addEventListener("abort", onAbort, { once: true });
 					}
-
-					const finish = (code: number | null) => {
-						if (settled) return;
-						settled = true;
-						cleanup();
-						if (stdoutBuf.trim()) handleLine(stdoutBuf);
-						resolveP({
-							exitCode: code ?? 0,
-							aborted: !!signal?.aborted,
-							timedOut,
-						});
+					return {
+						content: [
+							{
+								type: "text",
+								text: "background is not available in print/json mode: the process exits before the result message can arrive. Call again without background.",
+							},
+						],
+						details: { ...details },
 					};
+				}
+				return startBackgroundRun({
+					summary: params.prompt,
+					binary,
+					args,
+					prompt: effectivePrompt,
+					workdir,
+					timeoutMin,
+					startAt: Date.now(),
+					details,
+					contextFile,
+					modelLabel: requestedModel,
+				});
+			}
 
-					proc.on("error", (err) => {
-						cleanup();
-						rejectP(err);
-					});
-					proc.on("close", finish);
+			const start = Date.now();
+			try {
+				const outcome = await runClaudeProcess({
+					binary,
+					args,
+					prompt: effectivePrompt,
+					workdir,
+					timeoutMin,
+					startAt: start,
+					details,
+					signal,
+					onPartial: onUpdate
+						? (text) => {
+								onUpdate({
+									content: [{ type: "text", text }],
+									details: { ...details, durationMs: Date.now() - start },
+								});
+							}
+						: undefined,
 				});
 
-				if (statusInterval) clearInterval(statusInterval);
-
-				details.stderr = cleanStderr(stderrBuf);
+				details.stderr = outcome.stderrClean;
 				details.exitCode = outcome.exitCode;
 				details.aborted = outcome.aborted;
 				details.timedOut = outcome.timedOut;
 				details.durationMs = Date.now() - start;
 
-				const text = (finalMessage || assistantText).trim();
-				// claude can exit 0 while the result event carries is_error
-				// (error_during_execution, max_turns, refusal). Surface it so a
-				// failed run is never reported to the orchestrator as a clean answer.
-				const isErrorNote =
-					details.resultIsError && outcome.exitCode === 0
-						? `\n\n[claude reported an error${details.resultSubtype ? `: ${details.resultSubtype}` : ""} — the answer above may be incomplete or unreliable]`
-						: "";
+				const finalText = shapeFinalText(details, outcome, timeoutMin);
 
-				if (outcome.aborted) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: text ? `claude was aborted. Partial answer:\n\n${text}` : "claude was aborted before producing output.",
-							},
-						],
-						details,
-					};
-				}
-
-				if (outcome.timedOut) {
-					const note = `claude exceeded the ${timeoutMin}m timeout and was killed`;
-					return {
-						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
-						details,
-					};
-				}
-
-				if (outcome.exitCode !== 0) {
-					const note = details.stderr.trim()
-						? `claude exited with status ${outcome.exitCode}: ${details.stderr.trim()}`
-						: `claude exited with status ${outcome.exitCode}`;
-					return {
-						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
-						details,
-					};
+				if (outcome.aborted || outcome.timedOut || outcome.exitCode !== 0) {
+					return { content: [{ type: "text", text: finalText }], details };
 				}
 
 				onUpdate?.({
@@ -1225,34 +1405,19 @@ export default async function (pi: ExtensionAPI) {
 					details: { ...details },
 				});
 
-				const footer = details.sessionId
-					? `\n\n[claude sessionId: ${details.sessionId} — pass as sessionId to continue this conversation]`
-					: "";
-				const usageSuffix = details.usage
-					? `\n[tokens: ${details.usage.inputTokens} in / ${details.usage.outputTokens} out${details.usage.cacheReadTokens > 0 ? ` / ${details.usage.cacheReadTokens} cache read` : ""}${details.usage.cacheWriteTokens > 0 ? ` / ${details.usage.cacheWriteTokens} cache write` : ""}]`
-					: "";
-				const costSuffix =
-					details.costUsd != null && details.costUsd > 0
-						? ` [cost: $${details.costUsd.toFixed(4)}${details.turns != null ? `, ${details.turns} turn(s)` : ""}]`
-						: details.turns != null
-							? ` [${details.turns} turn(s)]`
-							: "";
-
 				return {
-					content: [{ type: "text", text: (text || "(claude returned no message)") + isErrorNote + footer + usageSuffix + costSuffix }],
+					content: [{ type: "text", text: finalText }],
 					details,
 				};
 			} catch (err) {
-				if (statusInterval) clearInterval(statusInterval);
-				details.stderr = cleanStderr(stderrBuf);
+				details.stderr = err instanceof ClaudeSpawnError ? err.stderrClean : "";
 				details.durationMs = Date.now() - start;
 				const msg = err instanceof Error ? err.message : String(err);
 				return {
 					content: [{ type: "text", text: `failed to run claude: ${msg}` }],
 					details,
 				};
-			}
-			finally {
+			} finally {
 				if (contextFile) {
 					try {
 						fs.unlinkSync(contextFile);
@@ -1261,6 +1426,127 @@ export default async function (pi: ExtensionAPI) {
 			}
 		},
 	});
+	// --- /claude-stop: kill a background run --------------------------------
+
+	pi.registerCommand("claude-stop", {
+		description: "Stop a background AskClaude run (id prefix, or the only running one). Usage: /claude-stop [runId]",
+		handler: async (args, ctx) => {
+			const message = await stopBackground(args ?? "");
+			if (ctx.hasUI) ctx.ui.notify(message, "info");
+		},
+	});
+
+	const startBackgroundRun = (o: {
+		summary: string;
+		binary: string;
+		args: string[];
+		prompt: string;
+		workdir: string;
+		timeoutMin: number;
+		startAt: number;
+		details: ClaudeDetails;
+		contextFile: string | null;
+		modelLabel: string;
+	}): AskToolResult => {
+		registry.sweep();
+		let run;
+		try {
+			run = registry.start(summarizePrompt(o.summary));
+		} catch (err) {
+			if (o.contextFile) {
+				try {
+					fs.unlinkSync(o.contextFile);
+				} catch {}
+			}
+			const msg = err instanceof Error ? err.message : String(err);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `background refused: ${msg}. Use blocking (omit background) or free a slot with /claude-stop.`,
+					},
+				],
+				details: { ...o.details },
+			};
+		}
+		const runId = run.runId;
+		const cleanupStaging = () => {
+			// The context file must outlive the execute() return in
+			// background mode: claude reads it mid-run.
+			if (o.contextFile) {
+				try {
+					fs.unlinkSync(o.contextFile);
+				} catch {}
+			}
+		};
+		cleanups.set(runId, cleanupStaging);
+		void runClaudeProcess({
+			binary: o.binary,
+			args: o.args,
+			prompt: o.prompt,
+			workdir: o.workdir,
+			timeoutMin: o.timeoutMin,
+			startAt: o.startAt,
+			details: o.details,
+			onSpawn: (kill) => {
+				kills.set(runId, kill);
+			},
+		})
+			.then((outcome) => {
+				kills.delete(runId);
+				o.details.stderr = outcome.stderrClean;
+				o.details.exitCode = outcome.exitCode;
+				o.details.aborted = outcome.aborted;
+				o.details.timedOut = outcome.timedOut;
+				o.details.durationMs = Date.now() - o.startAt;
+				const finalText = shapeFinalText(o.details, outcome, o.timeoutMin);
+				const elapsedS = Math.round((Date.now() - o.startAt) / 1000);
+				const handle = o.details.sessionId ? `sessionId=${o.details.sessionId}` : undefined;
+				// The settle latch makes /claude-stop and shutdown win races
+				// against this handler: a false return means their wake went out.
+				const settled = registry.settle(runId, {
+					status: outcome.timedOut || outcome.exitCode !== 0 ? "failed" : "done",
+					output: finalText,
+					handle,
+					error: outcome.timedOut
+						? `timeout after ${o.timeoutMin}m`
+						: outcome.exitCode !== 0
+							? `exit status ${outcome.exitCode}`
+							: undefined,
+				});
+				if (!settled) return;
+				if (outcome.timedOut) {
+					const partial = outcome.answerText ? ` Partial output: ${outcome.answerText.slice(0, 400)}` : "";
+					sendWake({ toolLabel: "Claude Code", runId, ok: false, elapsedS, error: `timeout after ${o.timeoutMin}m.${partial}`, handle });
+				} else if (outcome.exitCode !== 0) {
+					const reason = o.details.stderr.trim().slice(0, 400) || `exit status ${outcome.exitCode}`;
+					sendWake({ toolLabel: "Claude Code", runId, ok: false, elapsedS, error: reason, handle });
+				} else {
+					sendWake({ toolLabel: "Claude Code", runId, ok: true, elapsedS, handle }, finalText);
+				}
+			})
+			.catch((err) => {
+				kills.delete(runId);
+				const msg = err instanceof Error ? err.message : String(err);
+				// Settle first: a /claude-stop that won the race owns the wake.
+				const settled = registry.settle(runId, { status: "failed", error: msg });
+				if (!settled) return;
+				sendWake({ toolLabel: "Claude Code", runId, ok: false, error: `failed to run claude: ${msg}` });
+			})
+			.finally(() => {
+				cleanups.delete(runId);
+				cleanupStaging();
+			});
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Background run ${runId} started (model=${o.modelLabel}). The result arrives as a message when claude finishes; the resume handle (sessionId) comes with it. Do not poll. Continue with other work or end the turn.`,
+				},
+			],
+			details: { ...o.details },
+		};
+	};
 }
 
 /** Drop claude stderr lines that aren't real errors: the stdin-wait notice

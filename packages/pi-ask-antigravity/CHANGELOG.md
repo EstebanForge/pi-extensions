@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Background runs (`background`, opt-in, default blocking).** Detached runs with the shared wake contract: `runId` at once, the answer arrives later as a conversation message with the resume handle (when agy reports one; discovery misses say so) under an UNTRUSTED banner. `/agy-stop [runId]` kills a run. One run per conversation at a time across blocking and background (per-handle lock). Refused in print/json mode; session replacement kills in-flight runs and loses their results; the staged context file and plan-mode reviewer dir are cleaned on every exit path including session shutdown.
+
+
 ## [1.2.10] - 2026-10-06
 
 ### Changed

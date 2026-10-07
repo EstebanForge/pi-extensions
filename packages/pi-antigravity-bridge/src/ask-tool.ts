@@ -509,6 +509,12 @@ export async function registerAskAntigravityTool(
 						"When true, export the current pi conversation (resolved, as markdown) to a temp file inside the workspace and tell agy to read it first. Default false (isolated one-shot). Opt in only when the user explicitly wants agy to see the full conversation; it costs agy tokens to read.",
 				}),
 			),
+			background: Type.Optional(
+				Type.Boolean({
+					description:
+						"NOT supported by this tool. The bridge runs agy through its own delegated flow and the answer must return synchronously to the caller. For background runs use the standalone @estebanforge/pi-ask-antigravity extension. Calls with background=true are refused.",
+				}),
+			),
 		}),
 		renderCall(args, theme, _context) {
 			// Show RESOLVED model/thinking/mode (config defaults applied) so the
@@ -598,6 +604,22 @@ export async function registerAskAntigravityTool(
 			}
 
 			const config = loadConfig();
+			// Background refusal (fail-closed): a wake from this tool would land in
+			// the pi session even when the CALLER is agy (nested delegation via the
+			// bridge catalog), and the bridge already owns an async delegation flow
+			// (early-ack + bridge_poll_result). The standalone pi-ask-antigravity
+			// extension is the background-capable tool.
+			if (params.background) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: 'background is not supported by the bridge\'s AskAntigravity: the answer must return synchronously to the caller. Long delegations are already covered by the bridge\'s own async flow (early-ack + bridge_poll_result); for an unattended peer run, launch agy directly in a terminal instead. Call again without background.',
+						},
+					],
+					details: emptyDetails(),
+				};
+			}
 			const requestedModel = (params.model as string | undefined) ?? config.defaultModel;
 			if (typeof params.model === "string" && params.model.trim().startsWith("-")) {
 				return {

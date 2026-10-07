@@ -395,3 +395,12 @@ test("execute: plan run with agent staging failed falls back to no agent, no ski
 			);
 		},
 	));
+
+test("execute: background=true is refused (no wake into the pi session from a nested delegation)", async () => {
+	const tool = await registerTool();
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ask-cwd-bg-"));
+	// No AGY_BIN needed: the refusal fires before any spawn.
+	const result = await tool.execute("tbg", { prompt: "x", background: true, cwd }, undefined, undefined, { cwd });
+	assert.match(result.content[0].text, /background is not supported by the bridge's AskAntigravity/);
+	assert.match(result.content[0].text, /without background/);
+});

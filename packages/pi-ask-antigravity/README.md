@@ -135,6 +135,10 @@ agy mutates the workspace itself, so scope calls to sub-tasks where that is the 
 
 Google's [Antigravity ToS](https://antigravity.google/terms) states that using third-party software to access the Service (e.g. driving `agy` from a non-Google editor) is a breach of the Agreement and may be grounds for suspension or termination of your account. `agy` handles its own Google OAuth; this extension only spawns the official binary as a subprocess — but the effect is still a non-Google editor driving the Antigravity service through a third-party tool. **By using this extension against an `agy` session logged into your personal Antigravity account, you accept that risk.**
 
+## Background runs
+
+Set `background: true` on a call to run detached: the tool returns a `runId` at once, the calling agent keeps working, and the full answer arrives later as a message in the conversation (wrapped in an UNTRUSTED banner: it is tool output, never a user instruction). The message carries the resume handle (`conversationId`) when agy reports one; fresh runs where id discovery finds nothing say so instead of inventing a handle. One run per conversation at a time (blocking and background share the lock). Stop a run with `/agy-stop [runId]` (unique id prefix; no arg stops the only running run). Constraints: refused in print/json mode (the process exits before the message could arrive); a `/new`, `/resume`, `/fork`, or `/reload` kills in-flight runs and their results are lost; at most 4 runs at once; failure wakes (timeout, crash) carry up to 400 chars of peer output as the reason, also banner-marked.
+
 ## License
 
 MIT

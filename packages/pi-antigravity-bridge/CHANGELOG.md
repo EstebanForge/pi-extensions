@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Delegation tool refuses `background: true` (fail-closed).** The param is advertised and always refused with an explanation: a wake from a nested delegation would land in the pi session, and long delegations already have the bridge's own early-ack plus poll flow. No behavior change for existing calls.
+
+
 ## [1.7.9] - 2026-10-06
 
 ### Changed

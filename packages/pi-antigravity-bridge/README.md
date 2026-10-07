@@ -219,6 +219,10 @@ pi-antigravity-bridge practical risk is low, near zero. But not zero: the "in co
 
 This is engineering analysis, not legal advice. Use against your own Antigravity account at your own risk; I am not responsible for any consequence to your account.
 
+## Delegation tool: background is refused
+
+The `AskAntigravity` delegation tool rejects `background: true` by design: a background wake would land in the pi session even when the caller is a nested delegation through the bridge catalog, and long delegations already have the bridge's own async flow (early-ack plus `bridge_poll_result`). Call without `background`; for unattended peer runs launch the CLI directly in a terminal.
+
 ## License
 
 MIT.

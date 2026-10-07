@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Background runs (`background`, opt-in, default blocking).** Same detached-run contract as the sibling tools: `runId` at once, the answer arrives later as a conversation message with the resume handle under an UNTRUSTED banner, shared `pi-ask-shared` registry underneath, `/codex-stop [runId]` to kill. Refused in print/json mode; session replacement (`/new`, `/resume`, `/fork`, `/reload`) kills in-flight runs and loses their results; staged context files are cleaned on every exit path including session shutdown.
+
+
 ### Fixed
 
 - **Aliases, examples, and pinned ids no longer point at retired GPT-5.x models.**
