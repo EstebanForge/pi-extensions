@@ -89,11 +89,24 @@ export interface AgyConfig {
 	/** Official-server ACP engine options (used when engine = "acp"). */
 	acp: AcpConfig;
 	mode: AgyMode;
+	/** Fail-closed kill switch for provider turns. ON = every provider turn
+	 *  is refused visibly: the agy CLI has no review-only enforcement on any
+	 *  path (probed 2026-10-07, upstream #1181: plan mode stages a plan and
+	 *  executes the write in the same turn on -p and stream-json alike; the
+	 *  ACP engine has no plan mode at all). Built for callers like
+	 *  `pi -p --no-tools` health checks that must never mutate a workspace
+	 *  and prefer a visible refusal over a write-capable turn. Wins over
+	 *  `mode`; the AskAntigravity delegation tool is refused while this is on
+	 *  (the CLI has no review-only enforcement, so nothing here can run
+	 *  read-only). Env AGY_READONLY wins over the file.
+	 *  Default false. */
+	readOnly: boolean;
 	/** Auto-approve all agy tool permission requests (--dangerously-skip-permissions).
 	 *  Required for non-interactive use: without it, any `run_command` triggers an
 	 *  interactive y/n prompt that hangs forever in `-p` mode. Defaults true.
 	 *  DANGEROUS: lets agy run arbitrary commands (including destructive ones)
-	 *  without review. Turn off only if you also set mode=plan (no execution). */
+	 *  without review. The ask tool withholds the flag on plan runs;
+	 *  accept-edits runs need it to avoid hanging on the unanswerable prompt. */
 	skipPermissions: boolean;
 	/** AskAntigravity tool: default model alias (flash/pro/gemini or exact). */
 	defaultModel: string;
@@ -176,6 +189,7 @@ export interface AgyConfig {
 const DEFAULTS: AgyConfig = {
 	engine: "stream-json",
 	mode: "accept-edits",
+	readOnly: false,
 	skipPermissions: true,
 	defaultModel: "flash",
 	defaultThinking: "medium",
@@ -212,18 +226,24 @@ export function parseCapMinutes(raw: string | number | undefined, fallback: numb
 	return n >= 1 && n <= MAX_TURN_CAP_MIN ? n : fallback;
 }
 
-/** Load config merged over defaults. Env vars override the file when set. */
-export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
-	let file: Partial<AgyConfig> = {};
+/** Read the raw config file (no defaults, no env). Shared by loadConfig and
+ *  saveConfig so persisted writes can never bake env overrides into the file. */
+function readConfigFile(configPath: string): Partial<AgyConfig> {
 	try {
 		const raw = fs.readFileSync(configPath, "utf8");
 		const parsed = JSON.parse(raw);
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			file = parsed as Partial<AgyConfig>;
+			return parsed as Partial<AgyConfig>;
 		}
 	} catch {
-		/* missing or corrupt  -  fall back to defaults */
+		/* missing or corrupt  -  fall back to empty */
 	}
+	return {};
+}
+
+/** Load config merged over defaults. Env vars override the file when set. */
+export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
+	let file: Partial<AgyConfig> = readConfigFile(configPath);
 
 	// Env overrides file (matches the skipPermissions pattern).
 	// The naive OR `env === "plan" || file.mode === "plan"` would ignore an
@@ -248,6 +268,17 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		envPerm !== undefined
 			? envPerm === "1" || envPerm.toLowerCase() === "true"
 			: file.skipPermissions ?? DEFAULTS.skipPermissions;
+
+	const envReadOnly = process.env.AGY_READONLY;
+	// Fail-closed parse for a safety knob: empty string means the user
+	// explicitly blanked it (off), but ANY other set value that is not a
+	// spelled-out falsity counts as ON. " 1", "yes", typos: all refuse.
+	const readOnly =
+		envReadOnly !== undefined
+			? envReadOnly === ""
+				? false
+				: !["0", "false", "off"].includes(envReadOnly.trim().toLowerCase())
+			: file.readOnly ?? DEFAULTS.readOnly;
 
 	const defaultModelRaw =
 		process.env.AGY_DEFAULT_MODEL ?? file.defaultModel ?? DEFAULTS.defaultModel;
@@ -329,6 +360,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		engine,
 		acp,
 		mode,
+		readOnly,
 		skipPermissions,
 		defaultModel,
 		defaultThinking,
@@ -345,10 +377,30 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	};
 }
 
-/** Atomically persist a config patch (temp + rename). */
+/** Atomically persist a config patch (temp + rename). Merges onto the RAW
+ *  FILE values, never loadConfig(): env overrides must not be baked into the
+ *  file (AGY_READONLY=1 in the env would otherwise persist readOnly: true to
+ *  disk on any unrelated save, outliving the env var). Nested objects are
+ *  re-normalized to their known keys: a raw passthrough would resurrect
+ *  legacy keys (acp.permissions) that loadConfig normalization drops. */
 export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFIG_PATH): AgyConfig {
-	const current = loadConfig(configPath);
-	const next: AgyConfig = { ...current, ...patch };
+	const file = readConfigFile(configPath);
+	// Null-safe on nested objects: a hand-edited or legacy file can carry
+	// "acp": null; loadConfig tolerates it, so must saveConfig. Key presence
+	// triggers normalization (a null becomes the default shape, never null).
+	const fileAcp: Partial<AcpConfig> = file.acp && typeof file.acp === "object" ? file.acp : {};
+	const fileApprovals: Partial<GateConfig> = file.approvals && typeof file.approvals === "object" ? file.approvals : {};
+	const next: AgyConfig = {
+		...DEFAULTS,
+		...file,
+		...(file.acp !== undefined
+			? { acp: { bin: fileAcp.bin ?? DEFAULTS.acp.bin, usageEstimate: fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate } }
+			: {}),
+		...(file.approvals !== undefined
+			? { approvals: { gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode, mode: fileApprovals.mode ?? DEFAULTS.approvals.mode } }
+			: {}),
+		...patch,
+	};
 	const dir = path.dirname(configPath);
 	fs.mkdirSync(dir, { recursive: true });
 	const tmp = `${configPath}.${process.pid}.tmp`;

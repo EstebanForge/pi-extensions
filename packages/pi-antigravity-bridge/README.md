@@ -135,7 +135,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy                      status summary, or open the full settings picker (TUI)
 /agy doctor               single status surface: bridge state, driver counters, versions, acp state, lifecycle, settings, log dir
 /agy auth                 run the antigravity-acp sign-in now (engine acp): opens the Google login in your browser, shows the URL when no browser opens
-/agy mode plan            review-only: agy plans but writes nothing
+/agy mode plan            provider turns are REFUSED (the CLI cannot enforce review-only, #1181)
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
 /agy ask on|off           register the AskAntigravity delegation tool (default on; off keeps only the provider and models, even with pi-ask-antigravity installed)
@@ -158,7 +158,13 @@ pi itself has no built-in approval gate. Unlike codex, claude, or agy running in
 
 Because agy runs non-interactively under this provider (nothing can answer a `y/n` prompt), this extension passes `--dangerously-skip-permissions` by default on `accept-edits` runs. It is technically necessary there: `accept-edits` auto-approves file edits but not shell commands, so a `run_command` would otherwise hang forever waiting for a prompt nothing can answer (upstream [google-antigravity/antigravity-cli#318](https://github.com/google-antigravity/antigravity-cli/issues/318)). The net effect is that agy executes commands the same way pi already executes your other tools: without per-action review.
 
-Plan mode never receives the flag: the flag auto-approves every permission request, including plan mode's own approval gate, which would silently turn review-only into full write access inside the `--add-dir` grant (probed 2026-09-25: with the flag a plan run wrote files; without it, file and command attempts end the run quickly with a "confirm plan" message). So `/agy mode plan` (and `AskAntigravity` with `mode: "plan"`) genuinely executes nothing. Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
+Plan mode never receives the flag: the flag auto-approves every permission request, so an auto-approved plan run is a write-capable run (the CLI does not gate writes under plan mode, see next paragraph). Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
+
+**Provider turns cannot run review-only.** Probed 2026-10-07 ([google-antigravity/antigravity-cli#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181)): on every tested path (one-shot `-p` and the stream-json I/O format, with and without `--add-dir`), `--mode plan` stages a plan, asks for review and approval, and executes the requested file write in the same turn (`permission_mode: "request-review"` is reported; no permission event appears for the write). With `--disable-slash-commands` the CLI additionally warns that `--mode plan` has no effect. The `readOnly` knob below exists because of this: plan-shaped provider turns refuse visibly instead of pretending. `AskAntigravity` with `mode: "plan"` adds a staged restricted agent whose toolset omits file-editing tools (probed 2026-09-28 on agy 1.2.12; re-verify on 1.3.x), but plan mode itself does not gate writes anywhere. Treat host-side pi tool restrictions as the only hard read-only wall.
+
+### readOnly
+
+`"readOnly": true` in the config (or `AGY_READONLY=1`, or `/agy readonly on`) is a fail-closed kill switch: every provider turn AND the `AskAntigravity` tool are refused with a visible error instead of running write-capable under a read-only label. Built for callers like `pi -p --no-tools --model antigravity/...` health checks that must never mutate a workspace: with no review-only enforcement available in the CLI (see Permissions), a visible refusal is the only honest behavior. The knob covers provider turns and the ask tool; the web tools still spawn agy for searches. Default false.
 
 For per-action review of agy's mutating native tools (`run_command`, `create_file`, `edit_file`, ...), see the [Approval gate](docs/APPROVAL-GATE.md): with it on, the call must pass a pi-side approval (your permission extension, or the built-in ask/allow/deny fallback) before agy executes it.
 
@@ -175,7 +181,8 @@ For isolation when running any agent that executes commands without a confirmati
 | `AGY_ACP_BIN` | Path to the ACP server binary (`agy_acp_server.par`). Defaults to `agy_acp_server.par` on PATH. Wins over `config.acp.bin`. When neither points at a binary, auto-setup installs one. |
 | `AGY_EXTRA_ARGS` | Extra args appended to every invocation. Whitespace-split. |
 | `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
-| `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
+| `AGY_MODE` | Override execution mode: `plan` (provider turns are refused, see Permissions) or `accept-edits` (default). Wins over the config file. |
+| `AGY_READONLY` | `1`/`true`/`on` (or any set value except `0`/`false`/`off`/empty) turns every provider turn and the `AskAntigravity` tool into a visible refusal (fail-closed: the CLI has no review-only enforcement on any path, [#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181)). Wins over the config file. |
 | `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
 | `AGY_USAGE_ESTIMATE` | ACP token display: `estimate` (default; live client-side per-delta estimates), `direct` (pass through the server's own per-delta counts when it sends them), `off` (no usage display). Anything else falls back to `estimate`. Wins over the config file. |
 | `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |

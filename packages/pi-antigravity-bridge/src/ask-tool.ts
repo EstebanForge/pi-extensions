@@ -83,8 +83,8 @@ TWO MODES (you choose):
 - **Continued conversation**: pass the conversationId returned in the PREVIOUS call's details (details.conversationId). agy resumes that conversation with full context intact.
 
 EXECUTION MODES (param: mode):
-- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks. Enforced: plan runs execute in a temporary restricted agent whose toolset has NO file-editing tools (hard block); the reviewer may still execute arbitrary shell commands, kept read-only by the prompt guard alone. Inline the material to review - a plan run cannot fetch it.
-- **accept-edits** (default): agy applies edits directly inside the workspace.
+- **plan**: agy proposes a plan for review-shaped tasks. NOT a security boundary: the CLI does not gate writes under plan mode (upstream google-antigravity/antigravity-cli#1181, probed 2026-10-07: the write can execute in the same turn). The run additionally stages a temporary restricted agent whose toolset has no file-editing tools, as a damper, and the skip-permissions flag is never passed. Inline the material to review - a plan run cannot fetch it.
+- **accept-edits**: agy applies edits directly inside the workspace. Default unless the configured mode is plan.
 
 COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request compact digests instead of full file contents. Defaults on for plan, off for accept-edits.
 
@@ -365,7 +365,8 @@ export function buildFinalPrompt(
 	mode: AgyMode,
 	digest: boolean,
 	/** True when the restricted reviewer agent is staged: its empty edit
-	 *  toolset is the hard block, so the prompt may ALLOW read-only commands. */
+	 *  toolset is a damper (the CLI does not enforce review-only, upstream
+	 *  #1181), so the prompt may ALLOW read-only commands. */
 	agentEnforced = false,
 ): string {
 	let out = digest ? `(Use compact digests, not full file contents.)\n${prompt}` : prompt;
@@ -384,12 +385,14 @@ export function askAgentsRoot(): string {
 const ASK_AGENT_PREFIX = "pi-bridge-ask-";
 const ASK_AGENT_TOOLS = ["view_file", "run_command"];
 
-/** agent.md for the plan-mode reviewer. The tools list is the ENFORCEMENT:
- *  with no file-editing tool present the model cannot emit an edit call at
- *  all (probed 2026-09-28 on agy 1.2.12: the toolset reports "none" for
- *  edits, with and without the skip flag). commandExecutionPolicy auto is
- *  what lets read commands run headless with no user allow rules. Never add
- *  a write-capable tool here. */
+/** agent.md for the plan-mode reviewer. The tools list is a damper, not a
+ *  guarantee: with no file-editing tool present the model has no edit tool in
+ *  its menu (probed 2026-09-28 on agy 1.2.12: the toolset reports "none" for
+ *  edits; re-verify on 1.3.x), but the CLI itself does not enforce
+ *  review-only under plan mode (upstream google-antigravity/antigravity-cli
+ *  #1181, probed 2026-10-07: the write can execute in the same turn).
+ *  commandExecutionPolicy auto is what lets read commands run headless with
+ *  no user allow rules. Never add a write-capable tool here. */
 export function reviewerAgentMd(name: string): string {
 	return [
 		"---",
@@ -484,8 +487,7 @@ export async function registerAskAntigravityTool(
 			mode: Type.Optional(
 				Type.Union([Type.Literal("plan"), Type.Literal("accept-edits")], {
 					description:
-						"agy execution mode. 'plan' = review-only. 'accept-edits' = agy applies edits (default).",
-					default: "accept-edits",
+						"agy execution mode. 'plan' = plan-shaped run: the CLI does not enforce review-only (see the tool description); the staged reviewer agent's toolset omits file-editing tools as a damper. 'accept-edits' = agy applies edits. Omit to follow the configured default (plan when config mode is plan, else accept-edits).",
 				}),
 			),
 			digest: Type.Optional(
@@ -530,7 +532,10 @@ export async function registerAskAntigravityTool(
 					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER) : undefined,
 				) ?? { model: requestedModel };
 			const thinking: ThinkingTier = resolved.effort ?? cfg.defaultThinking;
-			const mode: AgyMode = (args.mode as AgyMode | undefined) ?? "accept-edits";
+			// Same default rule as execute: plan when the configured mode is
+			// plan, so the row always names what will actually run.
+			const mode: AgyMode =
+				(args.mode as AgyMode | undefined) ?? (cfg.mode === "plan" ? "plan" : "accept-edits");
 			const useDigest = typeof args.digest === "boolean" ? args.digest : mode === "plan";
 			const isContinue =
 				typeof args.conversationId === "string" && CONV_ID_RE.test(args.conversationId);
@@ -604,6 +609,21 @@ export async function registerAskAntigravityTool(
 			}
 
 			const config = loadConfig();
+			// readOnly refusal (fail-closed): the kill switch covers this tool too.
+			// It must not be bypassable with an explicit mode param: the CLI has no
+			// review-only enforcement (upstream google-antigravity/antigravity-cli
+			// #1181), so a plan-labeled run here is not read-only.
+			if (config.readOnly) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: 'readOnly is on: AskAntigravity is refused (fail-closed; the agy CLI has no review-only enforcement, google-antigravity/antigravity-cli#1181). Run /agy readonly off to use this tool.',
+						},
+					],
+					details: emptyDetails(),
+				};
+			}
 			// Background refusal (fail-closed): a wake from this tool would land in
 			// the pi session even when the CALLER is agy (nested delegation via the
 			// bridge catalog), and the bridge already owns an async delegation flow
@@ -680,10 +700,13 @@ export async function registerAskAntigravityTool(
 				typeof rawConvId === "string" && rawConvId.length > 0 && CONV_ID_RE.test(rawConvId);
 			const snapshot = isContinuation ? null : snapshotConversations();
 
-			const mode: AgyMode = (params.mode as AgyMode | undefined) ?? "accept-edits";
+			const mode: AgyMode =
+				(params.mode as AgyMode | undefined) ?? (config.mode === "plan" ? "plan" : "accept-edits");
 			// Plan runs stage a restricted reviewer agent: its tools list has NO
-			// file-editing tool, which is the hard edit block (the prompt guard
-			// alone was observed failing once - a sub-agent still edited files).
+			// file-editing tool, a toolset-level damper on edits (the prompt
+			// guard alone was observed failing once - a sub-agent still edited
+			// files; the CLI itself does not enforce review-only, upstream
+			// #1181).
 			// Staging failure degrades to the legacy fallback: no agent, no skip
 			// flag, the stricter command-forbidding guard.
 			let reviewerAgent: { name: string; dir: string } | null = null;
@@ -733,11 +756,13 @@ export async function registerAskAntigravityTool(
 				"info",
 			);
 			const extraRaw = extraArgs();
-			// Fail-closed on the fallback path: AGY_EXTRA_ARGS lands before the
-			// mode flags, so an env-injected skip flag would re-arm what the
-			// plan-mode rule strips. Only the enforced agent makes the flag safe.
+			// Fail-closed on every plan run: AGY_EXTRA_ARGS lands before the mode
+			// flags, so an env-injected skip flag would re-arm exactly what the
+			// never-flag-on-plan rule withholds (upstream #1181: an auto-approved
+			// plan run is write-capable). The reviewer agent is a damper, not a
+			// license for the flag.
 			const extra =
-				mode === "plan" && !reviewerAgent
+				mode === "plan"
 					? extraRaw.filter((a) => a !== "--dangerously-skip-permissions")
 					: extraRaw;
 			if (extra.length) args.push(...extra);
@@ -747,16 +772,16 @@ export async function registerAskAntigravityTool(
 			if (reviewerAgent) args.push("--agent", reviewerAgent.name);
 			// Honor the shared permissions setting (same knob as the provider).
 			// accept-edits: the flag keeps commands from hanging on an
-			// unanswerable prompt in -p mode. Plan runs WITH the reviewer agent:
-			// the flag is safe again because the agent's toolset has no
-			// file-editing tool - the 2026-09-25 write incident rode edit tools
-			// that existed then; probed 2026-09-28 the restricted toolset reports
-			// "none" for edits even with the flag, and plan discipline turned a
-			// create-a-file request into a proposed plan instead of a write. The
-			// flag is what lets analysis commands (builds, test runners) run for
-			// users without allow rules. Plan fallback (staging failed): strict
-			// legacy behavior, no flag - the prompt guard is all that is left.
-			if (config.skipPermissions !== false && (mode !== "plan" || reviewerAgent !== null)) {
+			// unanswerable prompt in -p mode. Plan runs NEVER get the flag: it
+			// auto-approves every permission request, and the CLI does not gate
+			// writes under plan mode (upstream
+			// google-antigravity/antigravity-cli#1181, probed 2026-10-07), so an
+			// auto-approved plan run is a write-capable run. The reviewer agent's
+			// toolset is a damper, not a guarantee; the 2026-09-28 "safe with the
+			// restricted toolset" probe predates the #1181 evidence. Without the
+			// flag, command attempts fail visibly (headless auto-deny) instead of
+			// running approved.
+			if (config.skipPermissions !== false && mode !== "plan") {
 				args.push("--dangerously-skip-permissions");
 			}
 			if (isContinuation) args.push("--conversation", rawConvId as string);

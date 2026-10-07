@@ -1053,6 +1053,7 @@ interface AgyCommandCtx {
 
 interface PendingConfig {
 	mode?: AgyMode;
+	readOnly?: boolean;
 	skipPermissions?: boolean;
 	defaultModel?: string;
 	defaultThinking?: ThinkingTier;
@@ -1074,6 +1075,10 @@ function settingsRows(ctx: AgyCommandCtx): string[] {
 	const row = (label: string, value: string) => `  ${label.padEnd(24)} ${value}`;
 	return [
 		row("mode:", config.mode),
+		row(
+			"readOnly:",
+			config.readOnly ? "on (provider turns are refused)" : "off",
+		),
 		row("permissions:", perm),
 		row("AskAntigravity tool:", config.askTool ? "on" : "off"),
 		row("Web tools:", config.webTools ? "on" : "off"),
@@ -1096,7 +1101,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -1104,7 +1109,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1387,13 +1392,45 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "mode") {
 				if (val === "plan" || val === "accept-edits") {
 					if (val === "plan" && ctx.engine === "acp") {
-						ui?.notify("the ACP engine has no plan mode (RC01). /agy engine stream-json first, or /agy mode accept-edits.", "warning");
+						ui?.notify("plan cannot be enforced on provider turns on either engine: the ACP engine has no plan mode (RC01), and the CLI does not gate writes under plan (google-antigravity/antigravity-cli#1181). /agy mode accept-edits.", "warning");
 						return;
 					}
 					const next = saveConfig({ mode: val as AgyMode });
-					ui?.notify(`mode set to ${next.mode}`, "info");
+					// readOnly fail-closes provider turns regardless of this knob;
+					// never let the confirmation imply turns will run.
+					ui?.notify(
+						next.readOnly
+							? `mode set to ${next.mode}, but readOnly is on: provider turns are refused. /agy readonly off to lift.`
+							: `mode set to ${next.mode}`,
+						"info",
+					);
 				} else {
-					ui?.notify(`current mode: ${loadConfig().mode}\nusage: /agy mode plan|accept-edits`, "info");
+					const cfg = loadConfig();
+					ui?.notify(
+						`current mode: ${cfg.mode}${cfg.readOnly ? " (readOnly on: provider turns are refused)" : ""}\nusage: /agy mode plan|accept-edits`,
+						"info",
+					);
+				}
+				return;
+			}
+			if (sub === "readonly") {
+				if (val === "on" || val === "off") {
+					const next = saveConfig({ readOnly: val === "on" });
+					ui?.notify(
+						next.readOnly
+							? "readOnly is on: provider turns and AskAntigravity are REFUSED (the agy CLI has no review-only enforcement on any path; probed 2026-10-07). Enforce read-only in the host, then /agy readonly off."
+							: "readOnly off: provider turns follow /agy mode again.",
+						"info",
+					);
+					if (!next.readOnly && process.env.AGY_READONLY) {
+						ui?.notify("AGY_READONLY is set in this environment: it overrides the config and keeps forcing refusals until you unset it.", "warning");
+					}
+				} else {
+					const cfg = loadConfig();
+					ui?.notify(
+						`readOnly is ${cfg.readOnly ? "on (provider turns and AskAntigravity are refused)" : "off"}\nusage: /agy readonly on|off. Fail-closed: the CLI has no review-only enforcement on any path (probed 2026-10-07), so on = refuse.`,
+						"info",
+					);
 				}
 				return;
 			}
@@ -1755,9 +1792,17 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "mode",
 			label: "Execution mode",
 			description:
-				"accept-edits: agy applies edits directly. plan: review-only, no writes. Takes effect next turn.",
+				"accept-edits: agy applies edits directly. plan: provider turns are REFUSED (the CLI cannot enforce review-only, upstream #1181); AskAntigravity plan runs add a restricted agent as a damper. Takes effect next turn.",
 			currentValue: config.mode,
 			values: ["accept-edits", "plan"],
+		},
+		{
+			id: "readonly",
+			label: "Read-only provider turns",
+			description:
+				"on: provider turns are REFUSED (fail-closed; the CLI has no review-only enforcement on any path). Enforce read-only in the host instead.",
+			currentValue: config.readOnly ? "on" : "off",
+			values: ["off", "on"],
 		},
 		{
 			id: "permissions",
@@ -1845,6 +1890,8 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			(id, newValue) => {
 				if (id === "mode") {
 					pending.mode = newValue as AgyMode;
+				} else if (id === "readonly") {
+					pending.readOnly = newValue === "on";
 				} else if (id === "permissions") {
 					pending.skipPermissions = newValue === "auto-approved";
 				} else if (id === "model") {
@@ -1882,12 +1929,13 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 	if (Object.keys(pending).length === 0) return;
 
 	// The picker cannot switch engines (command-only: /agy engine), but the
-	// mode row can still produce plan while the latched engine is acp. ACP
-	// has no review-only mode (RC01); refuse the combination.
+	// mode row can still produce plan while the latched engine is acp. Plan
+	// cannot be enforced on provider turns on either engine (#1181 + RC01);
+	// refuse the combination.
 	const nextMode = pending.mode ?? config.mode;
 	if (nextMode === "plan" && ctx.engine === "acp") {
 		ui.notify(
-			"plan + acp is not supported (RC01): the ACP engine has no review-only mode. /agy engine stream-json first, or /agy mode accept-edits.",
+			"plan cannot be enforced on provider turns on either engine (google-antigravity/antigravity-cli#1181; ACP additionally has no plan mode, RC01). /agy mode accept-edits.",
 			"warning",
 		);
 		return;
@@ -1897,6 +1945,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		const next = saveConfig(pending);
 		const changed = [
 			pending.mode ? `mode=${next.mode}` : null,
+			pending.readOnly !== undefined ? `readOnly=${next.readOnly ? "on" : "off"}` : null,
 			pending.skipPermissions !== undefined
 				? `permissions=${next.skipPermissions ? "auto-approved" : "prompt"}`
 				: null,

@@ -1435,13 +1435,34 @@ export function createStreamSimple(
 		const config = loadConfig();
 		const engine = deps.engine ?? config.engine;
 		const selected = engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
-		// RC01: ACP modes are permission modes, there is no review-only plan.
-		// A plan turn on ACP would silently run non-plan; fail visibly instead.
-		if (selected === deps.acpDriver && config.mode === "plan") {
+		// Plan-shaped provider turns are fail-closed on BOTH engines. ACP has
+		// no plan mode at all (RC01). Stream-json is worse and probed
+		// 2026-10-07: the engine WARNS that --mode plan is a no-op while
+		// --disable-slash-commands is set, executes file writes even with
+		// slash expansion left on (it stages a plan.md and still writes in the
+		// same turn), ignores --agent toolset restrictions, and file writes
+		// bypass the permission system entirely. A plan-labeled turn here is
+		// write-capable, so refuse visibly instead of running false safety.
+		if (config.readOnly || config.mode === "plan") {
 			const partial = newAssistant(model);
 			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
-			deps.log?.("turn-error", { reason: "acp-plan-refused" }, "warn");
-			finalize(stream, blocks, "error", "ACP engine has no plan mode. /agy mode accept-edits, or /agy engine stream-json.");
+			if (config.readOnly) {
+				deps.log?.("turn-error", { reason: "readonly-refused" }, "warn");
+				finalize(
+					stream,
+					blocks,
+					"error",
+					"readOnly cannot be enforced on provider turns: the agy CLI has no review-only enforcement on any path. Plan mode stages a plan and executes the write in the same turn (probed 2026-10-07, google-antigravity/antigravity-cli#1181). Enforce read-only in the host (pi tool restrictions or the approval gate), then /agy readonly off.",
+				);
+				return stream;
+			}
+			deps.log?.("turn-error", { reason: "plan-refused" }, "warn");
+			finalize(
+				stream,
+				blocks,
+				"error",
+				"Plan mode cannot be enforced on provider turns: the agy CLI stages a plan and executes writes in the same turn (probed 2026-10-07, google-antigravity/antigravity-cli#1181), and the ACP engine has no plan mode (RC01). /agy mode accept-edits, and enforce review-only in the host.",
+			);
 			return stream;
 		}
 		if (selected && roundTrips) {

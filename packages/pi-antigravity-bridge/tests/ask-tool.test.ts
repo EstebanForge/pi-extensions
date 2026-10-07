@@ -353,9 +353,14 @@ test("execute: plan run passes --agent and the skip flag, prompt carries the rev
 					assert.ok(agentIdx !== -1, "plan run must pass --agent");
 					const agentName = argv[agentIdx + 1] ?? "";
 					assert.match(agentName, /^pi-bridge-ask-/);
-					// Knob on + agent staged: the flag is safe again - the agent has no
-					// file-editing tools, so the write vector it used to open is gone.
-					assert.ok(argv.includes("--dangerously-skip-permissions"));
+					// Knob on + agent staged: plan runs NEVER get the flag. The CLI does
+					// not gate writes under plan mode (upstream #1181, probed
+					// 2026-10-07), so an auto-approved plan run is write-capable; the
+					// agent toolset is a damper, not a guarantee.
+					assert.ok(
+						!argv.includes("--dangerously-skip-permissions"),
+						"plan runs must not carry the skip flag",
+					);
 					const prompt = argv[argv.indexOf("-p") + 1] ?? "";
 					assert.match(prompt, /Do not create, modify, or delete any files/);
 					assert.doesNotMatch(prompt, /Do not run shell commands/);

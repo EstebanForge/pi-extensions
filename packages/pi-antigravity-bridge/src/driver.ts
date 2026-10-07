@@ -80,10 +80,11 @@ interface ActiveTurn {
 }
 
 /** The skip-permissions flag actually passed to agy. Plan mode never
- *  carries it: the flag auto-approves every permission request including
- *  plan mode's own approval gate, silently turning review-only into full
- *  write access. #start (argv + profile) and #recycleCause (comparison)
- *  must both go through this, or plan turns recycle on every turn. */
+ *  carries it: the flag auto-approves every permission request, and the CLI
+ *  does not gate writes under plan mode (upstream #1181), so an
+ *  auto-approved plan run is a write-capable run. #start (argv + profile)
+ *  and #recycleCause (comparison) must both go through this, or plan turns
+ *  recycle on every turn. */
 function effectiveSkipPermissions(mode: DriverTurnRequest["mode"], skipPermissions: boolean): boolean {
 	return mode !== "plan" && skipPermissions;
 }
@@ -352,12 +353,11 @@ export class StreamDriver implements TurnDriver {
 		this.#generation += 1;
 		const generation = this.#generation;
 		// Plan mode never carries the skip flag: the flag auto-approves ALL
-		// permission requests including plan mode's own approval gate, which
-		// would silently turn "review-only" into full write access (probed
-		// 2026-09-25: with the flag a plan session wrote files; without it,
-		// file and command attempts end exit 0 in ~20-30s with a "confirm
-		// plan" message). The profile stores the EFFECTIVE value so the
-		// recycle comparison stays consistent with the argv.
+		// permission requests, and the CLI does not gate writes under plan
+		// mode (upstream google-antigravity/antigravity-cli#1181, probed
+		// 2026-10-07: the write executes in the same turn). An auto-approved
+		// plan run is a write-capable run. The profile stores the EFFECTIVE
+		// value so the recycle comparison stays consistent with the argv.
 		const skipPermissions = effectiveSkipPermissions(request.mode, request.skipPermissions);
 		this.#profile = {
 			cwd: request.cwd,
