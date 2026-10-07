@@ -30,6 +30,21 @@ export function isScreenshotCommand(command: string): boolean {
 	return command.includes("agent-browser") && command.includes("screenshot");
 }
 
+/**
+ * Pull the command string out of a shell tool's input. The shell tool name
+ * differs per toolset (bash, exec_command, powershell), and so does the
+ * input key (command, cmd); capture detection keys off the string, not the
+ * tool name.
+ */
+export function shellCommandFromInput(input: unknown): string {
+	if (input === null || typeof input !== "object") return "";
+	const rec = input as Record<string, unknown>;
+	for (const key of ["command", "cmd", "script"]) {
+		if (typeof rec[key] === "string") return rec[key] as string;
+	}
+	return "";
+}
+
 /** Absolute paths of image files named in text; ~ and relative resolve against cwd. */
 export function extractImagePaths(text: string, cwd: string): string[] {
 	const paths = new Set<string>();

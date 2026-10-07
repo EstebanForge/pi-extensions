@@ -44,6 +44,7 @@ import {
 	extractImagePaths,
 	isFreshCapture,
 	isScreenshotCommand,
+	shellCommandFromInput,
 	MAX_FILE_BYTES,
 } from "../lib/cli-capture";
 import { imageEntryComponent } from "../lib/kitty";
@@ -85,9 +86,10 @@ export default function (pi: ExtensionAPI) {
 
 	const cliStartTimes = new Map<string, number>();
 
+	// The shell tool's name varies per toolset (bash, exec_command, ...), so
+	// capture detection keys off the command string alone.
 	pi.on("tool_execution_start", (event) => {
-		if (event.toolName !== "bash") return;
-		if (isScreenshotCommand(inputCommand(event.args))) {
+		if (isScreenshotCommand(shellCommandFromInput(event.args))) {
 			cliStartTimes.set(event.toolCallId, Date.now());
 		}
 	});
@@ -105,7 +107,7 @@ export default function (pi: ExtensionAPI) {
 			return stripImages(event, capturePlaceholder);
 		}
 
-		if (event.toolName === "bash") {
+		if (cliStartTimes.has(event.toolCallId)) {
 			renderCliCaptures(event, pi, ctx.cwd);
 		}
 		return undefined;
@@ -182,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 		cliStartTimes.delete(event.toolCallId);
 		if (event.parentToolCallId) return;
 
-		const command = inputCommand(event.input);
+		const command = shellCommandFromInput(event.input);
 		const output = (event.content as ContentBlock[])
 			.filter((block) => block.type === "text")
 			.map((block) => (block as { text: string }).text)
@@ -208,10 +210,6 @@ export default function (pi: ExtensionAPI) {
 			pi.appendEntry(ENTRY_TYPE, { path: candidate, mtimeMs });
 		}
 	}
-}
-
-function inputCommand(input: Record<string, unknown>): string {
-	return typeof input.command === "string" ? input.command : "";
 }
 
 function mtimeOf(path: string): number {

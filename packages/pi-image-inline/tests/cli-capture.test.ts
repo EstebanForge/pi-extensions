@@ -6,6 +6,7 @@ import {
 	isScreenshotCommand,
 	mimeForPath,
 	MTIME_SLACK_MS,
+	shellCommandFromInput,
 } from "../lib/cli-capture";
 
 describe("isScreenshotCommand", () => {
@@ -67,6 +68,20 @@ describe("isFreshCapture", () => {
 	it("rejects files older than the slack window", () => {
 		const startedAt = 1_000_000;
 		expect(isFreshCapture(startedAt - MTIME_SLACK_MS - 1, startedAt)).toBe(false);
+	});
+});
+
+describe("shellCommandFromInput", () => {
+	it("reads the command key across shell tool shapes", () => {
+		expect(shellCommandFromInput({ command: "agent-browser screenshot x.png" })).toBe("agent-browser screenshot x.png");
+		expect(shellCommandFromInput({ cmd: "ls" })).toBe("ls");
+		expect(shellCommandFromInput({ script: "pwd" })).toBe("pwd");
+	});
+
+	it("returns empty for junk input", () => {
+		expect(shellCommandFromInput(undefined)).toBe("");
+		expect(shellCommandFromInput({ command: 42 })).toBe("");
+		expect(shellCommandFromInput({ other: true })).toBe("");
 	});
 });
 
