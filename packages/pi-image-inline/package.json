@@ -1,0 +1,53 @@
+{
+  "name": "@estebanforge/pi-image-inline",
+  "version": "1.0.0",
+  "description": "Render images inline in the pi TUI (reads, browser screenshots) without spending model tokens. Strips pixels from tool results before they reach the model.",
+  "keywords": [
+    "pi-package",
+    "image",
+    "inline",
+    "screenshot",
+    "kitty",
+    "kitty-graphics",
+    "tui",
+    "tokens",
+    "context",
+    "vision"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@actitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-image-inline"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "extensions",
+    "lib",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@earendil-works/pi-tui": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
