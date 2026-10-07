@@ -234,16 +234,17 @@ test("buildFinalPrompt: accept-edits never carries the guard", () => {
 // prompt guard alone was observed failing once (a sub-agent edited files),
 // so the toolset restriction is the real enforcement layer.
 
-test("buildFinalPrompt: agent-enforced plan run forbids file mutation, not commands", () => {
+test("buildFinalPrompt: agent-damper plan run forbids file mutation and steers away from commands", () => {
 	const out = buildFinalPrompt("review this", "plan", false, true);
 	assert.match(out, /Do not create, modify, or delete any files/);
-	// Commands are the analysis capability under the agent; the old guard
+	// Read commands remain the intended analysis path; the old guard
 	// forbidding them outright must NOT apply.
 	assert.doesNotMatch(out, /Do not run shell commands/);
-	assert.match(out, /Read-only commands \(git log, git diff/);
+	assert.match(out, /Prefer the staged material and view_file/);
+	assert.match(out, /a denied command ends the run|denied, the run ends/);
 });
 
-test("buildFinalPrompt: agent-enforced accept-edits run is unchanged", () => {
+test("buildFinalPrompt: agent-damper accept-edits run is unchanged", () => {
 	assert.equal(buildFinalPrompt("do the edit", "accept-edits", false, true), "do the edit");
 });
 

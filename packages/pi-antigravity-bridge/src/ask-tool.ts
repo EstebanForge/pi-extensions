@@ -328,15 +328,17 @@ function extraArgs(): string[] {
 // --- Prompt assembly -------------------------------------------------------
 
 /** Guard for plan runs backed by the restricted reviewer agent. Difference
- *  to PLAN_HEADLESS_GUARD: commands are the analysis capability here (the
- *  agent's commandExecutionPolicy auto-approves them headless, probed
- *  2026-09-28), so the guard forbids FILE MUTATION - by tool or by shell -
- *  and keeps the answer-from-material discipline. */
+ *  to PLAN_HEADLESS_GUARD: read commands are the intended analysis path
+ *  here, so the guard forbids FILE MUTATION - by tool or by shell - and
+ *  keeps the answer-from-material discipline. The agent is a damper, not
+ *  enforcement (upstream #1181); a headless command attempt can still be
+ *  auto-denied, which ends the run, so the guard steers toward view_file
+ *  and staged material first. */
 export const AGENT_REVIEW_GUARD = [
 	"",
 	"--- Review constraints ---",
 	"- Read-only review. Do not create, modify, or delete any files, including through shell commands (no redirects, tee, rm, mv, git commit).",
-	"- Read-only commands (git log, git diff, git show, rg, ls, cat, test runners) are allowed for analysis.",
+	"- Prefer the staged material and view_file for reading. If you run a read-only command (git log, git diff, rg, ls) and it comes back denied, the run ends without an answer: state what you could not check instead of retrying commands.",
 	"- Work from the material provided in this prompt; if information you need is missing, state exactly what is missing in your answer.",
 ].join("\n");
 
