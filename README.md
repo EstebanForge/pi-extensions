@@ -84,6 +84,14 @@ Z.ai GLM provider tuning.
 pi install npm:@estebanforge/pi-glm-tweaks
 ```
 
+### [pi-image-inline](packages/pi-image-inline)
+
+Render images inline in the TUI (reads, browser screenshots) without spending model tokens.
+
+```bash
+pi install npm:@estebanforge/pi-image-inline
+```
+
 ### [pi-hostname](packages/pi-hostname)
 
 Hostname indicator.
