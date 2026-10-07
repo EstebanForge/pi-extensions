@@ -3,7 +3,11 @@
 // (google-antigravity/antigravity-cli#1181, probed 2026-10-07), so an
 // auto-approved plan run is a write-capable run. The agent is a damper, not
 // enforcement, and it does not license the flag. AGY_EXTRA_ARGS cannot
-// re-inject it (prefix filter: bare and =value spellings).
+// re-inject it (prefix filter: bare and =value spellings, benign args kept).
+//
+// Harness isolation holds through EXECUTE, not just registration: the
+// reviewer agent stages into HOME and loadConfig reads HOME, so both run
+// under a temp HOME or the tests touch the host and read host config.
 //
 // Run: npm test
 
@@ -45,13 +49,38 @@ function makeArgvCapturingAgyBin(argvFile: string): string {
 	return bin;
 }
 
-async function registerTool(bin: string): Promise<RegisteredTool> {
-	const realHome = process.env.HOME;
-	const realBin = process.env.AGY_BIN;
+const FAKE_CONVERSATION_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+
+async function argvFor(
+	mode: string,
+	opts: { extraArgs?: string; conversationId?: string } = {},
+): Promise<string[]> {
+	const argvDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-plan-argv-"));
+	tempDirs.push(argvDir);
+	const argvFile = path.join(argvDir, "argv.txt");
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "agy-plan-cwd-"));
+	tempDirs.push(cwd);
 	const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-plan-"));
 	tempDirs.push(emptyHome);
+
+	// Save every env var the tool reads; isolation must survive into execute.
+	const saved = {
+		HOME: process.env.HOME,
+		AGY_BIN: process.env.AGY_BIN,
+		AGY_EXTRA_ARGS: process.env.AGY_EXTRA_ARGS,
+	};
 	process.env.HOME = emptyHome;
-	process.env.AGY_BIN = bin;
+	process.env.AGY_BIN = makeArgvCapturingAgyBin(argvFile);
+	if (opts.extraArgs === undefined) delete process.env.AGY_EXTRA_ARGS;
+	else process.env.AGY_EXTRA_ARGS = opts.extraArgs;
+
+	const restoreEnv = () => {
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+
 	try {
 		const tools: RegisteredTool[] = [];
 		const pi = new Proxy(
@@ -68,28 +97,13 @@ async function registerTool(bin: string): Promise<RegisteredTool> {
 		await factory(pi as never);
 		const tool = tools.find((t) => t.name === "AskAntigravity");
 		assert.ok(tool, "AskAntigravity tool must register under an isolated HOME");
-		return tool;
-	} finally {
-		process.env.HOME = realHome;
-		process.env.AGY_BIN = realBin;
-	}
-}
 
-async function argvFor(mode: string, extraArgs?: string): Promise<string[]> {
-	const argvFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-plan-argv-")), "argv.txt");
-	tempDirs.push(path.dirname(argvFile));
-	const tool = await registerTool(makeArgvCapturingAgyBin(argvFile));
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "agy-plan-cwd-"));
-	tempDirs.push(cwd);
-	const savedExtra = process.env.AGY_EXTRA_ARGS;
-	if (extraArgs === undefined) delete process.env.AGY_EXTRA_ARGS;
-	else process.env.AGY_EXTRA_ARGS = extraArgs;
-	try {
-		await tool.execute("t1", { prompt: "look", mode, cwd }, undefined, undefined, { cwd });
+		const params: Record<string, unknown> = { prompt: "look", mode, cwd };
+		if (opts.conversationId !== undefined) params.conversationId = opts.conversationId;
+		await tool.execute("t1", params, undefined, undefined, { cwd });
 		return fs.readFileSync(argvFile, "utf8").split("\0");
 	} finally {
-		if (savedExtra === undefined) delete process.env.AGY_EXTRA_ARGS;
-		else process.env.AGY_EXTRA_ARGS = savedExtra;
+		restoreEnv();
 	}
 }
 
@@ -104,13 +118,26 @@ test("plan run never carries the skip flag, even with the reviewer agent staged"
 	assert.ok(argv.includes("--mode"), "mode flag is passed");
 });
 
-test("AGY_EXTRA_ARGS cannot re-inject the skip flag on plan runs", async () => {
-	const argv = await argvFor("plan", "--dangerously-skip-permissions --dangerously-skip-permissions=true");
+test("plan continuation runs withhold the flag too", async () => {
+	const argv = await argvFor("plan", { conversationId: FAKE_CONVERSATION_ID });
+	assert.equal(
+		argv.some((a) => a.startsWith("--dangerously-skip-permissions")),
+		false,
+		"continuation plan runs must not be auto-approved",
+	);
+	assert.ok(argv.includes("--conversation"), "continuation passes the conversation id");
+});
+
+test("AGY_EXTRA_ARGS loses the skip flag on plan runs and keeps benign args", async () => {
+	const argv = await argvFor("plan", {
+		extraArgs: "--sandbox --dangerously-skip-permissions --dangerously-skip-permissions=true",
+	});
 	assert.equal(
 		argv.some((a) => a.startsWith("--dangerously-skip-permissions")),
 		false,
 		"env-injected skip flag must be filtered from plan runs",
 	);
+	assert.ok(argv.includes("--sandbox"), "benign extra args survive the filter");
 });
 
 test("accept-edits run keeps the flag (default skipPermissions on)", async () => {

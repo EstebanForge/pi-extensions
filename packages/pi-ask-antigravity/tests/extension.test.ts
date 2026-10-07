@@ -244,23 +244,23 @@ describe("buildFinalPrompt (headless plan-mode hardening)", () => {
 	});
 });
 
-// --- Plan-mode reviewer agent (enforced edit denial) ------------------------
-// Probed 2026-09-28 on agy 1.2.12: a per-call agent whose tools list carries
-// no file-editing tool reports "none" for edits (hard block, with or without
-// the skip flag); commandExecutionPolicy auto lets read commands run headless
-// with no user allow rules; plan discipline blocks a redirect-write. The
-// prompt guard alone was observed failing once (a sub-agent edited files),
-// so the toolset restriction is the real enforcement layer.
+// --- Plan-mode reviewer agent (damper, not enforcement) ---------------------
+// The restricted agent's toolset omits file-editing tools as a damper. The
+// CLI does not enforce review-only (upstream #1181: writes bypass the
+// permission system, the toolset is not honored reliably on 1.3.x), so the
+// prompt guard carries the honest discipline: no file mutation, prefer
+// staged material, and a denied command ends the run.
 
 describe("plan-mode reviewer agent (damper, not enforcement)", () => {
-	test("agent-enforced plan run forbids file mutation, not commands", () => {
+	test("agent-damper plan run forbids file mutation and steers away from commands", () => {
 		const out = buildFinalPrompt("review this", "plan", false, true);
 		assert.match(out, /Do not create, modify, or delete any files/);
 		assert.doesNotMatch(out, /Do not run shell commands/);
-		assert.match(out, /Read-only commands \(git log, git diff/);
+		assert.match(out, /Prefer the staged material and view_file/);
+		assert.match(out, /a denied command ends the run|denied, the run ends/);
 	});
 
-	test("agent-enforced accept-edits run is unchanged", () => {
+	test("agent-damper accept-edits run is unchanged", () => {
 		assert.equal(buildFinalPrompt("do the edit", "accept-edits", false, true), "do the edit");
 	});
 
