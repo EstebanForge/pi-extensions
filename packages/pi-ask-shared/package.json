@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-ask-shared",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared background-run registry, wake sender, stop handler, and tool-description text for the @estebanforge ask extensions. Plain library, no Pi entrypoint: each ask package depends on it and Pi installs it transitively.",
   "keywords": [
     "pi",
