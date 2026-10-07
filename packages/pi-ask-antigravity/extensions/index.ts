@@ -104,9 +104,11 @@ function levelToTier(level: string): ThinkingTier {
 }
 
 // Mode = which agy tool-loop policy to apply. Distinct from the alias layer.
-//   "plan"         → --mode plan     (no edits; review-only — the skip-
-//                                      permissions flag is withheld in plan
-//                                      mode so the plan-approval gate holds)
+//   "plan"         → --mode plan     (review-shaped; NOT a security boundary:
+//                                      the CLI does not gate writes under
+//                                      plan, upstream #1181. The skip-
+//                                      permissions flag is still withheld so
+//                                      nothing runs auto-approved.)
 //   "accept-edits" → --mode accept-edits (agy applies edits)
 //
 // Note: agy's --sandbox flag is an orthogonal shell-containment setting
@@ -176,7 +178,7 @@ TWO MODES (you choose):
 - **Continued conversation**: pass the conversationId returned in the PREVIOUS call's details (details.conversationId). agy resumes that conversation with full context intact — use for follow-ups, multi-turn refinement, or when the user says "ask agy to follow up / continue / now do X based on what you just did". Thread the id from each result into the next call.
 
 EXECUTION MODES (param: mode):
-- **plan**: agy reviews and plans without writing. Use for cross-review and read-only tasks. Enforced: plan runs execute in a temporary restricted agent whose toolset has NO file-editing tools (hard block); the reviewer may still execute arbitrary shell commands, kept read-only by the prompt guard alone. Inline the material to review - a plan run cannot fetch it.
+- **plan**: agy proposes a plan for review-shaped tasks. NOT a security boundary: the CLI does not gate writes under plan mode (upstream google-antigravity/antigravity-cli#1181, probed 2026-10-07: the write can execute in the same turn). The run additionally stages a temporary restricted agent whose toolset has no file-editing tools, as a damper, and the skip-permissions flag is never passed. Inline the material to review - a plan run cannot fetch it.
 - **accept-edits** (default): agy applies edits directly inside the workspace.
 - For agy's orthogonal \`--sandbox\` shell-containment flag, set the \`AGY_EXTRA_ARGS=--sandbox\` env var.
 
@@ -342,11 +344,12 @@ export function buildFinalPrompt(
 	mode: Mode,
 	digest: boolean,
 	/** True when the restricted reviewer agent is staged: its empty edit
-	 *  toolset is the hard block, so the prompt may ALLOW read-only commands. */
-	agentEnforced = false,
+	 *  toolset is a damper (the CLI does not enforce review-only, upstream
+	 *  #1181), so the prompt may ALLOW read-only commands. */
+	agentDamper = false,
 ): string {
 	let out = digest ? `(Use compact digests, not full file contents.)\n${prompt}` : prompt;
-	if (mode === "plan") out += agentEnforced ? AGENT_REVIEW_GUARD : PLAN_HEADLESS_GUARD;
+	if (mode === "plan") out += agentDamper ? AGENT_REVIEW_GUARD : PLAN_HEADLESS_GUARD;
 	return out;
 }
 
@@ -1475,7 +1478,7 @@ export default async function (pi: ExtensionAPI) {
 					],
 					{
 						description:
-							"agy execution mode. 'plan' = review-only (--mode plan in a temporary restricted agent: file-editing tools are hard-blocked; arbitrary shell commands remain prompt-guarded only; with skipPermissions on, commands still run for analysis). 'accept-edits' = agy applies edits directly (--mode accept-edits, default). For agy's orthogonal --sandbox shell-containment flag, set the AGY_EXTRA_ARGS env var.",
+							"agy execution mode. 'plan' = plan-shaped run: the CLI does not enforce review-only (see the tool description); the staged reviewer agent's toolset omits file-editing tools as a damper, and the skip-permissions flag is never passed. 'accept-edits' = agy applies edits directly (--mode accept-edits, default). For agy's orthogonal --sandbox shell-containment flag, set the AGY_EXTRA_ARGS env var.",
 						default: "accept-edits",
 					},
 				),
@@ -1703,7 +1706,7 @@ export default async function (pi: ExtensionAPI) {
 					reviewerAgent = null;
 				}
 			}
-			// digest default: on for plan (review-only contexts where full file
+			// digest default: on for plan (review-shaped contexts where full file
 			// contents are noise), off for accept-edits (agy applies edits and
 			// may need richer context for diffs).
 			const useDigest: boolean =
@@ -1742,12 +1745,14 @@ export default async function (pi: ExtensionAPI) {
 
 			const args: string[] = ["--add-dir", cwd];
 			const extraRaw = extraArgs();
-			// Fail-closed on the fallback path: AGY_EXTRA_ARGS lands before the
-			// mode flags, so an env-injected skip flag would re-arm what the
-			// plan-mode rule strips. Only the enforced agent makes the flag safe.
+			// Fail-closed on every plan run: AGY_EXTRA_ARGS lands before the mode
+			// flags, so an env-injected skip flag would re-arm exactly what the
+			// never-flag-on-plan rule withholds (upstream #1181: an auto-approved
+			// plan run is write-capable). The reviewer agent is a damper, not a
+			// license for the flag.
 			const extra =
-				mode === "plan" && !reviewerAgent
-					? extraRaw.filter((a) => a !== "--dangerously-skip-permissions")
+				mode === "plan"
+					? extraRaw.filter((a) => !a.startsWith("--dangerously-skip-permissions"))
 					: extraRaw;
 			if (extra.length) args.push(...extra);
 			if (resolved.model) args.push("--model", resolved.model);
@@ -1757,14 +1762,15 @@ export default async function (pi: ExtensionAPI) {
 			// accept-edits auto-approves file edits but NOT shell commands, so a
 			// run_command would hang on an unanswerable y/n prompt in non-interactive
 			// -p mode. Honor the shared permissions setting (same knob as the bridge).
-			// Plan runs WITH the reviewer agent: the flag is safe again because the
-			// agent's toolset has no file-editing tool - the 2026-09-25 write
-			// incident rode edit tools that existed then; probed 2026-09-28 the
-			// restricted toolset reports "none" for edits even with the flag. The
-			// flag is what lets analysis commands (builds, test runners) run for
-			// users without allow rules. Plan fallback (staging failed): strict
-			// legacy behavior, no flag - the prompt guard is all that is left.
-			if (config.skipPermissions && (mode !== "plan" || reviewerAgent !== null)) {
+			// Plan runs NEVER get the flag: it auto-approves every permission
+			// request, and the CLI does not gate writes under plan mode (upstream
+			// google-antigravity/antigravity-cli#1181, probed 2026-10-07), so an
+			// auto-approved plan run is a write-capable run. The reviewer agent's
+			// toolset is a damper, not a guarantee; the 2026-09-28 "safe with the
+			// restricted toolset" probe predates the #1181 evidence. Without the
+			// flag, command attempts fail visibly (headless auto-deny) instead of
+			// running approved.
+			if (config.skipPermissions && mode !== "plan") {
 				args.push("--dangerously-skip-permissions");
 			}
 			if (isContinuation) args.push("--conversation", rawConvId as string);

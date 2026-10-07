@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - **Background runs (`background`, opt-in, default blocking).** Detached runs with the shared wake contract: `runId` at once, the answer arrives later as a conversation message with the resume handle (when agy reports one; discovery misses say so) under an UNTRUSTED banner. `/agy-stop [runId]` kills a run. One run per conversation at a time across blocking and background (per-handle lock). Refused in print/json mode; session replacement kills in-flight runs and loses their results; the staged context file and plan-mode reviewer dir are cleaned on every exit path including session shutdown.
 
 
+### Fixed
+
+- **Plan runs are no longer auto-approved and no longer claim enforcement.** The CLI does not gate writes under plan mode ([#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181)): the previously documented "write attempts fail at plan approval" behavior never held, and plan runs carrying the skip-permissions flag (whenever the restricted agent staged) were write-capable. Plan runs now never receive the flag (including via `AGY_EXTRA_ARGS`, filtered by prefix), the restricted agent is documented as a damper, and the tool description, param description, and README no longer call plan review-only or enforced.
+
 ## [1.2.10] - 2026-10-06
 
 ### Changed

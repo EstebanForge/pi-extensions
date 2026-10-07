@@ -252,7 +252,7 @@ describe("buildFinalPrompt (headless plan-mode hardening)", () => {
 // prompt guard alone was observed failing once (a sub-agent edited files),
 // so the toolset restriction is the real enforcement layer.
 
-describe("plan-mode reviewer agent (enforced edit denial)", () => {
+describe("plan-mode reviewer agent (damper, not enforcement)", () => {
 	test("agent-enforced plan run forbids file mutation, not commands", () => {
 		const out = buildFinalPrompt("review this", "plan", false, true);
 		assert.match(out, /Do not create, modify, or delete any files/);
