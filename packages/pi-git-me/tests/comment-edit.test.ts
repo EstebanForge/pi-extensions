@@ -339,6 +339,55 @@ describe("git_issue_comment_edit", () => {
 });
 
 describe("git_pr_comment_edit", () => {
+  it("honors an explicit pr param instead of the current-branch PR", async () => {
+    const { route: patchRoute, bodies } = recordingPatch(98);
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+      patchRoute,
+    ];
+    const ui = makeStubUI({ editorResponse: "fix" });
+    // No `pr view` route: if the tool ignored the explicit pr param and fell
+    // back to the current branch, the lookup would miss and fail closed.
+    const result = await invokeWithCtx(
+      prCommentEditTool,
+      { body: "fix", pr: 9 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("Edited your comment on PR #9");
+    const list = cpMock.state.calls.find((c) => c.args.includes("--paginate"));
+    expect(list?.args[1]).toBe("repos/octo/repo/issues/9/comments?per_page=100");
+    expect(bodies()).toEqual(["fix"]);
+  });
+
+  it("edits by commentId even when the current branch has no PR", async () => {
+    const withThread = {
+      ...MY_LAST,
+      id: 55,
+      body: "old older body",
+      issue_url: "https://github.com/octo/repo/issues/9",
+    };
+    const { route: patchRoute, bodies } = recordingPatch(55);
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeCommentById(55, withThread),
+      patchRoute,
+    ];
+    const ui = makeStubUI({ editorResponse: "fixed" });
+    // No `pr view` route on purpose: the commentId path must not require one.
+    const result = await invokeWithCtx(
+      prCommentEditTool,
+      { body: "fixed", commentId: 55 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("Edited your comment on PR #9");
+    expect(bodies()).toEqual(["fixed"]);
+  });
+
   it("resolves the PR from the current branch when pr is omitted", async () => {
     const { route: patchRoute, bodies } = recordingPatch(98);
     cpMock.state.routes = [
@@ -404,5 +453,127 @@ describe("comment-edit env guards", () => {
     );
     expect(firstText(result)).toContain("not inside a git working tree");
     expect(ui.prompts).toHaveLength(0);
+  });
+});
+
+describe("comment-edit hardening", () => {
+  it("refuses a commentId that lives on another thread", async () => {
+    const onIssue9 = {
+      ...MY_LAST,
+      id: 55,
+      issue_url: "https://github.com/octo/repo/issues/9",
+    };
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeCommentById(55, onIssue9),
+    ];
+    const ui = makeStubUI({ editorResponse: "x" });
+    const result = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "x", number: 7, commentId: 55 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("belongs to");
+    expect(firstText(result)).toContain("issues/9");
+    expect(ui.prompts).toHaveLength(0);
+    expect(cpMock.state.calls.some((c) => c.args.includes("PATCH"))).toBe(false);
+  });
+
+  it("picks the chronologically LAST own comment across the paginated stream", async () => {
+    const olderMine = { ...MY_LAST, id: 90, body: "older own" };
+    const { route: patchRoute } = recordingPatch(98);
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([
+        JSON.stringify(THEIRS),
+        JSON.stringify(olderMine),
+        JSON.stringify(MY_LAST),
+      ]),
+      patchRoute,
+    ];
+    const ui = makeStubUI({ editorResponse: "newest" });
+    await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "newest", number: 7 },
+      makeCtx(ui),
+    );
+    const patch = cpMock.state.calls.find((c) => c.args.includes("PATCH"));
+    expect(patch?.args[3]).toBe("repos/octo/repo/issues/comments/98");
+  });
+
+  it("refuses an empty body after the editor wipes the draft", async () => {
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+    ];
+    const ui = makeStubUI({ editorResponse: "   " });
+    const result = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "non-empty draft", number: 7 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("edited body is empty");
+    expect(cpMock.state.calls.some((c) => c.args.includes("PATCH"))).toBe(false);
+  });
+
+  it("surfaces a PATCH failure with the gh stderr detail", async () => {
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+      {
+        match: (c, a) =>
+          c === "gh" && a[0] === "api" && a[1] === "--method" && a[2] === "PATCH",
+        result: () => ({ stdout: "", stderr: "gh: API error (422)", status: 1 }),
+      },
+    ];
+    const ui = makeStubUI({ editorResponse: "new" });
+    const result = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "new", number: 7 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("`gh api PATCH` failed");
+    expect(firstText(result)).toContain("422");
+  });
+
+  it("attaches postedContent details only when the human edited the draft", async () => {
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+    ];
+    const editedUi = makeStubUI({ editorResponse: "human-touched text" });
+    const { route: patchRoute } = recordingPatch(98);
+    cpMock.state.routes.push(patchRoute);
+    const edited = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "agent draft", number: 7 },
+      makeCtx(editedUi),
+    );
+    expect(edited.details).toMatchObject({ postedContent: "human-touched text", edited: true });
+
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+      recordingPatch(98).route,
+    ];
+    const verbatimUi = makeStubUI({ editorResponse: "verbatim draft" });
+    const verbatim = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "verbatim draft", number: 7 },
+      makeCtx(verbatimUi),
+    );
+    expect(verbatim.details).toBeUndefined();
   });
 });

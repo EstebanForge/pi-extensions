@@ -39,7 +39,7 @@ import { join } from "node:path";
 export const CONFIRM_WRITE_FLAG = "git-confirm-write";
 
 export const CONFIRM_WRITE_FLAG_DESCRIPTION =
-  "When on (default), the eight write tools (git_commit, git_pr_upsert, git_pr_comment, git_pr_review, git_issue_comment, git_issue_create, git_discussion_create, git_discussion_comment) open an editable preview before touching git or GitHub. Turn off to apply without confirmation. APPROVE / REQUEST_CHANGES are always confirmed regardless of this setting. Toggle via /git config or /git confirm on|off.";
+  "When on (default), the ten write tools (git_commit, git_pr_upsert, git_pr_comment, git_pr_comment_edit, git_pr_review, git_issue_comment, git_issue_comment_edit, git_issue_create, git_discussion_create, git_discussion_comment) open an editable preview before touching git or GitHub. Turn off to apply without confirmation. APPROVE / REQUEST_CHANGES are always confirmed regardless of this setting. Toggle via /git config or /git confirm on|off.";
 
 /**
  * Name of the persisted boolean flag that allows prose writes to run in
@@ -49,7 +49,7 @@ export const CONFIRM_WRITE_FLAG_DESCRIPTION =
 export const ALLOW_HEADLESS_WRITE_FLAG = "git-allow-headless-write";
 
 export const ALLOW_HEADLESS_WRITE_FLAG_DESCRIPTION =
-  "When on (default off), the prose write tools (git_commit, git_pr_upsert, git_pr_comment, git_issue_comment, git_issue_create, git_discussion_create, git_discussion_comment, and git_pr_review COMMENT) MAY run in headless mode (no interactive UI) without a human review. Off by default: unsupervised writes are refused until a human is present at the UI. APPROVE / REQUEST_CHANGES are always blocked in headless mode (no opt-in). Toggle via /git config or /git headless on|off.";
+  "When on (default off), the prose write tools (git_commit, git_pr_upsert, git_pr_comment, git_pr_comment_edit, git_issue_comment, git_issue_comment_edit, git_issue_create, git_discussion_create, git_discussion_comment, and git_pr_review COMMENT) MAY run in headless mode (no interactive UI) without a human review. Off by default: unsupervised writes are refused until a human is present at the UI. APPROVE / REQUEST_CHANGES are always blocked in headless mode (no opt-in). Toggle via /git config or /git headless on|off.";
 
 const SETTINGS_FILENAME = "pi-git-me.json";
 const DEFAULT_CONFIRM_WRITE = true;

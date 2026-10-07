@@ -50,7 +50,15 @@ interface GhComment {
   id?: unknown;
   body?: unknown;
   html_url?: unknown;
+  issue_url?: unknown;
   user?: { login?: unknown } | null;
+}
+
+/** Thread number from a comment's issue_url (".../issues/42" -> 42). undefined when absent or malformed. */
+function threadNumberFromIssueUrl(issueUrl: unknown): number | undefined {
+  if (typeof issueUrl !== "string") return undefined;
+  const m = issueUrl.match(/\/issues\/(\d+)$/);
+  return m ? Number(m[1]) : undefined;
 }
 
 function parseComment(raw: string): GhComment | null {
@@ -99,7 +107,11 @@ function lastOwnComment(
     if (!trimmed) continue;
     const comment = parseComment(trimmed);
     if (!comment) continue;
-    if (comment.user?.login !== login) continue;
+    if (
+      typeof comment.user?.login !== "string" ||
+      comment.user.login.toLowerCase() !== login.toLowerCase()
+    )
+      continue;
     last = comment;
   }
   return last;
@@ -131,19 +143,32 @@ export interface CommentEditKindConfig {
 export function buildCommentEditTool(
   cfg: CommentEditKindConfig,
 ): ToolDefinition<Record<string, unknown>, GitDetails> {
+  // Thread-number param name follows the sister tools: `number` on the issue
+  // flavor (git_issue_comment uses `number`), `pr` on the PR flavor
+  // (git_pr_comment / git_pr_review use `pr`). The fail-closed messages and
+  // the /git prefill prompts reference the same name, so the model never
+  // passes a param the schema silently ignores.
+  const threadNumberSchema = () =>
+    Type.Integer({ description: cfg.numberParam.description, minimum: 1 });
   const Params = Type.Object({
     body: Type.String({ description: COMMENT_EDIT_BODY_DESCRIPTION, minLength: 1 }),
-    number:
-      cfg.numberParam.required
-        ? Type.Integer({ description: cfg.numberParam.description, minimum: 1 })
-        : Type.Optional(
-            Type.Integer({ description: cfg.numberParam.description, minimum: 1 }),
-          ),
+    ...(cfg.numberParam.required
+      ? { number: threadNumberSchema() }
+      : { pr: Type.Optional(threadNumberSchema()) }),
     commentId: Type.Optional(
       Type.Integer({ description: COMMENT_EDIT_COMMENT_ID_DESCRIPTION, minimum: 1 }),
     ),
     cwd: Type.Optional(Type.String({ description: COMMENT_EDIT_CWD_DESCRIPTION })),
   });
+
+  /** Shape the execute body reads (mirrors the conditional Params above). */
+  interface CommentEditParams {
+    body: string;
+    number?: number;
+    pr?: number;
+    commentId?: number;
+    cwd?: string;
+  }
 
   const kindNoun = cfg.kind === "issue" ? "issue" : "PR";
 
@@ -159,31 +184,14 @@ export function buildCommentEditTool(
       _onUpdate,
       ctx,
     ): Promise<AgentToolResult<GitDetails>> {
-      const cwd = params.cwd ?? ctx.cwd;
+      const p = params as unknown as CommentEditParams;
+      const cwd = p.cwd ?? ctx.cwd;
       try {
         requireGitRepo(cwd);
         requireGh();
       } catch (err) {
         if (err instanceof GitMeEnvError) return toToolResult(err.message);
         throw err;
-      }
-
-      // Resolve the thread number. PR kind falls back to the current-branch
-      // PR (same fail-closed contract as git_pr_comment); issue kind carries
-      // a required number in its schema.
-      let number = params.number as number | undefined;
-      let resolvedPr: GhPullRequest | null = null;
-      if (number === undefined && cfg.kind === "pr") {
-        resolvedPr = ghPrForCurrentBranch(cwd);
-        if (resolvedPr === null) {
-          return toToolResult(
-            "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
-          );
-        }
-        number = resolvedPr.number;
-      }
-      if (number === undefined) {
-        return toToolResult(`git-me: a ${kindNoun} number is required.`);
       }
 
       const repo = ghRepoView(cwd);
@@ -193,9 +201,12 @@ export function buildCommentEditTool(
         );
       }
 
-      // Resolve WHICH comment: explicit id, else the user's last one. Both
-      // paths fail closed before the review dialog so a doomed edit never
-      // wastes the user's attention.
+      // Resolve WHICH comment: an explicit commentId stands on its own
+      // (comment ids are repo-scoped REST ids and need no thread number), so
+      // a PR-flavor edit with commentId also works from a branch with no PR.
+      // The last-comment lookup needs the thread number: the PR flavor falls
+      // back to the current-branch PR (same fail-closed contract as
+      // git_pr_comment), the issue flavor carries a required `number`.
       const login = authedLogin(cwd);
       if (!login) {
         return toToolResult(
@@ -203,39 +214,71 @@ export function buildCommentEditTool(
         );
       }
       let target: GhComment | null;
-      if (params.commentId !== undefined) {
-        target = commentById(repo.nameWithOwner, params.commentId, cwd);
+      let number: number | undefined = cfg.kind === "issue" ? p.number : p.pr;
+      let resolvedPr: GhPullRequest | null = null;
+      if (p.commentId !== undefined) {
+        target = commentById(repo.nameWithOwner, p.commentId, cwd);
         if (!target || typeof target.id !== "number") {
           return toToolResult(
-            `git-me: comment ${params.commentId} not found in ${repo.nameWithOwner} (\`gh api\` lookup failed). Nothing was edited.`,
+            `git-me: comment ${String(p.commentId)} not found in ${repo.nameWithOwner} (\`gh api\` lookup failed). Nothing was edited.`,
           );
         }
+        if (number === undefined) {
+          number = threadNumberFromIssueUrl(target.issue_url);
+        }
       } else {
+        if (number === undefined && cfg.kind === "pr") {
+          resolvedPr = ghPrForCurrentBranch(cwd);
+          if (resolvedPr === null) {
+            return toToolResult(
+              "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
+            );
+          }
+          number = resolvedPr.number;
+        }
+        if (number === undefined) {
+          return toToolResult(`git-me: a ${kindNoun} number is required.`);
+        }
         target = lastOwnComment(repo.nameWithOwner, number, login, cwd);
         if (!target || typeof target.id !== "number") {
           return toToolResult(
-            `git-me: no comment by @${login} found on ${kindNoun} #${number} in ${repo.nameWithOwner}. This tool edits YOUR comments only; post one first with ${cfg.postToolName}.`,
+            `git-me: no comment by @${login} found on ${kindNoun} #${String(number)} in ${repo.nameWithOwner}. This tool edits YOUR comments only; post one first with ${cfg.postToolName}.`,
           );
         }
       }
-      if (target.user?.login !== login) {
+      // GitHub logins are case-insensitive; compare that way so a differently
+      // cased display login can never reject the user's own comment.
+      if (
+        typeof target.user?.login !== "string" ||
+        target.user.login.toLowerCase() !== login.toLowerCase()
+      ) {
         return toToolResult(
           `git-me: comment ${String(target.id)} was authored by @${String(target.user?.login ?? "unknown")}, not by @${login}. git-me edits only your own comments.`,
+        );
+      }
+      // commentId is repo-scoped: guard the thread boundary so a stated
+      // number cannot pair with a commentId that lives on another thread.
+      const issueUrl = typeof target.issue_url === "string" ? target.issue_url : "";
+      if (number !== undefined && issueUrl && !issueUrl.endsWith(`/${String(number)}`)) {
+        return toToolResult(
+          `git-me: comment ${String(target.id)} belongs to ${issueUrl}, not ${kindNoun} #${String(number)}. Nothing was edited.`,
         );
       }
       const currentBody = typeof target.body === "string" ? target.body : "";
 
       // No-op guard before the gate: a body identical to the current one
       // would only bump the comment's updated_at, so skip dialog AND PATCH.
-      const nextBody = params.body.trimEnd();
+      const nextBody = p.body.trimEnd();
       if (nextBody === currentBody.trimEnd()) {
         return toToolResult(
-          `git-me: the new body is identical to your existing comment on ${kindNoun} #${number}; nothing was sent.`,
+          `git-me: the new body is identical to your existing comment${number !== undefined ? ` on ${kindNoun} #${String(number)}` : ""}; nothing was sent.`,
         );
       }
 
+      const threadLabel =
+        number !== undefined ? `your comment on ${kindNoun} #${String(number)}` : "your comment";
       const decision = await confirmWrite(ctx, {
-        title: `Edit your comment on ${kindNoun} #${number}? (replaces the existing text)${repoContextLabel(cwd, ctx.cwd)}`,
+        title: `Edit ${threadLabel}? (replaces the existing text)${repoContextLabel(cwd, ctx.cwd)}`,
         editableText: nextBody,
         summary: describeReviewPayload(nextBody),
         // Same normalization the no-op guard used, so a whitespace-only edit

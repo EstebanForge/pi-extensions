@@ -269,8 +269,8 @@ function gitMe(pi: ExtensionAPI): void {
           break;
         }
         case "pr-comment-edit": {
-          const editNumMatch = rest && /^\d+$/.test(rest) ? ` number=${rest}` : "";
-          prompt = `Draft a REPLACEMENT body for your existing comment on the PR for the current branch${rest ? ` (PR #${rest})` : ""}, then call the git_pr_comment_edit tool with body=<your replacement body>${editNumMatch}. The tool targets your last comment by default (pass commentId for an older one), refuses comments that are not yours, and previews the replacement in an editable dialog before it is applied. This is the canonical path for editing a PR conversation comment; do NOT run \`gh api\` PATCH calls yourself.`;
+          const editNumMatch = rest && /^\d+$/.test(rest) ? ` pr=${rest}` : "";
+          prompt = `Draft a REPLACEMENT body for your existing comment on ${rest ? `PR #${rest}` : "the PR for the current branch"}, then call the git_pr_comment_edit tool with body=<your replacement body>${editNumMatch}. The tool targets your last comment by default (pass commentId for an older one), refuses comments that are not yours, and previews the replacement in an editable dialog before it is applied. This is the canonical path for editing a PR conversation comment; do NOT run \`gh api\` PATCH calls yourself.`;
           break;
         }
         case "issue-create": {

@@ -1,6 +1,6 @@
 # @estebanforge/pi-git-me
 
-Git + **GitHub** PR tools for the [pi coding agent](https://pi.dev) that act as **you**. Adds 13 LLM-callable tools that talk to local `git` (for the commit-message tool) and the authenticated `gh` CLI (for everything else). Five read tools (status, diff, log, branch, PR info) plus eight write tools (commit message, PR description, PR conversation comment, PR review comment, issue comment, issue creation, discussion creation, discussion comment/reply). Every write opens in an editable preview dialog before anything reaches git or GitHub — model picks the wording, you stay in control.
+Git + **GitHub** PR tools for the [pi coding agent](https://pi.dev) that act as **you**. Adds 15 LLM-callable tools that talk to local `git` (for the commit tool) and the authenticated `gh` CLI (for everything else). Five read tools (status, diff, log, branch, PR info) plus ten write tools (commit, PR description, PR conversation comment + edit, PR review, issue comment + edit, issue creation, discussion creation, discussion comment/reply). Every write opens in an editable preview dialog before anything reaches git or GitHub — model picks the wording, you stay in control.
 
 Use it when you want an agent to **inspect the working state** of a repo (diff, log, branch, current PR) **or post anything as you** into GitHub (commit message, PR title/body, PR conversation comment, PR review comment, issue comment, new issues, discussions and their comments). The agent drafts the prose; you read it, trim it, or cancel. Nothing commits, opens a PR or issue, starts a discussion, or posts anything until you say so.
 
@@ -62,7 +62,7 @@ The agent drafts the prose (commit message, PR title/body, PR comment, review bo
 
 ## Write tools & review
 
-The eight write tools gate themselves. A user is present at the TUI:
+The ten write tools gate themselves. A user is present at the TUI:
 
 - **`git_commit`**, **`git_pr_upsert`**, **`git_pr_comment`**, **`git_pr_comment_edit`**, **`git_pr_review`**, **`git_issue_comment`**, **`git_issue_comment_edit`**, **`git_issue_create`**, **`git_discussion_create`**, **`git_discussion_comment`** open an **editable** dialog — trim or rewrite the agent's draft, then accept (Enter) or cancel (Esc).
 
