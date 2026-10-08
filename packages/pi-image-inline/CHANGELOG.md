@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.1] - 2026-10-07
 
 ### Added
 - **Capture redaction.** The `tool_result` handler strips every image block from `agent_browser` and `*_take_screenshot` results before the pixels reach the model, replacing each with a text placeholder that names the saved file and its size. A 23k-token cache-miss re-bill per screenshot becomes zero model cost. `structuredContent` is always passed back through so pi keeps the tool's structured data.
