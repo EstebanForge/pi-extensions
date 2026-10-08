@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-image-inline",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Render images inline in the pi TUI (reads, browser screenshots) without spending model tokens. Strips pixels from tool results before they reach the model.",
   "keywords": [
     "pi-package",
