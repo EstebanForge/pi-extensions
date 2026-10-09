@@ -1,4 +1,5 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import {
 	mergeCatalog,
 	newConversationId,
 	parseModelLine,
+	procTreeOpenDbResolver,
 	resolveAgyModel,
 	snapshotConversations,
 	type ModelEntry,
@@ -271,5 +273,43 @@ describe("conversation discovery", () => {
 		writeFileSync(join(dir, "old.db"), "");
 		const before = snapshotConversations(dir);
 		expect(newConversationId(dir, before)).toBeNull();
+	});
+
+	it("signals onAmbiguous only when ids appeared but the bind stayed unresolved", () => {
+		// pi-antigravity-bridge's tested hook: callers bound their retry budget
+		// to the genuinely-ambiguous case, not to the ordinary not-yet case.
+		const dir = mkdtempSync(join(tmpdir(), "agy-conv-"));
+		const before = snapshotConversations(dir);
+		let calls = 0;
+		const count = () => calls++;
+
+		// Nothing new yet: not ambiguous.
+		newConversationId(dir, before, { onAmbiguous: count });
+		expect(calls).toBe(0);
+
+		// Exactly one new id binds cleanly: not ambiguous.
+		writeFileSync(join(dir, "ours.db"), "");
+		expect(newConversationId(dir, before, { onAmbiguous: count })).toBe("ours");
+		expect(calls).toBe(0);
+
+		// Several new ids, resolver empty: ambiguous and unresolved.
+		writeFileSync(join(dir, "a.db"), "");
+		writeFileSync(join(dir, "b.db"), "");
+		expect(
+			newConversationId(dir, before, { pid: 1, resolveOpenDb: () => null, onAmbiguous: count }),
+		).toBeNull();
+		expect(calls).toBe(1);
+
+		// Resolver succeeds: resolved, not ambiguous.
+		expect(
+			newConversationId(dir, before, { pid: 1, resolveOpenDb: () => "b", onAmbiguous: count }),
+		).toBe("b");
+		expect(calls).toBe(1);
+	});
+
+	it("procTreeOpenDbResolver refuses to guess outside its contract", () => {
+		// <=1 candidate: nothing to disambiguate.
+		expect(procTreeOpenDbResolver(1, os.tmpdir(), new Set())).toBeNull();
+		expect(procTreeOpenDbResolver(1, os.tmpdir(), new Set(["only"]))).toBeNull();
 	});
 });

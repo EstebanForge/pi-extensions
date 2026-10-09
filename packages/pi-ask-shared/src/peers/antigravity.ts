@@ -527,7 +527,9 @@ function safeRealpath(p: string): string | null {
 	}
 }
 
-const procTreeOpenDbResolver: OpenDbResolver = (rootPid, dir, candidates) => {
+/** The /proc FD-scan resolver shared by all agy peers. Exported so the
+ *  bridge's disambiguation tests exercise the exact implementation runs use. */
+export const procTreeOpenDbResolver: OpenDbResolver = (rootPid, dir, candidates) => {
 	if (candidates.size <= 1) return null;
 	if (process.platform !== "linux") return null;
 	const dirResolved = safeRealpath(dir);
@@ -561,6 +563,10 @@ const procTreeOpenDbResolver: OpenDbResolver = (rootPid, dir, candidates) => {
 interface BindOptions {
 	pid?: number;
 	resolveOpenDb?: OpenDbResolver;
+	/** Called only when new ids appeared but the bind stayed unresolved —
+	 *  lets callers bound their retry budget to the genuinely-ambiguous case
+	 *  (bridge semantics, absorbed verbatim with discovery.ts). */
+	onAmbiguous?: () => void;
 }
 
 /** Find the conversation id created since `before`. Returns null when none
@@ -582,5 +588,6 @@ export function newConversationId(
 		const hit = resolve(opts.pid, dir, new Set(created));
 		if (hit && created.includes(hit)) return hit;
 	}
+	opts.onAmbiguous?.();
 	return null;
 }

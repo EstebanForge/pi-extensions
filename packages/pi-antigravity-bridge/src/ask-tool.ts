@@ -21,10 +21,19 @@ import { Text } from "@earendil-works/pi-tui";
 import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
+	buildAgyArgs,
+	buildFinalPrompt,
 	CONVERSATIONS_DIR,
+	CONV_ID_RE,
+	filterHiddenModels,
+	mergeCatalog,
 	newConversationId,
+	parseModelLine,
+	resolveAgyModel,
 	snapshotConversations,
-} from "./discovery.js";
+	type ModelEntry,
+	type Mode,
+} from "@estebanforge/pi-ask-shared";
 import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
 import { redactText } from "./redact.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
@@ -32,49 +41,6 @@ import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
 import { sweepStaleWebAgents, webAgentsRoot } from "./web-tools.js";
 
 // --- Constants -------------------------------------------------------------
-
-const DEFAULT_TIMEOUT_MIN = 10;
-const GRACE_AFTER_TIMEOUT_MS = 5000;
-const STATUS_INTERVAL_MS = 1000;
-const STATUS_TAIL_CHARS = 160;
-
-// renderCall / renderResult preview limits (match pi-claude-bridge).
-const PREVIEW_MAX_CHARS = 1000;
-const PREVIEW_MAX_LINES = 6;
-const DISCOVERY_POLL_ATTEMPTS = 5;
-const DISCOVERY_POLL_MS = 100;
-
-// Per-family fallback tier when none is specified and no config default.
-const FAMILY_DEFAULT_TIER: Record<Family, ThinkingTier> = {
-	flash: "medium",
-	pro: "high",
-	other: "medium",
-};
-
-const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
-
-// Static alias overlay for non-Gemini models agy may or may not surface.
-// Live catalog entries win on case-insensitive full-string equality; the
-// overlay resolves the alias when agy doesn't list it. Names are agy's stable
-// slugs (the same ids `agy models` prints and `--model` accepts). Claude ships
-// tiered like Gemini now, so the overlay carries the full tier spread.
-const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
-	{ full: "claude-sonnet-5-5-low", family: "other", version: null, tier: "low" },
-	{ full: "claude-sonnet-5-5-medium", family: "other", version: null, tier: "medium" },
-	{ full: "claude-sonnet-5-5-high", family: "other", version: null, tier: "high" },
-	{ full: "claude-opus-5-5-low", family: "other", version: null, tier: "low" },
-	{ full: "claude-opus-5-5-medium", family: "other", version: null, tier: "medium" },
-	{ full: "claude-opus-5-5-high", family: "other", version: null, tier: "high" },
-];
-const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
-	["sonnet", "claude-sonnet-5-5"],
-	["opus", "claude-opus-5-5"],
-]);
-
-// agy conversation ids are UUID DB-stems. First char must be alphanumeric so a
-// leading-dash value can't misbind on agy's arg parser; hyphens allowed in the
-// body (real UUIDs contain them).
-const CONV_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
 
 const AGY_DESCRIPTION = `Delegate a self-contained sub-task to Google Antigravity. agy is the CLI for Gemini, so this tool is reached under three equivalent names the user may use interchangeably: **gemini**, **antigravity**, and **agy**. When the user says "ask gemini", "ask antigravity", "ask agy", or otherwise refers to any of these, call THIS tool. agy runs its OWN tool loop: it can read, write, edit, and execute inside the workspace, then returns its final answer. Use for a second opinion from a different model family, Gemini-specific reasoning, or isolated sub-tasks you do not need to drive step-by-step. Provide a complete, self-contained task description; agy will not see this conversation.
 
@@ -93,223 +59,28 @@ THINKING LEVEL (params: thinking, effort - SYNONYMS for one knob):
 - Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to agy's low|medium|high; unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
 - An explicit level beats a tier embedded in model ("flash high") and the configured default. Omit both for the configured default.`;
 
-// --- Types -----------------------------------------------------------------
+const DEFAULT_TIMEOUT_MIN = 10;
+const GRACE_AFTER_TIMEOUT_MS = 5000;
+const STATUS_INTERVAL_MS = 1000;
+const STATUS_TAIL_CHARS = 160;
 
-type Family = "flash" | "pro" | "other";
+// renderCall / renderResult preview limits (match pi-claude-bridge).
+const PREVIEW_MAX_CHARS = 1000;
+const PREVIEW_MAX_LINES = 6;
+const DISCOVERY_POLL_ATTEMPTS = 5;
+const DISCOVERY_POLL_MS = 100;
 
-interface ModelEntry {
-	full: string; // exact agy slug, e.g. "gemini-3.6-flash-medium"
-	family: Family;
-	version: string | null; // "3.6"
-	tier: ThinkingTier | null;
-}
-
-/** Argv-facing model resolution: the exact --model slug plus an optional
- *  --effort tier. Gemini bases split the tier out (the base slug alone is
- *  invalid without --effort); fixed-thinking families keep agy's exact slug
- *  and carry no effort. */
-interface ResolvedModel {
-	model: string;
-	effort?: ThinkingTier;
-}
-
-// --- Version helpers -------------------------------------------------------
-
-/** Descending numeric version compare (3.10 > 3.9, not lexical). */
-function compareVersionsDesc(a: string, b: string): number {
-	const pa = a.split(".").map(Number);
-	const pb = b.split(".").map(Number);
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const da = pa[i] ?? 0;
-		const db = pb[i] ?? 0;
-		if (da !== db) return db - da;
-	}
-	return 0;
-}
-
-// --- Model catalog ---------------------------------------------------------
-
-function mergeCatalog(live: ModelEntry[]): ModelEntry[] {
-	const seen = new Set(live.map((e) => e.full.toLowerCase()));
-	const merged = [...live];
-	for (const entry of STATIC_ALIAS_OVERLAY) {
-		if (!seen.has(entry.full.toLowerCase())) merged.push(entry);
-	}
-	return merged;
-}
-
-function parseModelLine(line: string): ModelEntry | null {
-	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
-	// slug (col 1), so split it off; the label is display-only and must never
-	// reach --model. A bare-slug line (no whitespace) splits to itself.
-	const full = line.trim().split(/\s+/)[0] ?? "";
-	if (!full) return null;
-	const lower = full.toLowerCase();
-	const family: Family = lower.includes("flash")
-		? "flash"
-		: lower.includes("pro")
-			? "pro"
-			: "other";
-	const versionMatch = lower.match(/(\d+\.\d+)/);
-	const version = versionMatch ? versionMatch[1] : null;
-	const tierMatch = lower.match(/-(low|medium|high)$/);
-	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
-	return { full, family, version, tier };
-}
-
-function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): ThinkingTier {
-	if (available.includes(preferred)) return preferred;
-	const sorted = [...available].sort((a, b) => {
-		const da = Math.abs(TIER_RANK[a] - TIER_RANK[preferred]);
-		const db = Math.abs(TIER_RANK[b] - TIER_RANK[preferred]);
-		return da !== db ? da - db : TIER_RANK[b] - TIER_RANK[a];
-	});
-	return sorted[0] ?? preferred;
-}
-
-/** Build the argv-facing resolution from a picked catalog entry. Gemini and
- *  Claude bases (slugs starting "gemini-"/"claude-") accept a separate
- *  --effort, so split the tier suffix out of the slug: the base alone
- *  (claude-sonnet-5-5) is what --model wants, and the tier goes to --effort
- *  (agy rejects a bare base: "requires --effort"). Only unverified families
- *  keep agy's exact slug whole, so an unknown suffix can never trigger an
- *  unsupported --effort. */
-function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
-	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
-		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
-	}
-	return { model: full };
-}
-
-/** Resolve a tiered base id - a short-alias target ("claude-sonnet-5-5") or a
- *  bare base slug the provider itself advertises - to the catalog variant
- *  nearest the requested tier. A bare base alone is invalid upstream
- *  ("requires --effort"), so the pick always rides the split in toResolved;
- *  with no variants in the catalog, the overlay/exact entry or the raw base
- *  passes through unchanged. */
-function resolveTieredBase(
-	base: string,
-	entries: ModelEntry[],
-	defaultThinking: ThinkingTier,
-	preferredTier: ThinkingTier | undefined,
-): ResolvedModel {
-	const needle = base.toLowerCase();
-	const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${needle}-`));
-	if (variants.length > 0) {
-		const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
-		const preferred =
-			preferredTier ??
-			(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
-		const chosen = nearestTier(tiers, preferred);
-		const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
-		return toResolved(picked.full, picked.tier);
-	}
-	const fromCatalog = entries.find((e) => e.full.toLowerCase() === needle);
-	return toResolved(fromCatalog?.full ?? base, fromCatalog?.tier ?? null);
-}
-
-/** Resolve a friendly alias / partial name to an argv-facing {model, effort?}.
- *  Returns null only when the family is unrecognized; the caller then passes
- *  the raw input straight to agy. */
-export function resolveModel(
-	input: string,
-	entries: ModelEntry[],
-	defaultThinking: ThinkingTier,
-	/** Explicit thinking param (thinking/effort). Beats a tier embedded in
-	 *  the alias ("flash high") and the configured default; clamped to the
-	 *  family's real tiers, ignored for fixed-thinking families. */
-	preferredTier?: ThinkingTier,
-): ResolvedModel | null {
-	const lower = input.toLowerCase().trim();
-
-	const exact = entries.find((e) => e.full.toLowerCase() === lower);
-	if (exact) return toResolved(exact.full, exact.tier);
-
-	if (STATIC_SHORT_ALIAS.has(lower)) {
-		return resolveTieredBase(
-			STATIC_SHORT_ALIAS.get(lower) as string,
-			entries,
-			defaultThinking,
-			preferredTier,
-		);
-	}
-
-	let family: Family | null = lower.includes("flash")
-		? "flash"
-		: lower.includes("pro")
-			? "pro"
-			: null;
-	const versionMatch = lower.match(/(\d+\.\d+)/);
-	const version = versionMatch ? versionMatch[1] : null;
-	const tierMatch = lower.match(/\b(low|medium|high)\b/);
-	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
-
-	if (!family && (/gemini/.test(lower) || lower === "" || lower === "default")) {
-		family = "flash";
-	}
-	if (!family) {
-		// A bare base slug the provider itself advertises ("claude-sonnet-5-5",
-		// the id behind the antigravity/ entry in pi's picker) is invalid
-		// upstream without an effort: resolve it to the nearest tier variant
-		// exactly like the short aliases.
-		if (
-			entries.some((e) => e.full.toLowerCase().startsWith(`${lower}-`)) ||
-			entries.some((e) => e.full.toLowerCase() === lower)
-		) {
-			return resolveTieredBase(lower, entries, defaultThinking, preferredTier);
-		}
-		return null;
-	}
-
-	let candidates = entries.filter((e) => e.family === family);
-	if (candidates.length === 0) return null;
-
-	if (version) {
-		const versioned = candidates.filter((e) => e.version === version);
-		if (versioned.length > 0) candidates = versioned;
-	} else {
-		const aliases = candidates.filter((e) => e.version === null);
-		if (aliases.length > 0) {
-			candidates = aliases;
-		} else {
-			const versions = candidates
-				.map((e) => e.version)
-				.filter((v): v is string => v !== null)
-				.sort(compareVersionsDesc);
-			if (versions.length > 0) {
-				const top = versions[0];
-				const latest = candidates.filter((e) => e.version === top);
-				if (latest.length > 0) candidates = latest;
-			}
-		}
-	}
-
-	const familyTiers = new Set(
-		candidates.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null),
-	);
-	if (familyTiers.size === 0) return toResolved(candidates[0].full, null);
-
-	const preferred =
-		preferredTier ??
-		tier ??
-		(familyTiers.has(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER[family]);
-	const chosenTier = nearestTier([...familyTiers], preferred);
-	const picked = candidates.find((e) => e.tier === chosenTier) ?? candidates[0];
-	return toResolved(picked.full, picked.tier);
-}
-
-/** Families dropped outright even while `agy models` still lists them (same
- *  policy as models.ts HIDDEN_FAMILY_RE): never offered, never resolved. */
-const HIDDEN_FAMILY_RE = /^gpt-oss-/;
-
-/** Parse raw `agy models` text into tool-catalog entries (all families, plus
- *  the static sonnet/opus overlay). Pure: no spawn. */
+/** Parse raw `agy models` text into tool-catalog entries: the shared line
+ *  grammar + hidden-family filter + static sonnet/opus overlay. Pure: no
+ *  spawn. */
 export function toolModelsFromRaw(raw: string): ModelEntry[] {
 	return mergeCatalog(
-		raw
-			.split("\n")
-			.map(parseModelLine)
-			.filter((e): e is ModelEntry => e !== null && !HIDDEN_FAMILY_RE.test(e.full)),
+		filterHiddenModels(
+			raw
+				.split("\n")
+				.map(parseModelLine)
+				.filter((e): e is ModelEntry => e !== null),
+		),
 	);
 }
 
@@ -325,56 +96,11 @@ function extraArgs(): string[] {
 	return raw ? raw.split(/\s+/).filter((s) => s.length > 0) : [];
 }
 
-// --- Prompt assembly -------------------------------------------------------
-
-/** Guard for plan runs backed by the restricted reviewer agent. Difference
- *  to PLAN_HEADLESS_GUARD: read commands are the intended analysis path
- *  here, so the guard forbids FILE MUTATION - by tool or by shell - and
- *  keeps the answer-from-material discipline. The agent is a damper, not
- *  enforcement (upstream #1181); a headless command attempt can still be
- *  auto-denied, which ends the run, so the guard steers toward view_file
- *  and staged material first. */
-export const AGENT_REVIEW_GUARD = [
-	"",
-	"--- Review constraints ---",
-	"- Read-only review. Do not create, modify, or delete any files, including through shell commands (no redirects, tee, rm, mv, git commit).",
-	"- Prefer the staged material and view_file for reading. If you run a read-only command (git log, git diff, rg, ls) and it comes back denied, the run ends without an answer: state what you could not check instead of retrying commands.",
-	"- Work from the material provided in this prompt; if information you need is missing, state exactly what is missing in your answer.",
-].join("\n");
-
-/** Appended to every headless plan-mode prompt. `agy -p` cannot answer
- *  permission prompts: in plan mode a run_command attempt is soft-denied and
- *  the turn ends AT the denial (exit 0, empty stdout, notice only on stderr -
- *  the empty-output branch in execute). Probed 2026-09-28 on agy 1.2.12:
- *  allow rules ARE consulted (a verbatim allow-listed `git log` runs), but
- *  --sandbox does NOT relax the command gate, so the only input every user
- *  is guaranteed is the prompt itself. The guard steers the model to answer
- *  from that material. accept-edits runs keep their tools and never get it. */
-export const PLAN_HEADLESS_GUARD = [
-	"",
-	"--- Headless session constraints ---",
-	"- Do not run shell commands. Command execution is denied in this session, and any attempt ends the session immediately with no answer.",
-	"- Work only from the material provided in this prompt.",
-	"- If information you need is missing, state exactly what is missing in your answer instead of trying to fetch it.",
-].join("\n");
-
-/** Assemble the prompt sent to agy: digest marker first (existing behavior),
- *  then the caller's prompt, then the plan-mode guard last - the position
- *  the model reads with the most recency. No user-config mutation: this is
- *  the only plan-mode lever the tool itself owns. */
-export function buildFinalPrompt(
-	prompt: string,
-	mode: AgyMode,
-	digest: boolean,
-	/** True when the restricted reviewer agent is staged: its empty edit
-	 *  toolset is a damper (the CLI does not enforce review-only, upstream
-	 *  #1181), so the prompt may ALLOW read-only commands. */
-	agentDamper = false,
-): string {
-	let out = digest ? `(Use compact digests, not full file contents.)\n${prompt}` : prompt;
-	if (mode === "plan") out += agentDamper ? AGENT_REVIEW_GUARD : PLAN_HEADLESS_GUARD;
-	return out;
-}
+// --- Prompt assembly: shared peer adapter ----------------------------------
+// PLAN_HEADLESS_GUARD / AGENT_REVIEW_GUARD / buildFinalPrompt live in
+// pi-ask-shared (peers/antigravity.ts); the bridge inherits the identical
+// guard discipline. Re-exported for the bridge's own tests.
+export { AGENT_REVIEW_GUARD, buildFinalPrompt, PLAN_HEADLESS_GUARD } from "@estebanforge/pi-ask-shared";
 
 // --- Plan-mode reviewer agent ----------------------------------------------
 
@@ -527,7 +253,7 @@ export async function registerAskAntigravityTool(
 			const requestedModel = (args.model as string | undefined)?.trim() || cfg.defaultModel;
 			const thinkingArg = (args.thinking as string | undefined) ?? (args.effort as string | undefined);
 			const resolved =
-				resolveModel(
+				resolveAgyModel(
 					requestedModel,
 					entries,
 					cfg.defaultThinking,
@@ -674,7 +400,7 @@ export async function registerAskAntigravityTool(
 				? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER)
 				: undefined;
 			const resolved =
-				resolveModel(requestedModel, entries, config.defaultThinking, preferredTier) ?? {
+				resolveAgyModel(requestedModel, entries, config.defaultThinking, preferredTier) ?? {
 					model: requestedModel,
 				};
 
@@ -700,7 +426,7 @@ export async function registerAskAntigravityTool(
 			const rawConvId = params.conversationId;
 			const isContinuation =
 				typeof rawConvId === "string" && rawConvId.length > 0 && CONV_ID_RE.test(rawConvId);
-			const snapshot = isContinuation ? null : snapshotConversations();
+			const snapshot = isContinuation ? null : snapshotConversations(CONVERSATIONS_DIR);
 
 			const mode: AgyMode =
 				(params.mode as AgyMode | undefined) ?? (config.mode === "plan" ? "plan" : "accept-edits");
@@ -751,45 +477,27 @@ export async function registerAskAntigravityTool(
 				? `The full pi conversation context (as markdown) is at: ${contextFile}\nRead that file first for context, then do the task below.\n\n---\n\n${finalPrompt}`
 				: finalPrompt;
 
-			const args: string[] = ["--add-dir", cwd];
 			log?.(
 				"ask-start",
 				{ model: resolved.model, thinking: resolved.effort ?? config.defaultThinking, mode, digest: useDigest, continue: isContinuation, timeoutMin },
 				"info",
 			);
-			const extraRaw = extraArgs();
-			// Fail-closed on every plan run: AGY_EXTRA_ARGS lands before the mode
-			// flags, so an env-injected skip flag would re-arm exactly what the
-			// never-flag-on-plan rule withholds (upstream #1181: an auto-approved
-			// plan run is write-capable). The reviewer agent is a damper, not a
-			// license for the flag.
-			const extra =
-				mode === "plan"
-					? extraRaw.filter((a) => !a.startsWith("--dangerously-skip-permissions"))
-					: extraRaw;
-			if (extra.length) args.push(...extra);
-			if (resolved.model) args.push("--model", resolved.model);
-			if (resolved.effort) args.push("--effort", resolved.effort);
-			args.push("--mode", mode);
-			if (reviewerAgent) args.push("--agent", reviewerAgent.name);
-			// Honor the shared permissions setting (same knob as the provider).
-			// accept-edits: the flag keeps commands from hanging on an
-			// unanswerable prompt in -p mode. Plan runs NEVER get the flag: it
-			// auto-approves every permission request, and the CLI does not gate
-			// writes under plan mode (upstream
-			// google-antigravity/antigravity-cli#1181, probed 2026-10-07), so an
-			// auto-approved plan run is a write-capable run. The reviewer agent's
-			// toolset is a damper, not a guarantee; the 2026-09-28 "safe with the
-			// restricted toolset" probe predates the #1181 evidence. Without the
-			// flag, command attempts fail visibly (headless auto-deny) instead of
-			// running approved.
-			if (config.skipPermissions !== false && mode !== "plan") {
-				args.push("--dangerously-skip-permissions");
-			}
-			if (isContinuation) args.push("--conversation", rawConvId as string);
-			args.push("--print-timeout", `${timeoutMin}m`);
-			if (contextFile) args.push("--add-dir", askContextDir());
-			args.push("-p", effectivePrompt);
+			// Build argv via the shared peer adapter (see buildAgyArgs there for
+			// the flag-order contract and the fail-closed plan-run rules). The
+			// bridge's permissions gate is truthy (`!== false`), so an unset
+			// config counts as enabled - same knob as the provider.
+			const args = buildAgyArgs({
+				cwd,
+				resolved,
+				mode,
+				reviewerAgentName: reviewerAgent?.name ?? null,
+				skipPermissions: config.skipPermissions !== false,
+				conversationId: isContinuation ? (rawConvId as string) : null,
+				timeoutMinutes: timeoutMin,
+				addDirs: contextFile ? [askContextDir()] : [],
+				extraArgs: extraArgs(),
+				prompt: effectivePrompt,
+			});
 
 			const details: AgyDetails = {
 				model: requestedModel,
