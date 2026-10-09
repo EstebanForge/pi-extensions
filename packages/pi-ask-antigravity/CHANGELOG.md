@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Project-scope config files resolve under `.pi/` again (`<project>/.pi/ask-*.json`): the shared-layer refactor passed the workspace root where the shared primitive expects the directory containing the file, so project configs would have been read from and written to the workspace root. Restores pre-refactor behavior.
+- The live stdout accumulator applies the original 1MB valve again (past 1MB, keep the last 100k) — the shared-layer refactor had left it uncapped.
+
 ### Changed
 
 - **Internal dedup onto `pi-ask-shared` (behavior-preserving).** Config load/save composes the shared layered-config primitives (same homedir-based global path, same project-shadow routing, same atomic write); the spawn lifecycle (detached process group, SIGTERM→SIGKILL grace, watchdog, abort, settle-on-close) runs through the shared `runProcess`; the `agy models` line grammar, tiered alias resolution, plan-mode guard prompts, argv builder, and the SQLite conversation-id discovery technique moved to the shared peer adapter (`peers/antigravity.ts`). No user-facing behavior change: plan runs still never receive the skip-permissions flag (env-injected copies still stripped), conversation binding still disambiguates concurrent runs via the /proc FD scan, and the full test suite passes unchanged.

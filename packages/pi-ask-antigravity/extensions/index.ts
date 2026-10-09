@@ -56,6 +56,7 @@ import {
 	configPaths,
 	createStopHandler,
 	createWakeSender,
+	DEFAULT_LINE_BUF_MAX_CHARS,
 	filterHiddenModels,
 	levelToTier,
 	loadLayeredRaw,
@@ -150,7 +151,7 @@ interface Config {
 function configPathsFor() {
 	return configPaths({
 		globalDir: path.join(os.homedir(), ".pi", "agent"),
-		projectDir: process.cwd(),
+		projectDir: path.join(process.cwd(), ".pi"),
 		fileName: "ask-antigravity.json",
 	});
 }
@@ -556,9 +557,13 @@ async function runAgyProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome
 			timeoutMs: timeoutMin * 60_000,
 			signal,
 			// Raw chunks stream live so the status tail matches the old
-			// during-run accumulation; the 1MB valve lives in runProcess.
+			// during-run accumulation. The 1MB valve lives in runProcess for
+			// stdoutRaw; this accumulator applies the original's own valve
+			// (past 1MB, keep the last 100k) so a pathological stream cannot
+			// balloon memory through the live tail.
 			onChunk: (chunk) => {
 				out += chunk;
+				if (out.length > DEFAULT_LINE_BUF_MAX_CHARS) out = out.slice(-100_000);
 			},
 			onSpawn: (kill, proc) => {
 				// Hand the kill switch to the background registry first, then

@@ -121,7 +121,11 @@ interface Config {
  *  distro safe); project is <cwd>/.pi. Resolution stays extension-local by
  *  design — codex/antigravity hardcode ~/.pi/agent. */
 function configPathsFor(cwd: string) {
-	return configPaths({ globalDir: getAgentDir(), projectDir: cwd, fileName: "ask-claude.json" });
+	return configPaths({
+		globalDir: getAgentDir(),
+		projectDir: path.join(cwd, ".pi"),
+		fileName: "ask-claude.json",
+	});
 }
 
 const EFFORT_VALUES: Effort[] = ["default", "low", "medium", "high", "xhigh"];
