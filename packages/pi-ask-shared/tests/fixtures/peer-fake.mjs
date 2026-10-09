@@ -52,6 +52,44 @@ switch (mode) {
 	}
 	case "exit-code":
 		process.exit(Number(process.argv[3] ?? 3));
+	// Emits the real claude stream-json event grammar (init, assistant text,
+	// result) with ANSI noise around the answer, reading the prompt from stdin.
+	case "claude-consult": {
+		const chunks = [];
+		for await (const c of process.stdin) chunks.push(c);
+		const prompt = Buffer.concat(chunks).toString();
+		if (!prompt.trim()) {
+			process.stderr.write("no prompt on stdin\n");
+			process.exit(4);
+		}
+		const events = [
+			{ type: "system", subtype: "init", session_id: "11111111-2222-3333-4444-555555555555" },
+			{ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "\x1b[2mthinking\x1b[0m" }] } },
+			{ type: "result", subtype: "success", session_id: "11111111-2222-3333-4444-555555555555", result: "\x1b[32mREVIEW VERDICT\x1b[0m: ship it", is_error: false, num_turns: 2, total_cost_usd: 0.01 },
+		];
+		writeSync1(events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+		process.exit(0);
+	}
+	// Emits the real codex exec --json grammar (thread.started, agent_message),
+	// asserting the prompt arrived as the trailing positional argv item.
+	case "codex-consult": {
+		const prompt = process.argv[process.argv.length - 1] ?? "";
+		if (prompt !== "review this diff") {
+			process.stderr.write(`bad positional: ${prompt}\n`);
+			process.exit(4);
+		}
+		const events = [
+			{ type: "thread.started", thread_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+			{ type: "item.completed", item: { type: "agent_message", text: "codex says: LGTM" } },
+		];
+		writeSync1(events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+		process.exit(0);
+	}
+	// Raw stdout with ANSI SGR + OSC sequences and CRLF noise.
+	case "ansi": {
+		writeSync1("\x1b[?25l\x1b[31mverdict\x1b[0m: \x1b]0;title\x07go\r\n");
+		process.exit(0);
+	}
 	default:
 		process.exit(9);
 }
