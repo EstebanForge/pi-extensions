@@ -1,0 +1,52 @@
+{
+	"name": "@estebanforge/pi-unblock",
+	"version": "0.1.0",
+	"description": "Event-driven unblock gate: when the session's tool failures stack into a loop, consults a cross-family reviewer through a one-shot headless run and injects the guidance as a visible notice. Also guards publish boundaries (git push / gh pr create) behind a confirm-and-consult step. No model-facing tool: the trigger is deterministic, so the session cannot talk itself out of it.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"unblock",
+		"peer-review",
+		"consult",
+		"failure-loop",
+		"guard"
+	],
+	"license": "MIT",
+	"author": {
+		"name": "EstebanForge",
+		"email": "esteban@attitude.cl",
+		"url": "https://actitud.xyz"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/EstebanForge/pi-extensions.git",
+		"directory": "packages/pi-unblock"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"type": "module",
+	"dependencies": {
+		"@estebanforge/pi-ask-shared": "^0.1.0"
+	},
+	"files": [
+		"extensions",
+		"src",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "^1.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		}
+	}
+}
