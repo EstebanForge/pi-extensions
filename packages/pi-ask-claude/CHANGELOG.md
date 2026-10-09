@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Internal dedup onto `pi-ask-shared` (behavior-preserving).** Config load/save now composes the shared layered-config primitives (same paths, same project-shadow routing, same atomic write); the spawn lifecycle (detached process group, SIGTERM→SIGKILL grace, watchdog, abort, settle-on-close) now runs through the shared `runProcess`; the claude argv builder, stream-json event grammar, status-line vocabulary, and stderr noise filter moved to the shared peer adapter (`peers/claude.ts`) where pi-unblock consults will reuse them. No user-facing behavior change: prompts still travel via stdin, session capture and resume rules are identical, and the full test suite passes unchanged.
+
 ## [1.0.4] - 2026-10-07
 
 ### Added

@@ -2,12 +2,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import factory, {
-	buildClaudeArgs,
+import { buildClaudeArgs, cleanClaudeStderr } from "@estebanforge/pi-ask-shared";
+import factory,
+{
 	bridgeAskClaudeEnabled,
 	bridgeConflictExists,
 	bridgePackageEnabled,
-	cleanStderr,
 	isClaudeBridgeSource,
 	loadConfig,
 } from "../extensions/index.js";
@@ -347,7 +347,7 @@ describe("loadConfig", () => {
 
 // --- cleanStderr -----------------------------------------------------------
 
-describe("cleanStderr", () => {
+describe("cleanClaudeStderr", () => {
 	it("drops the stdin-wait warning and empty claude lines", () => {
 		const noisy = [
 			"Warning: no stdin data received in 3s, proceeding without it.",
@@ -355,10 +355,10 @@ describe("cleanStderr", () => {
 			"claude:",
 			"real error: boom",
 		].join("\n");
-		expect(cleanStderr(noisy)).toBe("real error: boom");
+		expect(cleanClaudeStderr(noisy)).toBe("real error: boom");
 	});
 	it("returns empty string for all-noise input", () => {
-		expect(cleanStderr("Warning: no stdin data received\n\nclaude")).toBe("");
+		expect(cleanClaudeStderr("Warning: no stdin data received\n\nclaude")).toBe("");
 	});
 });
 

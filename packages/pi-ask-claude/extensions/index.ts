@@ -53,15 +53,28 @@ import { Type } from "typebox";
 import {
 	BackgroundRunRegistry,
 	backgroundFlagText,
+	buildClaudeArgs,
+	cleanClaudeStderr,
+	CLAUDE_SESSION_ID_RE,
+	configPaths,
+	consumeClaudeEvent,
 	createStopHandler,
 	createWakeSender,
+	emptyClaudeEventState,
+	loadLayeredRaw,
+	RunSpawnError,
+	runProcess,
+	saveLayeredConfig,
 	summarizePrompt,
+	tryReadJson,
+	type BuildArgsOptions,
+	type ClaudeStreamEvent,
+	type SaveResult,
 } from "@estebanforge/pi-ask-shared";
 
 // --- Constants -------------------------------------------------------------
 
 const DEFAULT_TIMEOUT_MIN = 10;
-const GRACE_AFTER_TIMEOUT_MS = 5000;
 const STATUS_INTERVAL_MS = 1000;
 const DISCOVERY_TIMEOUT_MS = 8_000;
 
@@ -76,11 +89,8 @@ const DEFAULT_EFFORT = "default"; // "default" = omit --effort (Claude's own def
 const BRIDGE_PACKAGE_ID = "pi-claude-bridge";
 const BRIDGE_CONFIG_NAME = "claude-bridge.json";
 
-// Claude session ids and --session-id values are UUIDs. Anchored to UUID
-// shape so a leading-dash value (e.g. "--verbose") can NEVER pass and
-// misbind on claude's arg parser as the token after --resume / --session-id.
-const SESSION_ID_RE =
-	/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+// Claude session ids live in the shared peer adapter (CLAUDE_SESSION_ID_RE):
+// UUID-anchored so a leading-dash value can never misbind on claude's parser.
 
 const CLAUDE_DESCRIPTION = `Delegate a self-contained sub-task to Claude Code. This is the standalone Claude-Code-specific delegation tool (it shells out to \`claude -p\`). It is distinct from the AskClaude tool provided by pi-claude-bridge: that one shares the pi conversation via the Agent SDK; this one runs an isolated Claude Code subprocess. When the user says "ask claude", "ask claude code", or otherwise refers to delegating to Claude Code, call THIS tool. Claude runs its OWN tool loop (Read, Grep, Edit, Bash, ...) inside the workspace, then returns its final answer. Use for a second opinion, code review, architecture questions, debugging theories, or to autonomously handle a task you do not need to drive step-by-step. Provide a complete, self-contained task description; Claude will not see this conversation unless you resume a prior session.
 
@@ -105,53 +115,13 @@ interface Config {
 	allowFullMode: boolean;
 }
 
-// Minimal shapes for the JSONL stream-json events we consume. Unknown
-// fields are ignored. See: Claude Code CLI `--output-format stream-json`.
-interface ClaudeStreamEvent {
-	type: string;
-	subtype?: string;
-	session_id?: string;
-	result?: string;
-	is_error?: boolean;
-	num_turns?: number;
-	total_cost_usd?: number;
-	duration_ms?: number;
-	usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
-	message?: {
-		role?: string;
-		// Unified block shape: a discriminated union collapses here because
-		// { type: "tool_use" } is assignable to a { type: string } fallback, so
-		// one object with all-optional fields keeps `block.type === "tool_use"`
-		// narrowing AND lets us read name/input/text/is_error without casts.
-		content?: Array<{
-			type: string;
-			text?: string;
-			thinking?: string;
-			name?: string;
-			input?: Record<string, unknown>;
-			is_error?: boolean;
-		}>;
-	};
-}
-
 // --- Config ----------------------------------------------------------------
 
-function globalConfigPath(): string {
-	return path.join(getAgentDir(), "ask-claude.json");
-}
-
-function projectConfigPath(cwd: string): string {
-	return path.join(cwd, CONFIG_DIR_NAME, "ask-claude.json");
-}
-
-export function tryReadJson(filePath: string): Record<string, unknown> {
-	if (!filePath || !fs.existsSync(filePath)) return {};
-	try {
-		const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-		return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-	} catch {
-		return {};
-	}
+/** Layered config paths: global resolves via pi's getAgentDir() (rebranded
+ *  distro safe); project is <cwd>/.pi. Resolution stays extension-local by
+ *  design — codex/antigravity hardcode ~/.pi/agent. */
+function configPathsFor(cwd: string) {
+	return configPaths({ globalDir: getAgentDir(), projectDir: cwd, fileName: "ask-claude.json" });
 }
 
 const EFFORT_VALUES: Effort[] = ["default", "low", "medium", "high", "xhigh"];
@@ -165,9 +135,7 @@ function isPermissionMode(v: unknown): v is PermissionMode {
 }
 
 export function loadConfig(cwd: string): Config {
-	const global = tryReadJson(globalConfigPath());
-	const project = tryReadJson(projectConfigPath(cwd));
-	const merged = { ...global, ...project };
+	const { merged } = loadLayeredRaw(configPathsFor(cwd));
 
 	const effortRaw = String(merged.defaultEffort ?? DEFAULT_EFFORT).toLowerCase();
 	const effort: Effort = isEffort(effortRaw) ? effortRaw : DEFAULT_EFFORT;
@@ -188,37 +156,11 @@ export function loadConfig(cwd: string): Config {
 	};
 }
 
-interface SaveResult {
-	path: string;
-	/** True when the write went to the project config (project shadows global). */
-	routedToProject: boolean;
-}
-
-/** Persist a config patch. If the project config already defines any patched
- *  key, write to the PROJECT file so the change actually takes effect
- *  (project shadows global on load); otherwise write to global.
- *  Atomic: temp file + rename, with temp cleanup on failure. */
+/** Persist a config patch via the shared all-or-nothing router: if any
+ *  patched key is already project-defined, the whole patch goes to the
+ *  project file (it shadows global on load). Atomic write inside. */
 function saveConfig(cwd: string, patch: Partial<Config>): SaveResult {
-	const projectRaw = tryReadJson(projectConfigPath(cwd));
-	const projectShadows = Object.keys(patch).some((k) => k in projectRaw);
-	const targetPath = projectShadows ? projectConfigPath(cwd) : globalConfigPath();
-
-	const existing = tryReadJson(targetPath);
-	const next = { ...existing, ...patch };
-	const dir = path.dirname(targetPath);
-	fs.mkdirSync(dir, { recursive: true });
-
-	const tmp = `${targetPath}.${process.pid}.tmp`;
-	try {
-		fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
-		fs.renameSync(tmp, targetPath);
-	} catch (err) {
-		try {
-			fs.unlinkSync(tmp);
-		} catch {}
-		throw err;
-	}
-	return { path: targetPath, routedToProject: projectShadows };
+	return saveLayeredConfig(configPathsFor(cwd), patch as Record<string, unknown>);
 }
 
 // --- Conflict guard: detect pi-claude-bridge's own AskClaude ---------------
@@ -299,6 +241,9 @@ export function bridgeConflictExists(agentDir: string, cwd: string): ConflictRes
 }
 
 // --- claude process helpers ------------------------------------------------
+// buildClaudeArgs, the stream-json event grammar (consumeClaudeEvent), the
+// status-line vocabulary, and stderr noise filtering live in pi-ask-shared
+// (peers/claude.ts) so pi-unblock consults reuse the exact same contract.
 
 function resolveClaude(): string {
 	return process.env.CLAUDE_BIN || "claude";
@@ -361,134 +306,8 @@ async function claudeAvailable(binary: string): Promise<boolean> {
 	}
 }
 
-// --- Argv building (exported for tests) ------------------------------------
-
-// Read-only tool allowlist for `read` mode. These tools never trigger a
-// permission prompt, so the run stays fully non-interactive in --print
-// mode. Mutating tools (Edit/Write/Bash/...) are simply absent, so Claude
-// cannot change anything; MCP and subagent tools are excluded too.
-const READ_ONLY_TOOLS = ["Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite"];
-
-export interface BuildArgsOptions {
-	model?: string;
-	effort: Effort;
-	mode: PermissionMode;
-	allowFullMode: boolean;
-	systemPrompt?: string;
-	appendSystemPrompt?: string;
-	sessionId?: string; // defined + valid UUID => resume; undefined => fresh
-	extraArgs: string[];
-}
-
-/** Build the `claude` argv. The PROMPT IS NOT INCLUDED here: it is delivered
- *  via stdin, because `--allowedTools` / `--tools` are variadic flags that
- *  would otherwise swallow a positional prompt. Pure function so tests can
- *  pin the shape. `plan` mode is deliberately avoided — it needs interactive
- *  plan approval and errors out headless (error_during_execution). */
-export function buildClaudeArgs(opts: BuildArgsOptions): string[] {
-	const args: string[] = ["-p", "--output-format", "stream-json", "--verbose"];
-	args.push(...opts.extraArgs);
-
-	if (opts.model && opts.model.trim()) args.push("--model", opts.model.trim());
-	if (opts.effort !== "default") args.push("--effort", opts.effort);
-
-	// Permission / tool surface per mode.
-	if (opts.mode === "full") {
-		if (!opts.allowFullMode) {
-			// Caller should have rejected this already; degrade to read.
-			args.push("--allowedTools", READ_ONLY_TOOLS.join(","));
-		} else {
-			args.push("--permission-mode", "bypassPermissions");
-		}
-	} else if (opts.mode === "none") {
-		// Disable every built-in tool: pure general knowledge.
-		args.push("--tools", "");
-	} else {
-		// read: explicit read-only allowlist (no prompts, no mutations).
-		args.push("--allowedTools", READ_ONLY_TOOLS.join(","));
-	}
-
-	if (opts.systemPrompt && opts.systemPrompt.trim()) {
-		args.push("--system-prompt", opts.systemPrompt);
-	}
-	if (opts.appendSystemPrompt && opts.appendSystemPrompt.trim()) {
-		args.push("--append-system-prompt", opts.appendSystemPrompt);
-	}
-
-	if (opts.sessionId && SESSION_ID_RE.test(opts.sessionId)) {
-		args.push("--resume", opts.sessionId);
-	}
-	// Fresh runs do NOT pass --session-id: claude assigns the id and reports
-	// it in the `system/init` event, which we capture during streaming.
-
-	return args;
-}
-
-
-// --- Status rendering ------------------------------------------------------
-
-function shorten(text: string, limit = 96): string {
-	const normalized = String(text ?? "").trim().replace(/\s+/g, " ");
-	if (!normalized) return "";
-	if (normalized.length <= limit) return normalized;
-	return `${normalized.slice(0, limit - 3)}...`;
-}
-
-function toolUseStatus(name: string | undefined, input: Record<string, unknown> | undefined): string {
-	const n = String(name ?? "tool");
-	switch (n) {
-		case "Read":
-			return `reading: ${shorten(String(input?.file_path ?? ""), 120)}`;
-		case "Grep":
-		case "Glob":
-		case "LS":
-			return `searching: ${shorten(String(input?.pattern ?? input?.path ?? ""), 120)}`;
-		case "Edit":
-		case "Write":
-		case "NotebookEdit":
-			return `editing: ${shorten(String(input?.file_path ?? ""), 120)}`;
-		case "Bash":
-			return `running: ${shorten(String(input?.command ?? ""), 140)}`;
-		case "WebSearch":
-			return `web search: ${shorten(String(input?.query ?? ""), 120)}`;
-		case "WebFetch":
-			return `web fetch: ${shorten(String(input?.url ?? ""), 120)}`;
-		case "Task":
-		case "TaskCreate":
-		case "TaskUpdate":
-			return `subtask: ${n}`;
-		case "TodoWrite":
-			return "plan updated";
-		default:
-			return `tool: ${n}`;
-	}
-}
-
-/** Map one parsed stream event to a short human status line, or null when
- *  the event carries nothing worth surfacing (keeps status lean). */
-function describeStreamEvent(ev: ClaudeStreamEvent): string | null {
-	// SessionStart / hook lifecycle events are config noise, not progress.
-	if (ev.type === "system") {
-		return null;
-	}
-	if (ev.type === "assistant" && ev.message?.content) {
-		for (const block of ev.message.content) {
-			if (block.type === "tool_use") {
-				return toolUseStatus(block.name, block.input);
-			}
-		}
-		// Text/thinking-only assistant turn: no per-line status (the final
-		// answer comes from the `result` event).
-		return null;
-	}
-	if (ev.type === "user" && ev.message?.content) {
-		for (const block of ev.message.content) {
-			if (block.type === "tool_result" && block.is_error) return "tool error";
-		}
-		return null;
-	}
-	return null;
-}
+// --- Argv + stream grammar: shared peer adapter ----------------------------
+// See peers/claude.ts in pi-ask-shared.
 
 // --- Full-context export (opt-in includeContext) --------------------------
 // NOTE: this helper is intentionally duplicated per pi-ask-* package (each is
@@ -602,10 +421,8 @@ function emptyDetails(model: string | null, mode: PermissionMode, effort: Effort
 // --- Background-mode plumbing ----------------------------------------------
 // Shared shape for both call styles: blocking awaits it, background lets it
 // run detached and pushes the outcome through the wake sender on close.
-
-const STDERR_BUF_MAX_CHARS = 64_000;
-const STDOUT_BUF_MAX_CHARS = 1_000_000;
-const STATUS_LINES_MAX = 100;
+// Process mechanics (spawn/kill-tree/watchdog/settle-on-close) live in the
+// shared runProcess; this layer owns the claude stream contract + status.
 
 /** Spawn failure (binary vanished between the availability check and spawn). Carries whatever stderr accumulated. */
 class ClaudeSpawnError extends Error {
@@ -649,173 +466,66 @@ interface AskToolResult {
 }
 
 /**
- * Spawns claude -p, consumes the stream-json events, and resolves when the
- * process tree closes. Never leaves timers or listeners behind: the internal
- * finally clears the status interval, cleanup() clears the watchdog and the
- * abort listener on every terminal path.
+ * Spawns claude -p via the shared runProcess, consumes the stream-json
+ * events through the shared peer adapter, and resolves when the process
+ * tree closes. Process mechanics (kill-tree, watchdog, abort, settle-on-
+ * close) are runProcess's; this layer owns only the claude stream contract
+ * and the throttled status partials.
  */
 async function runClaudeProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome> {
 	const { binary, args, prompt, workdir, timeoutMin, startAt, details, signal, onPartial, onSpawn } = opts;
-	let finalMessage = "";
-	let assistantText = ""; // fallback if no result event
-	const statusLines: string[] = [];
+	const st = emptyClaudeEventState();
 
 	const statusInterval = onPartial
 		? setInterval(() => {
 				const elapsed = Math.floor((Date.now() - startAt) / 1000);
-				const tail = statusLines.slice(-3).join("\n");
+				const tail = st.statusLines.slice(-3).join("\n");
 				const text = tail ? `(running ${elapsed}s)\n${tail}` : `(running ${elapsed}s)`;
 				onPartial(text);
 			}, STATUS_INTERVAL_MS)
 		: null;
 
-	let stderrBuf = "";
 	try {
-		const outcome = await new Promise<{
-			exitCode: number;
-			aborted: boolean;
-			timedOut: boolean;
-		}>((resolveP, rejectP) => {
-			const proc = spawn(binary, args, {
+		let outcome;
+		try {
+			outcome = await runProcess({
+				binary,
+				args,
+				stdin: prompt,
 				cwd: workdir,
-				stdio: ["pipe", "pipe", "pipe"],
-				shell: false,
-				detached: true,
-			});
-
-			// Deliver the prompt via stdin (see buildClaudeArgs: variadic flags
-			// would eat a positional). Write then end so claude proceeds
-			// without its 3s stdin-wait. Ignore EPIPE if claude exits first.
-			proc.stdin?.on("error", () => {});
-			proc.stdin?.write(prompt);
-			proc.stdin?.end();
-
-			let stdoutBuf = "";
-			proc.stdout?.setEncoding("utf8");
-			proc.stderr?.setEncoding("utf8");
-
-			const handleLine = (line: string) => {
-				const trimmed = line.trim();
-				if (!trimmed) return;
-				let ev: ClaudeStreamEvent;
-				try {
-					ev = JSON.parse(trimmed) as ClaudeStreamEvent;
-				} catch {
-					return;
-				}
-				consumeEvent(ev);
-			};
-
-			const consumeEvent = (ev: ClaudeStreamEvent) => {
-				// Confirm/repair session id from the init event.
-				if (ev.type === "system" && ev.subtype === "init" && ev.session_id) {
-					if (!details.sessionId) details.sessionId = ev.session_id;
-				}
-				if (ev.type === "result") {
-					if (typeof ev.result === "string") finalMessage = ev.result;
-					if (typeof ev.is_error === "boolean") details.resultIsError = ev.is_error;
-					if (typeof ev.subtype === "string") details.resultSubtype = ev.subtype;
-					if (ev.usage) {
-						details.usage = {
-							inputTokens: ev.usage.input_tokens ?? 0,
-							outputTokens: ev.usage.output_tokens ?? 0,
-							cacheReadTokens: ev.usage.cache_read_input_tokens ?? 0,
-							cacheWriteTokens: ev.usage.cache_creation_input_tokens ?? 0,
-						};
+				timeoutMs: timeoutMin * 60_000,
+				signal,
+				onLine: (line) => {
+					const trimmed = line.trim();
+					if (!trimmed) return;
+					try {
+						consumeClaudeEvent(JSON.parse(trimmed) as ClaudeStreamEvent, st);
+					} catch {
+						return;
 					}
-					if (typeof ev.total_cost_usd === "number") details.costUsd = ev.total_cost_usd;
-					if (typeof ev.num_turns === "number") details.turns = ev.num_turns;
-					return;
-				}
-				// Accumulate assistant text as a fallback for the final
-				// answer when no `result` event is emitted (timeout/abort).
-				if (ev.type === "assistant" && ev.message?.content) {
-					for (const block of ev.message.content) {
-						if (block.type === "text" && block.text) {
-							assistantText += block.text;
-						}
-					}
-				}
-				const line = describeStreamEvent(ev);
-				if (line && statusLines.length < STATUS_LINES_MAX) statusLines.push(line);
-			};
-
-			proc.stdout?.on("data", (d: string) => {
-				stdoutBuf += d;
-				// Safety valve for pathological no-newline output; keeps the tail.
-				if (stdoutBuf.length > STDOUT_BUF_MAX_CHARS) stdoutBuf = stdoutBuf.slice(-100_000);
-				let nl: number;
-				while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
-					handleLine(stdoutBuf.slice(0, nl));
-					stdoutBuf = stdoutBuf.slice(nl + 1);
-				}
+					// Mirror the accumulator onto details so partial progress
+					// keeps showing live sessionId/usage. The continuation id
+					// (preset in details) is sticky; init only fills a blank.
+					if (!details.sessionId && st.sessionId) details.sessionId = st.sessionId;
+					details.resultIsError = st.resultIsError;
+					details.resultSubtype = st.resultSubtype;
+					details.usage = st.usage;
+					details.costUsd = st.costUsd;
+					details.turns = st.turns;
+				},
+				onSpawn,
 			});
-			proc.stderr?.on("data", (d: string) => {
-				if (stderrBuf.length < STDERR_BUF_MAX_CHARS) stderrBuf += d;
-			});
-
-			let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-			let watchdog: ReturnType<typeof setTimeout> | undefined;
-			let settled = false;
-			let timedOut = false;
-
-			const killTree = () => {
-				try {
-					if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-				} catch {}
-				if (!sigkillTimer) {
-					sigkillTimer = setTimeout(() => {
-						try {
-							if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-						} catch {}
-					}, GRACE_AFTER_TIMEOUT_MS);
-				}
-			};
-
-			// Hand the kill switch to the background registry before any
-			// terminal event can fire.
-			onSpawn?.(killTree);
-
-			const cleanup = () => {
-				if (watchdog) clearTimeout(watchdog);
-				if (sigkillTimer) clearTimeout(sigkillTimer);
-				if (signal) signal.removeEventListener("abort", onAbort);
-			};
-
-			const onAbort = () => killTree();
-
-			watchdog = setTimeout(() => {
-				timedOut = true;
-				killTree();
-			}, timeoutMin * 60_000);
-
-			if (signal) {
-				if (signal.aborted) killTree();
-				else signal.addEventListener("abort", onAbort, { once: true });
-			}
-
-			const finish = (code: number | null) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				if (stdoutBuf.trim()) handleLine(stdoutBuf);
-				resolveP({
-					exitCode: code ?? 0,
-					aborted: !!signal?.aborted,
-					timedOut,
-				});
-			};
-
-			proc.on("error", (err) => {
-				cleanup();
-				rejectP(new ClaudeSpawnError(err.message, cleanStderr(stderrBuf)));
-			});
-			proc.on("close", finish);
-		});
+		} catch (err) {
+			// Preserve the extension's spawn-error contract (cleaned stderr).
+			if (err instanceof RunSpawnError) throw new ClaudeSpawnError(err.message, cleanClaudeStderr(err.stderr));
+			throw err;
+		}
 		return {
-			...outcome,
-			answerText: (finalMessage || assistantText).trim(),
-			stderrClean: cleanStderr(stderrBuf),
+			exitCode: outcome.exitCode,
+			aborted: outcome.aborted,
+			timedOut: outcome.timedOut,
+			answerText: (st.finalMessage || st.assistantText).trim(),
+			stderrClean: cleanClaudeStderr(outcome.stderr),
 		};
 	} finally {
 		if (statusInterval) clearInterval(statusInterval);
@@ -1129,8 +839,8 @@ export default async function (pi: ExtensionAPI) {
 			const model = (args.model as string | undefined)?.trim() || cfg.defaultModel;
 			const effort: Effort = isEffort(args.thinking) ? args.thinking : cfg.defaultEffort;
 			const mode: PermissionMode = isPermissionMode(args.mode) ? args.mode : cfg.defaultMode;
-			const isContinue =
-				typeof args.sessionId === "string" && SESSION_ID_RE.test(args.sessionId);
+		const isContinue =
+			typeof args.sessionId === "string" && CLAUDE_SESSION_ID_RE.test(args.sessionId);
 
 			const tags: string[] = [`model=${model}`, `thinking=${effort}`];
 			if (mode !== cfg.defaultMode) tags.push(`mode=${mode}`);
@@ -1278,7 +988,7 @@ export default async function (pi: ExtensionAPI) {
 
 			const rawSessionId = params.sessionId;
 			const isContinuation =
-				typeof rawSessionId === "string" && rawSessionId.length > 0 && SESSION_ID_RE.test(rawSessionId);
+				typeof rawSessionId === "string" && rawSessionId.length > 0 && CLAUDE_SESSION_ID_RE.test(rawSessionId);
 
 			const args = buildClaudeArgs({
 				model: requestedModel,
@@ -1547,19 +1257,4 @@ export default async function (pi: ExtensionAPI) {
 			details: { ...o.details },
 		};
 	};
-}
-
-/** Drop claude stderr lines that aren't real errors: the stdin-wait notice
- *  and benign config warnings. */
-export function cleanStderr(buf: string): string {
-	return buf
-		.split(/\r?\n/)
-		.map((l) => l.trimEnd())
-		.filter(
-			(l) =>
-				l &&
-				!l.startsWith("Warning: no stdin data received") &&
-				!/^claude:?\s*$/i.test(l),
-		)
-		.join("\n");
 }
