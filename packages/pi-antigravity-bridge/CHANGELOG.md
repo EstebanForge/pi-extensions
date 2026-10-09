@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **AskAntigravity dedup onto `pi-ask-shared` (behavior-preserving).** The tool's copy of the agy model grammar, tiered alias resolution, plan-mode guard prompts, prompt assembly, and argv construction now imports the shared peer adapter (new dependency `@estebanforge/pi-ask-shared`); `src/discovery.ts` is deleted — its conversation-bind technique (snapshot/diff + /proc FD scan, including the `onAmbiguous` hook, now upstream in the shared adapter) was the last consumer. The process block is deliberately kept bridge-local: it settles on close AND exit, leaves stdout/stderr uncapped, and threads the MCP-entry suppression release into cleanup — all three diverge from the shared `runProcess` contract on purpose. Shared `newConversationId` gained the `onAmbiguous` callback and exports `procTreeOpenDbResolver` (both absorbed from discovery.ts; `conversationDbPath` was unused and died with the module).
+
 ## [1.7.10] - 2026-10-07
 
 ### Added
