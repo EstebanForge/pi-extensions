@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Project-scope config files resolve under `.pi/` again (`<project>/.pi/ask-*.json`): the shared-layer refactor passed the workspace root where the shared primitive expects the directory containing the file, so project configs would have been read from and written to the workspace root. Restores pre-refactor behavior.
+- The bundled-catalog probe (`discoverCodexModels`) now actually lives in the shared peer adapter, matching what this changelog already claimed; the extension imports it back.
+
 ### Changed
 
 - **Internal dedup onto `pi-ask-shared` (behavior-preserving).** Config load/save composes the shared layered-config primitives (same homedir-based global path, same project-shadow routing, same atomic write); the spawn lifecycle (detached process group, SIGTERM→SIGKILL grace, watchdog, abort, settle-on-close) runs through the shared `runProcess`; the slug taxonomy, alias resolver, bundled-catalog probe, exec argv builder, exec --json event grammar, status vocabulary, and stderr noise filter moved to the shared peer adapter (`peers/codex.ts`). No user-facing behavior change: the prompt still travels as the trailing positional after `--`, resume still drops -C/-s while keeping -m/-c, and the full test suite passes unchanged.

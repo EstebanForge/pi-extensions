@@ -54,6 +54,7 @@ import {
 	CODEX_SESSION_ID_RE,
 	compareVersionsDesc,
 	configPaths,
+	discoverCodexModels,
 	classifySlug,
 	consumeCodexEvent,
 	createStopHandler,
@@ -124,7 +125,7 @@ interface Config {
 function configPathsFor() {
 	return configPaths({
 		globalDir: path.join(os.homedir(), ".pi", "agent"),
-		projectDir: process.cwd(),
+		projectDir: path.join(process.cwd(), ".pi"),
 		fileName: "ask-codex.json",
 	});
 }
@@ -161,94 +162,13 @@ function saveConfig(patch: Partial<Config>): SaveResult {
 
 // --- Model discovery + alias resolution ------------------------------------
 // The slug taxonomy (classifySlug), the alias resolver (resolveModel), the
-// bundled-catalog discovery probe (discoverCodexModels), and the version
+// alias resolver (resolveModel), and the version
 // compare all live in pi-ask-shared (peers/codex.ts) so pi-unblock consults
 // reuse the exact same resolution contract.
 
-/** Pull the raw model catalog via `codex debug models --bundled` and parse
- *  it into structured entries. Returns [] on any failure (non-fatal): the
- *  caller falls back to passthrough so exact slugs typed by the user still
- *  reach codex verbatim. */
-async function discoverCodexModels(binary: string): Promise<CodexModelEntry[]> {
-	let text = "";
-	try {
-		text = await new Promise<string>((resolve, reject) => {
-			const proc = spawn(binary, ["debug", "models", "--bundled"], {
-				stdio: ["ignore", "pipe", "ignore"],
-				shell: false,
-			});
-			proc.stdout?.setEncoding("utf8");
-			let out = "";
-			let done = false;
-			const finish = (v: string) => {
-				if (done) return;
-				done = true;
-				clearTimeout(watchdog);
-				resolve(v);
-			};
-			proc.stdout?.on("data", (d: string) => (out += d));
-			proc.on("error", (err) => {
-				clearTimeout(watchdog);
-				reject(err);
-			});
-			proc.on("close", (code) => finish(code === 0 ? out : ""));
-			const watchdog = setTimeout(() => {
-				try {
-					proc.kill("SIGKILL");
-				} catch {}
-				finish("");
-			}, DISCOVERY_TIMEOUT_MS);
-		});
-	} catch {
-		return [];
-	}
-	if (!text.trim()) return [];
-
-	// Each entry carries a large `base_instructions` blob (~50KB). Parse the
-	// whole thing but read only the fields we need; entries are huge but
-	// JSON.parse handles multi-MB fine.
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text);
-	} catch {
-		return [];
-	}
-	const models = (parsed as { models?: unknown }).models;
-	if (!Array.isArray(models)) return [];
-
-	const entries: CodexModelEntry[] = [];
-	for (const m of models) {
-		const raw = m as {
-			slug?: unknown;
-			visibility?: unknown;
-			upgrade?: { model?: unknown } | null;
-			supported_reasoning_levels?: Array<{ effort?: unknown }>;
-		};
-		const slug = raw.slug;
-		if (typeof slug !== "string" || !slug) continue;
-		const { family, version } = classifySlug(slug);
-		const efforts = Array.isArray(raw.supported_reasoning_levels)
-			? raw.supported_reasoning_levels
-					.map((l) => (typeof l?.effort === "string" ? l.effort : ""))
-					.filter(Boolean)
-			: [];
-		const upgrade =
-			typeof raw.upgrade?.model === "string" && raw.upgrade.model ? raw.upgrade.model : null;
-		// Hidden entries stay in the list so exact user-typed ids match
-		// verbatim (and unknown-suffix slugs never fall into alias parsing);
-		// resolveModel excludes them from family-alias candidate pools.
-		entries.push({
-			full: slug,
-			family,
-			version,
-			efforts,
-			upgrade,
-			hidden: raw.visibility === "hide",
-		});
-	}
-	return entries;
-}
-
+// bundled-catalog discovery probe: discoverCodexModels lives in the shared
+// peer adapter (peers/codex.ts) alongside the model grammar it parses; the
+// extension imports it back below.
 // --- Status rendering: shared peer adapter ---------------------------------
 // looksLikeVerificationCommand, shorten, and describeItem (the item.*
 // status vocabulary) live in pi-ask-shared (peers/codex.ts) alongside the

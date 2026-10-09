@@ -241,10 +241,13 @@ function peerSetup(opts: ConsultOptions): {
 
 export async function runConsult(opts: ConsultOptions): Promise<ConsultResult> {
 	const { binary, timeoutMs, signal, cwd } = opts;
-	const setup = peerSetup(opts);
 
 	let outcome: RunProcessOutcome;
+	let setup: ReturnType<typeof peerSetup>;
 	try {
+		// peerSetup is inside the guard too: a malformed options shape must
+		// surface as ConsultError, never as a raw throw into the caller.
+		setup = peerSetup(opts);
 		outcome = await runProcess({
 			binary,
 			args: setup.args,
@@ -255,10 +258,15 @@ export async function runConsult(opts: ConsultOptions): Promise<ConsultResult> {
 			onLine: setup.onLine,
 		});
 	} catch (err) {
+		if (err instanceof ConsultError) throw err;
 		if (err instanceof RunSpawnError) {
 			throw new ConsultError("spawn", { stderr: err.stderr, message: err.message });
 		}
-		throw err;
+		// Anything else (bad options, spawn validation) also means the run
+		// never produced output: class it as spawn.
+		throw new ConsultError("spawn", {
+			message: err instanceof Error ? err.message : String(err),
+		});
 	}
 
 	const { answer, sessionId, peerError } = setup.extract(outcome);

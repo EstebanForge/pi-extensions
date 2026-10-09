@@ -14,18 +14,74 @@
  * stdin is ignored (`stdio: "ignore"`) so codex never waits on a tty.
  */
 
-/** Descending numeric version compare. "5.10" > "5.9" (lexical sort would
- *  wrongly rank "5.9" higher because '9' > '1'). */
-const compareVersionsDesc = (a: string, b: string): number => {
-	const pa = a.split(".").map(Number);
-	const pb = b.split(".").map(Number);
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const da = pa[i] ?? 0;
-		const db = pb[i] ?? 0;
-		if (da !== db) return db - da; // descending
+import { compareVersionsDesc } from "../versions.js";
+import { runProcess } from "../run.js";
+
+/** Pull the raw model catalog via `codex debug models --bundled` and parse
+ *  it into structured entries. Returns [] on any failure (non-fatal): the
+ *  caller falls back to passthrough so exact slugs typed by the user still
+ *  reach codex verbatim. 8s watchdog: the probe must never gate a call. */
+export async function discoverCodexModels(
+	binary: string,
+	opts: { timeoutMs?: number } = {},
+): Promise<CodexModelEntry[]> {
+	let text = "";
+	try {
+		const outcome = await runProcess({
+			binary,
+			args: ["debug", "models", "--bundled"],
+			timeoutMs: opts.timeoutMs ?? 8_000,
+		});
+		text = outcome.exitCode === 0 ? outcome.stdoutRaw : "";
+	} catch {
+		return [];
 	}
-	return 0;
-};
+	if (!text.trim()) return [];
+
+	// Each entry carries a large `base_instructions` blob (~50KB). Parse the
+	// whole thing but read only the fields we need; entries are huge but
+	// JSON.parse handles multi-MB fine.
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return [];
+	}
+	const models = (parsed as { models?: unknown }).models;
+	if (!Array.isArray(models)) return [];
+
+	const entries: CodexModelEntry[] = [];
+	for (const m of models) {
+		const raw = m as {
+			slug?: unknown;
+			visibility?: unknown;
+			upgrade?: { model?: unknown } | null;
+			supported_reasoning_levels?: Array<{ effort?: unknown }>;
+		};
+		const slug = raw.slug;
+		if (typeof slug !== "string" || !slug) continue;
+		const { family, version } = classifySlug(slug);
+		const efforts = Array.isArray(raw.supported_reasoning_levels)
+			? raw.supported_reasoning_levels
+					.map((l) => (typeof l?.effort === "string" ? l.effort : ""))
+					.filter(Boolean)
+			: [];
+		const upgrade =
+			typeof raw.upgrade?.model === "string" && raw.upgrade.model ? raw.upgrade.model : null;
+		// Hidden entries stay in the list so exact user-typed ids match
+		// verbatim (and unknown-suffix slugs never fall into alias parsing);
+		// resolveModel excludes them from family-alias candidate pools.
+		entries.push({
+			full: slug,
+			family,
+			version,
+			efforts,
+			upgrade,
+			hidden: raw.visibility === "hide",
+		});
+	}
+	return entries;
+}
 
 // codex session/thread ids are UUIDs (e.g. "0199a213-81c0-7800-8aa1-bbab2a035a53").
 // Anchored to UUID shape so a leading-dash value (e.g.
