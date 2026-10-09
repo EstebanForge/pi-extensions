@@ -10,6 +10,7 @@ export {
 } from "./config.js";
 export { compareVersionsDesc } from "./versions.js";
 export * from "./peers/claude.js";
+export * from "./peers/codex.js";
 export {
 	runProcess,
 	RunSpawnError,

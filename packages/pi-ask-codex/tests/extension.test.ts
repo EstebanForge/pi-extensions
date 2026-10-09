@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import factory, { REASONING_VALUES, classifySlug, resolveModel } from "../extensions/index.js";
-import type { CodexModelEntry } from "../extensions/index.js";
+import {
+	classifySlug,
+	resolveModel,
+	REASONING_VALUES,
+	type CodexModelEntry,
+} from "@estebanforge/pi-ask-shared";
+import factory from "../extensions/index.js";
 
 // Synthetic catalog mirroring the real `codex debug models --bundled` shape
 // for the GPT-6 era (verified against codex-cli 0.159.3).

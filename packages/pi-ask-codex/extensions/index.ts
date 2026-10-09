@@ -49,18 +49,35 @@ import { Type } from "typebox";
 import {
 	BackgroundRunRegistry,
 	backgroundFlagText,
+	buildCodexArgs,
+	cleanCodexStderr,
+	CODEX_SESSION_ID_RE,
+	compareVersionsDesc,
+	configPaths,
+	classifySlug,
+	consumeCodexEvent,
 	createStopHandler,
 	createWakeSender,
+	emptyCodexEventState,
+	loadLayeredRaw,
+	REASONING_VALUES,
+	resolveModel,
+	RunSpawnError,
+	runProcess,
+	saveLayeredConfig,
+	SANDBOX_VALUES,
 	summarizePrompt,
+	tryReadJson,
+	type CodexEvent,
+	type CodexModelEntry,
+	type SaveResult,
 } from "@estebanforge/pi-ask-shared";
 
 // --- Constants -------------------------------------------------------------
 
 const DEFAULT_TIMEOUT_MIN = 10;
-const GRACE_AFTER_TIMEOUT_MS = 5000;
 const STATUS_INTERVAL_MS = 1000;
 const DISCOVERY_TIMEOUT_MS = 8_000;
-const GLOBAL_CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "ask-codex.json");
 
 // renderCall / renderResult preview limits (match pi-claude-bridge).
 const PREVIEW_MAX_CHARS = 1000;
@@ -73,14 +90,9 @@ const DEFAULT_REASONING = "medium";
 // call (sandbox param) or via defaultSandbox in ask-codex.json when needed.
 const DEFAULT_SANDBOX = "danger-full-access";
 
-// codex session/thread ids are UUIDs (e.g. "0199a213-81c0-7800-8aa1-bbab2a035a53").
-// Anchored to UUID shape so a leading-dash value (e.g.
-// "--dangerously-bypass-approvals-and-sandbox") can NEVER pass and misbind
-// on codex's arg parser as the token after the resume session-id positional
-// — which would silently disable the sandbox. The dash-tolerant variant
-// (`[A-Za-z0-9-]`) was a security regression; this is the fix.
-const SESSION_ID_RE =
-	/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+// Codex session ids live in the shared peer adapter (CODEX_SESSION_ID_RE):
+// UUID-anchored so a leading-dash value can never misbind as the resume
+// positional (which would silently disable the sandbox).
 
 const CODEX_DESCRIPTION = `Delegate a self-contained sub-task to OpenAI Codex. This tool answers to three equivalent names the user may use interchangeably: **codex**, **openai**, and **gpt**. When the user says "ask codex", "ask openai", "ask gpt", or otherwise refers to any of these, call THIS tool. Codex runs its OWN tool loop: it can read, write, edit, and execute inside the workspace, then returns its final answer. Use for a second opinion from a different model family, GPT-specific reasoning, or isolated sub-tasks you do not need to drive step-by-step. Provide a complete, self-contained task description; Codex will not see this conversation.
 
@@ -105,59 +117,27 @@ interface Config {
 	defaultSandbox: SandboxMode;
 }
 
-// Minimal shapes for the JSONL events we actually consume. Unknown fields
-// are ignored. See: https://takopi.dev/reference/runners/codex/exec-json-cheatsheet/
-interface CodexEvent {
-	type: string;
-	thread_id?: string;
-	message?: string;
-	error?: { message?: string };
-	usage?: { input_tokens?: number; output_tokens?: number; reasoning_output_tokens?: number };
-	item?: {
-		id: string;
-		type: string;
-		text?: string;
-		command?: string;
-		status?: string;
-		exit_code?: number | null;
-		changes?: Array<{ path: string; kind: string }>;
-		query?: string;
-	};
-}
-
 // --- Config ----------------------------------------------------------------
 
-function projectConfigPath(): string {
-	return path.join(process.cwd(), ".pi", "ask-codex.json");
+/** Layered config paths: global is ~/.pi/agent (homedir, NOT getAgentDir —
+ *  today's shipped resolution for this extension); project is <cwd>/.pi. */
+function configPathsFor() {
+	return configPaths({
+		globalDir: path.join(os.homedir(), ".pi", "agent"),
+		projectDir: process.cwd(),
+		fileName: "ask-codex.json",
+	});
 }
-
-function tryReadJson(filePath: string): Record<string, unknown> {
-	if (!fs.existsSync(filePath)) return {};
-	try {
-		const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-		return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-	} catch {
-		return {};
-	}
-}
-
-/** Current codex reasoning-effort ladder (GPT-6 era). "minimal" is retired:
- *  no bundled model lists it anymore. Support is validated per model at call
- *  time against the catalog (gpt-6-luna stops at max, for example). */
-export const REASONING_VALUES: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
-const SANDBOX_VALUES: SandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
 
 function isReasoningEffort(v: unknown): v is ReasoningEffort {
-	return typeof v === "string" && (REASONING_VALUES as string[]).includes(v);
+	return typeof v === "string" && (REASONING_VALUES as readonly string[]).includes(v);
 }
 function isSandboxMode(v: unknown): v is SandboxMode {
-	return typeof v === "string" && (SANDBOX_VALUES as string[]).includes(v);
+	return typeof v === "string" && (SANDBOX_VALUES as readonly string[]).includes(v);
 }
 
 function loadConfig(): Config {
-	const global = tryReadJson(GLOBAL_CONFIG_PATH);
-	const project = tryReadJson(projectConfigPath());
-	const merged = { ...global, ...project };
+	const { merged } = loadLayeredRaw(configPathsFor());
 
 	const reasoningRaw = String(merged.defaultReasoning ?? DEFAULT_REASONING).toLowerCase();
 	const reasoning: ReasoningEffort = isReasoningEffort(reasoningRaw) ? reasoningRaw : DEFAULT_REASONING;
@@ -172,127 +152,18 @@ function loadConfig(): Config {
 	};
 }
 
-interface SaveResult {
-	path: string;
-	/** True when the write went to the project config (project shadows global). */
-	routedToProject: boolean;
-}
-
-/** Persist a config patch. If the project config already defines any patched
- *  key, write to the PROJECT file so the change actually takes effect
- *  (project shadows global on load); otherwise write to global.
- *  Atomic: temp file + rename, with temp cleanup on failure.
- *  Routing is all-or-nothing per save: if ANY patched key is shadowed by
- *  project config, the WHOLE patch goes to project (a previously-global key
- *  is silently promoted to project-scoped). Acceptable: the slash command
- *  saves all three keys together, and mixing scopes in one save would surprise
- *  more than this does. */
+/** Persist a config patch via the shared all-or-nothing router: if any
+ *  patched key is already project-defined, the whole patch goes to the
+ *  project file (it shadows global on load). Atomic write inside. */
 function saveConfig(patch: Partial<Config>): SaveResult {
-	const projectRaw = tryReadJson(projectConfigPath());
-	const projectShadows = Object.keys(patch).some((k) => k in projectRaw);
-	const targetPath = projectShadows ? projectConfigPath() : GLOBAL_CONFIG_PATH;
-
-	const existing = tryReadJson(targetPath);
-	const next = { ...existing, ...patch };
-	const dir = path.dirname(targetPath);
-	fs.mkdirSync(dir, { recursive: true });
-
-	const tmp = `${targetPath}.${process.pid}.tmp`;
-	try {
-		fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
-		fs.renameSync(tmp, targetPath);
-	} catch (err) {
-		try {
-			fs.unlinkSync(tmp);
-		} catch {}
-		throw err;
-	}
-	return { path: targetPath, routedToProject: projectShadows };
+	return saveLayeredConfig(configPathsFor(), patch as Record<string, unknown>);
 }
 
 // --- Model discovery + alias resolution ------------------------------------
-
-// Codex slug taxonomy (verified against `codex debug models --bundled`,
-// codex-cli 0.159.3, GPT-6 era):
-//   gpt-X.Y           -> "main" family (plain, legacy naming)
-//   gpt-X.Y-sol       -> "main" family (sol = everyday workhorse)
-//   gpt-X.Y-terra     -> "main" family (terra = balanced, GPT-5.6 era)
-//   gpt-X.Y-astra     -> "frontier" family (astra = most demanding work)
-//   gpt-X.Y-luna      -> "fast" family (luna = fast / affordable)
-//   gpt-X.Y-mini/nano -> "fast" family (pre-GPT-6 fast tiers)
-//   gpt-X.Y-pro       -> "pro" family (deep reasoning)
-//   gpt-X.Y-codex     -> "codex" family (legacy coding-tuned naming)
-// Anything else (e.g. "gpt-daybreak-blue-latest", "codex-auto-review") is
-// excluded from resolution.
-type Family = "main" | "frontier" | "fast" | "pro" | "codex" | "other";
-
-export interface CodexModelEntry {
-	full: string; // exact slug, e.g. "gpt-6.1-sol"
-	family: Family;
-	version: string | null; // "6.1" or null if unparseable
-	efforts: string[]; // supported reasoning efforts; empty when unknown
-	upgrade: string | null; // catalog migration target for deprecated models
-	hidden: boolean; // visibility "hide" — exact ids only, never alias-selected
-}
-
-/** Descending numeric version compare. "5.10" > "5.9" (lexical sort would
- *  wrongly rank "5.9" higher because '9' > '1'). */
-function compareVersionsDesc(a: string, b: string): number {
-	const pa = a.split(".").map(Number);
-	const pb = b.split(".").map(Number);
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const da = pa[i] ?? 0;
-		const db = pb[i] ?? 0;
-		if (da !== db) return db - da; // descending
-	}
-	return 0;
-}
-
-/** Map one `codex debug models --bundled` slug to a (family, version) pair.
- *  Unknown shapes (e.g. "codex-auto-review") land in "other" and are
- *  excluded from alias resolution but still valid as exact --model args.
- *
- *  NOTE: the regex captures the suffix as a single token. Compound variants
- *  like `gpt-5.6-mini-pro` are not handled — they fall to "other" and remain
- *  exact-only. If OpenAI introduces compound naming, extend the literal
- *  suffix checks below rather than the regex. */
-export function classifySlug(slug: string): { family: Family; version: string | null } {
-	const m = slug.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
-	if (!m) return { family: "other", version: null };
-	const version = m[1];
-	const suffix = m[2];
-	if (!suffix) return { family: "main", version };
-	const lower = suffix.toLowerCase();
-	// GPT-6 era tiers are suffix variants, not standalone families:
-	// sol (workhorse) and terra (balanced, 5.6-era) are "main"; astra
-	// (frontier) and luna (fast) get their own families so the mini/nano
-	// aliases keep pointing at the affordable tier after the -mini naming
-	// retired. Legacy -mini/-nano slugs land in "fast" too.
-	if (lower === "sol" || lower === "terra") return { family: "main", version };
-	if (lower === "astra") return { family: "frontier", version };
-	if (lower === "luna" || lower === "mini" || lower === "nano") return { family: "fast", version };
-	if (lower === "pro") return { family: "pro", version };
-	if (lower === "codex" || lower.startsWith("codex-")) return { family: "codex", version };
-	return { family: "other", version };
-}
-
-/** Tiebreak priority within the main family at the same version.
- *  sol (workhorse) > plain gpt-X.Y (legacy naming) > terra (balanced) >
- *  anything else. astra and luna have their own families, so they never
- *  compete here. Catalog JSON order from `codex debug models --bundled` is
- *  not part of the contract, so an explicit priority is required for
- *  deterministic flagship selection. */
-const MAIN_VARIANT_PRIORITY: Record<string, number> = {
-	sol: 0,
-	"": 1, // plain gpt-X.Y (no suffix)
-	terra: 2,
-};
-function mainVariantRank(slug: string): number {
-	const m = slug.match(/^gpt-\d+(?:\.\d+)?(?:-(.+))?$/i);
-	if (!m) return 99;
-	const suffix = (m[1] ?? "").toLowerCase();
-	return MAIN_VARIANT_PRIORITY[suffix] ?? 99;
-}
+// The slug taxonomy (classifySlug), the alias resolver (resolveModel), the
+// bundled-catalog discovery probe (discoverCodexModels), and the version
+// compare all live in pi-ask-shared (peers/codex.ts) so pi-unblock consults
+// reuse the exact same resolution contract.
 
 /** Pull the raw model catalog via `codex debug models --bundled` and parse
  *  it into structured entries. Returns [] on any failure (non-fatal): the
@@ -378,181 +249,10 @@ async function discoverCodexModels(binary: string): Promise<CodexModelEntry[]> {
 	return entries;
 }
 
-/** Follow the catalog's official migration chain (deprecated model -> upgrade
- *  target), bounded to 3 hops with a visited set so cycles terminate
- *  deterministically. Deprecated models stay listed in
- *  `codex debug models --bundled` but fail server-side; the upgrade pointer
- *  is the vendor's own replacement, so requests pointing at them migrate
- *  instead of erroring. A pointer to a model absent from the catalog is
- *  still forwarded as a string — dispatching the retired slug would
- *  guarantee a server rejection, while the target may exist server-side. */
-function followUpgrades(
-	entry: CodexModelEntry,
-	entries: CodexModelEntry[],
-): { slug: string; entry: CodexModelEntry } {
-	let current = entry;
-	let slug = entry.full;
-	const visited = new Set<string>([entry.full]);
-	for (let hops = 0; hops < 3; hops++) {
-		if (!current.upgrade) break;
-		const target = entries.find((e) => e.full === current.upgrade);
-		if (!target) {
-			slug = current.upgrade;
-			break;
-		}
-		if (visited.has(target.full)) break;
-		visited.add(target.full);
-		current = target;
-		slug = target.full;
-	}
-	return { slug, entry: current };
-}
-
-/** Resolve a friendly alias / partial name to an exact --model value. Mirrors
- *  the antigravity ext's version-sort pattern: aliases pick the highest
- *  version of the named family; pinned versions (e.g. "6 mini") select a
- *  specific version. Exact slugs verify against the catalog. Resolutions that
- *  land on a deprecated model follow its upgrade pointer. Returns null
- *  flagValue to omit --model entirely (Codex's own default), and null entry
- *  whenever the input passes through unverified. */
-export function resolveModel(
-	input: string,
-	entries: CodexModelEntry[],
-): { flagValue: string | null; entry: CodexModelEntry | null } {
-	const lower = input.toLowerCase().trim();
-	if (lower === "default" || lower === "") return { flagValue: null, entry: null };
-
-	// Apply the migration chain and build the result in one place so every
-	// branch shares the same upgrade + reporting behavior.
-	const emit = (e: CodexModelEntry) => {
-		const r = followUpgrades(e, entries);
-		return { flagValue: r.slug, entry: r.entry };
-	};
-
-	// 1. Exact slug match against the live catalog (upgrades applied).
-	const exact = entries.find((e) => e.full.toLowerCase() === lower);
-	if (exact) return emit(exact);
-
-	// 2. Parse the alias into family + optional version. Match the family
-	//    keyword as a standalone token (\b) so pinned forms like "6 mini"
-	//    / "6.1 full" resolve, but compound slugs that happen to contain
-	//    "gpt" or "pro" don't false-match. The exact-slug match above runs
-	//    first, so a full slug like "gpt-5.4-mini" never reaches this
-	//    branch as a family parse. Tier aliases: mini/nano/luna are the
-	//    fast family, astra the frontier family, sol the main family —
-	//    GPT-6 retired the -mini suffix, so the affordable tier is now a
-	//    variant name. Specific families are checked before the generic
-	//    "full" / "gpt" so a "gpt-...-mini" intent routes to fast.
-	let family: Family | null = null;
-	if (/\b(mini|nano|luna)\b/.test(lower)) family = "fast";
-	else if (/\bastra\b/.test(lower)) family = "frontier";
-	else if (/\bcodex\b/.test(lower)) family = "codex";
-	else if (/\bpro\b/.test(lower)) family = "pro";
-	else if (/\b(full|gpt|sol)\b/.test(lower)) family = "main";
-
-	// Unknown alias (e.g. a bare version like "6") or unparseable input —
-	// passthrough to codex and let it decide. Exact user-typed slugs and
-	// API-key-only model ids keep working this way even when discovery fails.
-	if (family === null) return { flagValue: input, entry: null };
-
-	const versionMatch = lower.match(/(\d+(?:\.\d+)?)/);
-	const pinnedVersion = versionMatch ? versionMatch[1] : null;
-
-	// 3. Filter by family. Hidden entries (experiments, internal reviewers)
-	//    are in the catalog for exact matching only — they never win aliases.
-	let candidates = entries.filter((e) => e.family === family && !e.hidden);
-	if (candidates.length === 0) {
-		// Family not in the catalog (e.g. no pro models this release) —
-		// passthrough rather than fabricating.
-		return { flagValue: input, entry: null };
-	}
-
-	// 4. Pin version if specified; otherwise pick the highest version
-	//    (numeric compare, not lexical — see compareVersionsDesc). Within a
-	//    version tie, break by family-specific variant priority so flagship
-	//    selection is deterministic regardless of catalog array order.
-	if (pinnedVersion) {
-		const versioned = candidates.filter((e) => e.version === pinnedVersion);
-		if (versioned.length === 0) {
-			// Pinned version not present in catalog — passthrough so the user's
-			// explicit choice reaches codex even if the version is stale.
-			return { flagValue: input, entry: null };
-		}
-		versioned.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-		return emit(versioned[0]);
-	}
-	const versions = candidates
-		.map((e) => e.version)
-		.filter((v): v is string => v !== null);
-	if (versions.length === 0) {
-		candidates.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-		return emit(candidates[0]);
-	}
-	const uniqueVersions = [...new Set(versions)].sort(compareVersionsDesc);
-	const top = uniqueVersions[0];
-	const topCandidates = candidates
-		.filter((e) => e.version === top)
-		.sort((a, b) => mainVariantRank(a.full) - mainVariantRank(b.full));
-	return emit(topCandidates[0]);
-}
-
-// --- Status rendering (the useful ideas borrowed from pi-codex) -------------
-
-/** True for commands whose output validates the work (test/lint/build/etc).
- *  Used to label progress as "verifying" rather than just "running". */
-function looksLikeVerificationCommand(command: string): boolean {
-	return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
-		command,
-	);
-}
-
-function shorten(text: string, limit = 96): string {
-	const normalized = String(text ?? "").trim().replace(/\s+/g, " ");
-	if (!normalized) return "";
-	if (normalized.length <= limit) return normalized;
-	return `${normalized.slice(0, limit - 3)}...`;
-}
-
-/** Map an item.started/item.completed event to a short human status line.
- *  Returns null for item types we don't surface (keeps status lean). */
-function describeItem(event: CodexEvent, lifecycle: "started" | "completed"): string | null {
-	const item = event.item;
-	if (!item) return null;
-	switch (item.type) {
-		case "agent_message":
-			// Only the completed agent_message is the answer; surfaced separately
-			// as the final result, not as a running status line.
-			return null;
-		case "reasoning":
-			return lifecycle === "completed" && item.text
-				? `thinking: ${shorten(item.text)}`
-				: null;
-		case "command_execution":
-			if (lifecycle === "started") {
-				const verb = looksLikeVerificationCommand(item.command ?? "")
-					? "verifying"
-					: "running";
-				return `${verb}: ${shorten(item.command ?? "")}`;
-			}
-			return `command ${item.status ?? "done"}: ${shorten(item.command ?? "")} (exit ${item.exit_code ?? "?"})`;
-		case "file_change": {
-			const paths = (item.changes ?? []).map((c) => c.path);
-			if (paths.length === 0) return null;
-			const verb = lifecycle === "started" ? "editing" : "edited";
-			return `${verb}: ${shorten(paths.join(", "), 140)}`;
-		}
-		case "mcp_tool_call":
-			return lifecycle === "started"
-				? `tool: ${item.id}`
-				: `tool ${item.status ?? "done"}`;
-		case "web_search":
-			return lifecycle === "completed" ? `searched: ${shorten(item.query ?? "")}` : null;
-		case "todo_list":
-			return lifecycle === "completed" ? "plan updated" : null;
-		default:
-			return null;
-	}
-}
+// --- Status rendering: shared peer adapter ---------------------------------
+// looksLikeVerificationCommand, shorten, and describeItem (the item.*
+// status vocabulary) live in pi-ask-shared (peers/codex.ts) alongside the
+// event grammar they interpret; the extension only consumes statusLines.
 
 // --- codex process helpers -------------------------------------------------
 
@@ -732,10 +432,8 @@ function emptyDetails(
 // --- Background-mode plumbing ----------------------------------------------
 // Shared shape for both call styles: blocking awaits it, background lets it
 // run detached and pushes the outcome through the wake sender on close.
-
-const STDERR_BUF_MAX_CHARS = 64_000;
-const STDOUT_BUF_MAX_CHARS = 1_000_000;
-const STATUS_LINES_MAX = 100;
+// Process mechanics (spawn/kill-tree/watchdog/settle-on-close) live in the
+// shared runProcess; this layer owns the codex stream contract + status.
 
 /** Spawn failure (binary vanished between the availability check and spawn). Carries whatever stderr accumulated. */
 class CodexSpawnError extends Error {
@@ -778,173 +476,62 @@ interface AskToolResult {
 }
 
 /**
- * Spawns codex exec, consumes the --json event stream, and resolves when the
- * process tree closes. Never leaves timers or listeners behind.
+ * Spawns codex exec via the shared runProcess, consumes the --json event
+ * stream through the shared peer adapter, and resolves when the process
+ * tree closes. Process mechanics (kill-tree, watchdog, abort, settle-on-
+ * close) are runProcess's; this layer owns only the codex stream contract
+ * and the throttled status partials. stdin is NOT used: codex takes the
+ * prompt as a trailing positional (see buildCodexArgs).
  */
 async function runCodexProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome> {
 	const { binary, args, workdir, timeoutMin, startAt, details, signal, onPartial, onSpawn } = opts;
-	let finalMessage = "";
-	const statusLines: string[] = [];
+	const st = emptyCodexEventState();
 
 	const statusInterval = onPartial
 		? setInterval(() => {
 				const elapsed = Math.floor((Date.now() - startAt) / 1000);
-				const tail = statusLines.slice(-3).join("\n");
+				const tail = st.statusLines.slice(-3).join("\n");
 				const text = tail ? `(running ${elapsed}s)\n${tail}` : `(running ${elapsed}s)`;
 				onPartial(text);
 			}, STATUS_INTERVAL_MS)
 		: null;
 
-	let stderrBuf = "";
 	try {
-		const outcome = await new Promise<{
-			exitCode: number;
-			aborted: boolean;
-			timedOut: boolean;
-		}>((resolveP, rejectP) => {
-			const proc = spawn(binary, args, {
+		let outcome;
+		try {
+			outcome = await runProcess({
+				binary,
+				args,
 				cwd: workdir,
-				stdio: ["ignore", "pipe", "pipe"],
-				shell: false,
-				detached: true,
-			});
-
-			// Buffer raw bytes; split on newline; parse each complete
-			// line as JSON. Incomplete trailing bytes wait for more data.
-			let stdoutBuf = "";
-			proc.stdout?.setEncoding("utf8");
-			proc.stderr?.setEncoding("utf8");
-
-			const handleLine = (line: string) => {
-				const trimmed = line.trim();
-				if (!trimmed) return;
-				let ev: CodexEvent;
-				try {
-					ev = JSON.parse(trimmed) as CodexEvent;
-				} catch {
-					return; // not JSON — ignore (shouldn't happen with --json)
-				}
-				consumeEvent(ev);
-			};
-
-			/** Apply one parsed event: capture session id, final message, usage; push a status line for item.* events. */
-			const consumeEvent = (ev: CodexEvent) => {
-				switch (ev.type) {
-					case "thread.started":
-						if (ev.thread_id) details.sessionId = ev.thread_id;
-						break;
-					case "item.started": {
-						const line = describeItem(ev, "started");
-						if (line && statusLines.length < STATUS_LINES_MAX) statusLines.push(line);
-						break;
+				timeoutMs: timeoutMin * 60_000,
+				signal,
+				onLine: (line) => {
+					const trimmed = line.trim();
+					if (!trimmed) return;
+					try {
+						consumeCodexEvent(JSON.parse(trimmed) as CodexEvent, st);
+					} catch {
+						return; // not JSON — ignore (shouldn't happen with --json)
 					}
-					case "item.completed": {
-						// Final agent message: capture as the answer.
-						if (ev.item?.type === "agent_message" && ev.item.text) {
-							finalMessage = ev.item.text;
-						}
-						const line = describeItem(ev, "completed");
-						if (line && statusLines.length < STATUS_LINES_MAX) statusLines.push(line);
-						break;
-					}
-					case "turn.completed":
-						if (ev.usage) {
-							details.usage = {
-								inputTokens: ev.usage.input_tokens ?? 0,
-								outputTokens: ev.usage.output_tokens ?? 0,
-								reasoningTokens: ev.usage.reasoning_output_tokens ?? 0,
-							};
-						}
-						break;
-					case "turn.failed":
-						// Surface the failure message; non-zero exit produces the error branch in shaping.
-						if (ev.error?.message && statusLines.length < STATUS_LINES_MAX) {
-							statusLines.push(`failed: ${shorten(ev.error.message, 200)}`);
-						}
-						break;
-					case "error":
-						// Transient reconnect notices are non-fatal; progress, not failure.
-						if (ev.message && statusLines.length < STATUS_LINES_MAX) statusLines.push(shorten(ev.message, 200));
-						break;
-				}
-			};
-
-			proc.stdout?.on("data", (d: string) => {
-				stdoutBuf += d;
-				// Safety valve for pathological no-newline output; keeps the tail.
-				if (stdoutBuf.length > STDOUT_BUF_MAX_CHARS) stdoutBuf = stdoutBuf.slice(-100_000);
-				let nl: number;
-				while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
-					handleLine(stdoutBuf.slice(0, nl));
-					stdoutBuf = stdoutBuf.slice(nl + 1);
-				}
+					// Mirror the accumulator onto details so partial progress
+					// keeps showing live sessionId/usage. Latest thread_id wins
+					// (codex echoes the resumed id on continuation runs).
+					if (st.sessionId) details.sessionId = st.sessionId;
+					details.usage = st.usage;
+				},
+				onSpawn,
 			});
-			proc.stderr?.on("data", (d: string) => {
-				if (stderrBuf.length < STDERR_BUF_MAX_CHARS) stderrBuf += d;
-			});
-
-			let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-			let watchdog: ReturnType<typeof setTimeout> | undefined;
-			let settled = false;
-			let timedOut = false;
-
-			const killTree = () => {
-				try {
-					if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-				} catch {}
-				if (!sigkillTimer) {
-					sigkillTimer = setTimeout(() => {
-						try {
-							if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-						} catch {}
-					}, GRACE_AFTER_TIMEOUT_MS);
-				}
-			};
-
-			// Hand the kill switch to the background registry before any terminal event can fire.
-			onSpawn?.(killTree);
-
-			const cleanup = () => {
-				if (watchdog) clearTimeout(watchdog);
-				if (sigkillTimer) clearTimeout(sigkillTimer);
-				if (signal) signal.removeEventListener("abort", onAbort);
-			};
-
-			const onAbort = () => killTree();
-
-			watchdog = setTimeout(() => {
-				timedOut = true;
-				killTree();
-			}, timeoutMin * 60_000);
-
-			if (signal) {
-				if (signal.aborted) killTree();
-				else signal.addEventListener("abort", onAbort, { once: true });
-			}
-
-			const finish = (code: number | null) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				// Flush any trailing line without a newline.
-				if (stdoutBuf.trim()) handleLine(stdoutBuf);
-				resolveP({
-					exitCode: code ?? 0,
-					aborted: !!signal?.aborted,
-					timedOut,
-				});
-			};
-
-			proc.on("error", (err) => {
-				cleanup();
-				rejectP(new CodexSpawnError(err.message, cleanStderr(stderrBuf)));
-			});
-			proc.on("close", finish);
-		});
+		} catch (err) {
+			// Preserve the extension's spawn-error contract (cleaned stderr).
+			if (err instanceof RunSpawnError) throw new CodexSpawnError(err.message, cleanCodexStderr(err.stderr));
+			throw err;
+		}
 		return {
-			...outcome,
-			answerText: finalMessage.trim(),
-			stderrClean: cleanStderr(stderrBuf),
+			exitCode: outcome.exitCode,
+			aborted: outcome.aborted,
+			timedOut: outcome.timedOut,
+			answerText: st.finalMessage.trim(),
+			stderrClean: cleanCodexStderr(outcome.stderr),
 		};
 	} finally {
 		if (statusInterval) clearInterval(statusInterval);
@@ -1031,8 +618,8 @@ export default async function (pi: ExtensionAPI) {
 	// --- /codex: view / change defaults -----------------------------------
 
 	const MODEL_OPTIONS = ["default", "mini", "astra", "full"];
-	const REASONING_OPTIONS: ReasoningEffort[] = REASONING_VALUES;
-	const SANDBOX_OPTIONS: SandboxMode[] = SANDBOX_VALUES;
+	const REASONING_OPTIONS: ReasoningEffort[] = [...REASONING_VALUES];
+	const SANDBOX_OPTIONS: SandboxMode[] = [...SANDBOX_VALUES];
 
 	pi.registerCommand("codex", {
 		description: "AskCodex config: show status, or open the model/effort/sandbox picker. Usage: /codex",
@@ -1220,7 +807,7 @@ export default async function (pi: ExtensionAPI) {
 				? reasoningArg
 				: cfg.defaultReasoning;
 			const sandbox: SandboxMode = isSandboxMode(args.sandbox) ? args.sandbox : cfg.defaultSandbox;
-			const isContinue = typeof args.sessionId === "string" && SESSION_ID_RE.test(args.sessionId);
+			const isContinue = typeof args.sessionId === "string" && CODEX_SESSION_ID_RE.test(args.sessionId);
 
 			const tags: string[] = [`model=${model}`, `reasoning=${reasoning}`, `sandbox=${sandbox}`];
 			if (isContinue) tags.push("continue");
@@ -1418,41 +1005,22 @@ export default async function (pi: ExtensionAPI) {
 			const isContinuation =
 				typeof rawSessionId === "string" &&
 				rawSessionId.length > 0 &&
-				SESSION_ID_RE.test(rawSessionId);
+				CODEX_SESSION_ID_RE.test(rawSessionId);
 
-			// Build argv. `codex exec [--json] [opts] "<prompt>"` for fresh,
-			// `codex exec resume [opts] <sessionId> "<prompt>"` for continued.
-			// stdin is closed (<ignore>) so codex never blocks waiting for a tty.
-			const args: string[] = ["exec"];
-			if (isContinuation) args.push("resume");
-			args.push("--json", "--skip-git-repo-check");
-			const extra = extraArgs();
-			if (extra.length) args.push(...extra);
-			if (resolved.flagValue) args.push("-m", resolved.flagValue);
-			// Reasoning effort is passed as a codex `-c key=value` config override.
-			// The literal double-quotes are TOML string delimiters (codex parses
-			// `-c` values as TOML), NOT shell quoting — shell:false sends them
-			// through verbatim. `reasoning` is enum-constrained above, so the
-			// quotes are required for codex to parse it as a string, not safety.
-			args.push("-c", `model_reasoning_effort="${reasoning}"`);
-			if (!isContinuation) {
-				// resume does not accept -C or -s; the session keeps its original
-				// cwd and sandbox. Only apply them on fresh runs.
-				args.push("-C", cwd, "-s", sandbox);
-			}
-			// NOTE: -m and -c ARE accepted by `codex exec resume` (verified,
-			// codex-cli 0.142.5) and are intentionally sent on continuation runs
-			// too — otherwise resume defaults to a different model than the
-			// session was recorded with, producing a "session recorded with X
-			// but resuming with Y" warning. Keeping -m/-c pins the resumed
-			// session to the model the caller requested.
-			if (isContinuation) args.push(rawSessionId as string);
-			// `--` ends option parsing so a prompt beginning with a dash (e.g. a
-			// task literally starting "--help" or "-v") is treated as the prompt
-			// positional, not a codex flag. Verified accepted in both fresh and
-			// resume modes (codex-cli 0.142.5).
-			if (contextFile) args.push("--add-dir", askContextDir());
-			args.push("--", effectivePrompt);
+			// Build argv via the shared peer adapter. `codex exec [--json] [opts]
+			// "<prompt>"` for fresh, `codex exec resume [opts] <sessionId>
+			// "<prompt>"` for continued. The prompt travels as the trailing
+			// positional (codex's documented interface); stdin is ignored.
+			const args = buildCodexArgs({
+				model: resolved.flagValue,
+				reasoning,
+				sandbox,
+				cwd,
+				addDir: contextFile ? askContextDir() : null,
+				sessionId: isContinuation ? (rawSessionId as string) : undefined,
+				extraArgs: extraArgs(),
+				prompt: effectivePrompt,
+			});
 
 			const details: CodexDetails = {
 				model: requestedModel,
@@ -1681,19 +1249,4 @@ export default async function (pi: ExtensionAPI) {
 			details: { ...o.details },
 		};
 	};
-}
-
-/** Drop codex stderr lines that aren't real errors: the stdin-prompt notice
- *  and the PATH-update warning. Modeled on pi-codex's cleanCodexStderr. */
-function cleanStderr(buf: string): string {
-	return buf
-		.split(/\r?\n/)
-		.map((l) => l.trimEnd())
-		.filter(
-			(l) =>
-				l &&
-				!l.startsWith("Reading additional input from stdin") &&
-				!l.startsWith("WARNING: proceeding, even though we could not update PATH:"),
-		)
-		.join("\n");
 }

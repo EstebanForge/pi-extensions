@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Internal dedup onto `pi-ask-shared` (behavior-preserving).** Config load/save composes the shared layered-config primitives (same homedir-based global path, same project-shadow routing, same atomic write); the spawn lifecycle (detached process group, SIGTERM→SIGKILL grace, watchdog, abort, settle-on-close) runs through the shared `runProcess`; the slug taxonomy, alias resolver, bundled-catalog probe, exec argv builder, exec --json event grammar, status vocabulary, and stderr noise filter moved to the shared peer adapter (`peers/codex.ts`). No user-facing behavior change: the prompt still travels as the trailing positional after `--`, resume still drops -C/-s while keeping -m/-c, and the full test suite passes unchanged.
+
 ## [1.0.8] - 2026-10-07
 
 ### Added
