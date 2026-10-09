@@ -195,7 +195,7 @@ function followUpgrades(
  *  catalog. Resolutions that land on a deprecated model follow its upgrade
  *  pointer. Returns null flagValue to omit --model entirely (Codex's own
  *  default), and null entry whenever the input passes through unverified. */
-export function resolveModel(
+export function resolveCodexModel(
 	input: string,
 	entries: CodexModelEntry[],
 ): { flagValue: string | null; entry: CodexModelEntry | null } {

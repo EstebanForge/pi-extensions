@@ -61,7 +61,7 @@ import {
 	emptyCodexEventState,
 	loadLayeredRaw,
 	REASONING_VALUES,
-	resolveModel,
+	resolveCodexModel,
 	RunSpawnError,
 	runProcess,
 	saveLayeredConfig,
@@ -633,7 +633,7 @@ export default async function (pi: ExtensionAPI) {
 						`AskCodex config`,
 						`  codex available:  ${available ? "yes" : "NO (check PATH / CODEX_BIN)"}`,
 						`  defaultModel:     ${config.defaultModel}`,
-						`  resolved:         ${resolveModel(config.defaultModel, discovered).flagValue ?? "(codex default)"}`,
+						`  resolved:         ${resolveCodexModel(config.defaultModel, discovered).flagValue ?? "(codex default)"}`,
 						`  catalog:          ${discovered.length} model(s) discovered`,
 						`  defaultReasoning: ${config.defaultReasoning}`,
 						`  defaultSandbox:   ${config.defaultSandbox}`,
@@ -910,7 +910,7 @@ export default async function (pi: ExtensionAPI) {
 					details: { ...emptyDetails(requestedModel, null), exitCode: 1 },
 				};
 			}
-			const resolved = resolveModel(requestedModel, discovered);
+			const resolved = resolveCodexModel(requestedModel, discovered);
 			if (
 				typeof params.thinking === "string" &&
 				typeof params.reasoningEffort === "string" &&

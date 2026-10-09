@@ -58,6 +58,16 @@ describe("runProcess — raw mode", () => {
 		const out = await runProcess({ ...peer("raw"), timeoutMs: 10_000 });
 		expect(out.stdoutRaw).toBe("raw output continues");
 	});
+
+	it("streams chunks live via onChunk before close", async () => {
+		// The raw-peer status-tail contract: chunks arrive while the child
+		// is still running, not only at close.
+		const chunks: string[] = [];
+		const out = await runProcess({ ...peer("raw"), timeoutMs: 10_000, onChunk: (c) => chunks.push(c) });
+		expect(chunks.length).toBeGreaterThan(0);
+		expect(chunks.join("")).toBe("raw output continues");
+		expect(out.stdoutRaw).toBe("raw output continues");
+	});
 });
 
 describe("runProcess — stdin transport", () => {

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Internal dedup onto `pi-ask-shared` (behavior-preserving).** Config load/save composes the shared layered-config primitives (same homedir-based global path, same project-shadow routing, same atomic write); the spawn lifecycle (detached process group, SIGTERM→SIGKILL grace, watchdog, abort, settle-on-close) runs through the shared `runProcess`; the `agy models` line grammar, tiered alias resolution, plan-mode guard prompts, argv builder, and the SQLite conversation-id discovery technique moved to the shared peer adapter (`peers/antigravity.ts`). No user-facing behavior change: plan runs still never receive the skip-permissions flag (env-injected copies still stripped), conversation binding still disambiguates concurrent runs via the /proc FD scan, and the full test suite passes unchanged.
+
 ## [1.2.11] - 2026-10-07
 
 ### Added

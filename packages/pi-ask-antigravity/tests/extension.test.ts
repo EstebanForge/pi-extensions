@@ -3,13 +3,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it, test } from "vitest";
-import factory, {
+import {
 	type ModelEntry,
 	buildFinalPrompt,
 	filterHiddenModels,
 	mergeCatalog,
 	parseModelLine,
-	resolveModel,
+	resolveAgyModel,
+} from "@estebanforge/pi-ask-shared";
+import factory, {
 	reviewerAgentMd,
 	stageReviewerAgent,
 } from "../extensions/index.js";
@@ -52,11 +54,11 @@ test("resolveModel: bare base ids resolve to the nearest tier variant", () => {
 	// The provider advertises the bare id (antigravity/claude-sonnet-5-5),
 	// but a bare base is invalid upstream without --effort: the resolver
 	// must pick a variant, not pass the base through raw.
-	assert.deepEqual(resolveModel("claude-sonnet-5-5", entries, DEFAULT_THINKING), {
+	assert.deepEqual(resolveAgyModel("claude-sonnet-5-5", entries, DEFAULT_THINKING), {
 		model: "claude-sonnet-5-5",
 		effort: "medium",
 	});
-	assert.deepEqual(resolveModel("claude-opus-5-5", entries, DEFAULT_THINKING, "high"), {
+	assert.deepEqual(resolveAgyModel("claude-opus-5-5", entries, DEFAULT_THINKING, "high"), {
 		model: "claude-opus-5-5",
 		effort: "high",
 	});
@@ -114,23 +116,23 @@ describe("parseModelLine + resolveModel (two-column agy output)", () => {
 	});
 
 	test("resolveModel: friendly alias splits Gemini base + default effort", () => {
-		assert.deepEqual(resolveModel("flash", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("flash", entries, DEFAULT_THINKING), {
 			model: "gemini-3.8-flash",
 			effort: "medium",
 		});
 		// Pro has no medium variant; its family default is high.
-		assert.deepEqual(resolveModel("pro", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("pro", entries, DEFAULT_THINKING), {
 			model: "gemini-3.1-pro",
 			effort: "high",
 		});
 	});
 
 	test("resolveModel: explicit tier and pinned version", () => {
-		assert.deepEqual(resolveModel("flash high", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("flash high", entries, DEFAULT_THINKING), {
 			model: "gemini-3.8-flash",
 			effort: "high",
 		});
-		assert.deepEqual(resolveModel("3.6 flash low", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("3.6 flash low", entries, DEFAULT_THINKING), {
 			model: "gemini-3.6-flash",
 			effort: "low",
 		});
@@ -139,50 +141,50 @@ describe("parseModelLine + resolveModel (two-column agy output)", () => {
 	test("resolveModel: short aliases pick the tiered Claude entry and split base+effort", () => {
 		// Claude ships low/medium/high like Gemini now: the alias resolves to
 		// the base slug and the tier rides --effort (agy rejects a bare base).
-		assert.deepEqual(resolveModel("sonnet", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("sonnet", entries, DEFAULT_THINKING), {
 			model: "claude-sonnet-5-5",
 			effort: "medium",
 		});
-		assert.deepEqual(resolveModel("opus", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("opus", entries, DEFAULT_THINKING), {
 			model: "claude-opus-5-5",
 			effort: "medium",
 		});
 		// gpt-oss is filtered from the catalog and its alias is gone: resolution
 		// returns null so the caller passes the raw string and agy rejects it
 		// loudly instead of the tool offering a dying model.
-		assert.equal(resolveModel("gpt-oss", entries, DEFAULT_THINKING), null);
-		assert.equal(resolveModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), null);
+		assert.equal(resolveAgyModel("gpt-oss", entries, DEFAULT_THINKING), null);
+		assert.equal(resolveAgyModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), null);
 	});
 
 	test("resolveModel: an exact tiered slug splits to base + effort (not passed whole)", () => {
-		assert.deepEqual(resolveModel("gemini-3.6-flash-high", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("gemini-3.6-flash-high", entries, DEFAULT_THINKING), {
 			model: "gemini-3.6-flash",
 			effort: "high",
 		});
-		assert.deepEqual(resolveModel("claude-sonnet-5-5-low", entries, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("claude-sonnet-5-5-low", entries, DEFAULT_THINKING), {
 			model: "claude-sonnet-5-5",
 			effort: "low",
 		});
 		// An exact slug from a filtered family no longer resolves either.
-		assert.equal(resolveModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), null);
+		assert.equal(resolveAgyModel("gpt-oss-120b-medium", entries, DEFAULT_THINKING), null);
 		// Unknown input stays null: the caller passes it raw to agy.
-		assert.equal(resolveModel("futuremodel-9-ultra", entries, DEFAULT_THINKING), null);
+		assert.equal(resolveAgyModel("futuremodel-9-ultra", entries, DEFAULT_THINKING), null);
 	});
 
 	test("resolveModel: explicit preferred tier beats alias tier, default, and clamps to the family", () => {
 	// thinking/effort param wins over the alias's own tier and the default.
-	assert.deepEqual(resolveModel("flash high", entries, DEFAULT_THINKING, "low"), {
+	assert.deepEqual(resolveAgyModel("flash high", entries, DEFAULT_THINKING, "low"), {
 		model: "gemini-3.8-flash",
 		effort: "low",
 	});
 	// Pro has no medium variant; the explicit tier clamps to the nearest
 	// listed tier (distance tie low/high -> higher rank wins).
-	assert.deepEqual(resolveModel("pro", entries, DEFAULT_THINKING, "medium"), {
+	assert.deepEqual(resolveAgyModel("pro", entries, DEFAULT_THINKING, "medium"), {
 		model: "gemini-3.1-pro",
 		effort: "high",
 	});
 	// The explicit tier beats the Claude default and clamps to listed tiers.
-	assert.deepEqual(resolveModel("sonnet", entries, DEFAULT_THINKING, "high"), {
+	assert.deepEqual(resolveAgyModel("sonnet", entries, DEFAULT_THINKING, "high"), {
 		model: "claude-sonnet-5-5",
 		effort: "high",
 	});
@@ -200,12 +202,12 @@ test("resolveModel: short aliases still resolve when agy omits them (static over
 				.map(parseModelLine)
 				.filter((e): e is ModelEntry => e !== null),
 		);
-		assert.deepEqual(resolveModel("sonnet", geminiOnly, DEFAULT_THINKING), {
+		assert.deepEqual(resolveAgyModel("sonnet", geminiOnly, DEFAULT_THINKING), {
 			model: "claude-sonnet-5-5",
 			effort: "medium",
 		});
 		// The dropped family is not resurrected by any overlay.
-		assert.equal(resolveModel("gpt-oss", geminiOnly, DEFAULT_THINKING), null);
+		assert.equal(resolveAgyModel("gpt-oss", geminiOnly, DEFAULT_THINKING), null);
 	});
 });
 

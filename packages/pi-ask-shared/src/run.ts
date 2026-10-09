@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 
 /**
  * Common peer-process lifecycle for the ask-* extensions and pi-unblock,
@@ -34,9 +34,15 @@ export interface RunProcessOptions {
 	 *  stdout is not retained. When absent, stdout accumulates into
 	 *  `stdoutRaw` (plain-text peers). */
 	onLine?: (line: string) => void;
-	/** Hands over the kill switch before any terminal event can fire, so
-	 *  the background registry can stop the run on session shutdown. */
-	onSpawn?: (killTree: () => void) => void;
+	/** Raw stdout chunk stream, delivered as bytes arrive (both modes).
+	 *  Raw-mode peers use this for live status tails without waiting for
+	 *  close; line-mode peers can ignore it. */
+	onChunk?: (chunk: string) => void;
+	/** Hands over the kill switch plus the live child handle before any
+	 *  terminal event can fire, so the background registry can stop the run
+	 *  on session shutdown and raw peers can poll process state (pid,
+	 *  exitCode) while the tree is alive. */
+	onSpawn?: (killTree: () => void, proc: ChildProcess) => void;
 	/** Max stderr chars retained; further chunks are dropped. */
 	stderrCapChars?: number;
 	lineBufMaxChars?: number;
@@ -70,6 +76,7 @@ export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> 
 		timeoutMs,
 		signal,
 		onLine,
+		onChunk,
 		onSpawn,
 		stderrCapChars = DEFAULT_STDERR_CAP_CHARS,
 		lineBufMaxChars = DEFAULT_LINE_BUF_MAX_CHARS,
@@ -101,6 +108,7 @@ export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> 
 
 		let lineBuf = "";
 		proc.stdout?.on("data", (d: string) => {
+			onChunk?.(d);
 			if (onLine) {
 				lineBuf += d;
 				if (lineBuf.length > lineBufMaxChars) lineBuf = lineBuf.slice(-100_000);
@@ -138,9 +146,9 @@ export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> 
 			}
 		};
 
-		// Hand the kill switch to the background registry before any
-		// terminal event can fire.
-		onSpawn?.(killTree);
+		// Hand the kill switch (and the live child handle) to the background
+		// registry before any terminal event can fire.
+		onSpawn?.(killTree, proc);
 
 		const cleanup = () => {
 			if (watchdog) clearTimeout(watchdog);

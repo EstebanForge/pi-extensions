@@ -9,6 +9,7 @@ export {
 	type SaveResult,
 } from "./config.js";
 export { compareVersionsDesc } from "./versions.js";
+export * from "./peers/antigravity.js";
 export * from "./peers/claude.js";
 export * from "./peers/codex.js";
 export {

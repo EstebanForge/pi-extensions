@@ -5,7 +5,7 @@ import {
 	cleanCodexStderr,
 	consumeCodexEvent,
 	emptyCodexEventState,
-	resolveModel,
+	resolveCodexModel,
 	type CodexEvent,
 	type CodexModelEntry,
 } from "../src/peers/codex.js";
@@ -53,62 +53,62 @@ describe("classifySlug", () => {
 
 describe("resolveModel", () => {
 	it("returns null flagValue for default/empty (omit --model)", () => {
-		expect(resolveModel("default", [])).toEqual({ flagValue: null, entry: null });
-		expect(resolveModel("", [])).toEqual({ flagValue: null, entry: null });
+		expect(resolveCodexModel("default", [])).toEqual({ flagValue: null, entry: null });
+		expect(resolveCodexModel("", [])).toEqual({ flagValue: null, entry: null });
 	});
 
 	it("picks the highest version of the family, numeric not lexical (5.10 > 5.9)", () => {
 		const catalog = [entry("gpt-5.9-sol"), entry("gpt-5.10-sol")];
-		const r = resolveModel("full", catalog);
+		const r = resolveCodexModel("full", catalog);
 		expect(r.flagValue).toBe("gpt-5.10-sol");
 	});
 
 	it("breaks version ties by main variant priority: sol > plain > terra", () => {
 		const catalog = [entry("gpt-6.1-terra"), entry("gpt-6.1"), entry("gpt-6.1-sol")];
-		expect(resolveModel("full", catalog).flagValue).toBe("gpt-6.1-sol");
-		expect(resolveModel("full", [entry("gpt-6.1-terra"), entry("gpt-6.1")]).flagValue).toBe("gpt-6.1");
+		expect(resolveCodexModel("full", catalog).flagValue).toBe("gpt-6.1-sol");
+		expect(resolveCodexModel("full", [entry("gpt-6.1-terra"), entry("gpt-6.1")]).flagValue).toBe("gpt-6.1");
 	});
 
 	it("pins a version when the alias carries one", () => {
 		const catalog = [entry("gpt-6.1-sol"), entry("gpt-6-sol")];
-		expect(resolveModel("6 mini", [entry("gpt-6-luna"), entry("gpt-6.1-luna")]).flagValue).toBe("gpt-6-luna");
-		expect(resolveModel("6.1 full", catalog).flagValue).toBe("gpt-6.1-sol");
+		expect(resolveCodexModel("6 mini", [entry("gpt-6-luna"), entry("gpt-6.1-luna")]).flagValue).toBe("gpt-6-luna");
+		expect(resolveCodexModel("6.1 full", catalog).flagValue).toBe("gpt-6.1-sol");
 	});
 
 	it("routes tier aliases: mini/nano/luna fast, astra frontier, pro pro, codex codex", () => {
-		expect(resolveModel("mini", [entry("gpt-6-luna")]).flagValue).toBe("gpt-6-luna");
-		expect(resolveModel("astra", [entry("gpt-6.1-astra")]).flagValue).toBe("gpt-6.1-astra");
-		expect(resolveModel("pro", [entry("gpt-6-pro")]).flagValue).toBe("gpt-6-pro");
-		expect(resolveModel("codex", [entry("gpt-6-codex")]).flagValue).toBe("gpt-6-codex");
+		expect(resolveCodexModel("mini", [entry("gpt-6-luna")]).flagValue).toBe("gpt-6-luna");
+		expect(resolveCodexModel("astra", [entry("gpt-6.1-astra")]).flagValue).toBe("gpt-6.1-astra");
+		expect(resolveCodexModel("pro", [entry("gpt-6-pro")]).flagValue).toBe("gpt-6-pro");
+		expect(resolveCodexModel("codex", [entry("gpt-6-codex")]).flagValue).toBe("gpt-6-codex");
 	});
 
 	it("excludes hidden entries from alias pools but keeps exact matches", () => {
 		const catalog = [entry("gpt-6.1-sol", { hidden: true }), entry("gpt-6-sol")];
-		expect(resolveModel("full", catalog).flagValue).toBe("gpt-6-sol");
-		expect(resolveModel("gpt-6.1-sol", catalog).flagValue).toBe("gpt-6.1-sol");
+		expect(resolveCodexModel("full", catalog).flagValue).toBe("gpt-6-sol");
+		expect(resolveCodexModel("gpt-6.1-sol", catalog).flagValue).toBe("gpt-6.1-sol");
 	});
 
 	it("passes through unknown aliases and empty families verbatim", () => {
 		// A gpt-prefixed non-slug parses as a main-family alias (contains the
 		// standalone "gpt" token) and picks the catalog's highest main model;
 		// only an EMPTY main family falls through verbatim.
-		expect(resolveModel("gpt-daybreak-blue-latest", [entry("gpt-6-sol")]).flagValue).toBe("gpt-6-sol");
-		expect(resolveModel("gpt-daybreak-blue-latest", []).flagValue).toBe("gpt-daybreak-blue-latest");
-		expect(resolveModel("pro", [entry("gpt-6-sol")]).flagValue).toBe("pro");
+		expect(resolveCodexModel("gpt-daybreak-blue-latest", [entry("gpt-6-sol")]).flagValue).toBe("gpt-6-sol");
+		expect(resolveCodexModel("gpt-daybreak-blue-latest", []).flagValue).toBe("gpt-daybreak-blue-latest");
+		expect(resolveCodexModel("pro", [entry("gpt-6-sol")]).flagValue).toBe("pro");
 		// Pinned version absent from catalog: passthrough, never fabricated.
-		expect(resolveModel("9 full", [entry("gpt-6-sol")]).flagValue).toBe("9 full");
+		expect(resolveCodexModel("9 full", [entry("gpt-6-sol")]).flagValue).toBe("9 full");
 	});
 
 	it("follows the upgrade chain for deprecated models, bounded and cycle-safe", () => {
 		const deprecated = entry("gpt-5.4-mini", { upgrade: "gpt-6-luna" });
-		expect(resolveModel("gpt-5.4-mini", [deprecated, entry("gpt-6-luna")]).flagValue).toBe("gpt-6-luna");
+		expect(resolveCodexModel("gpt-5.4-mini", [deprecated, entry("gpt-6-luna")]).flagValue).toBe("gpt-6-luna");
 		// Upgrade target absent from catalog: forward the pointer anyway —
 		// dispatching the retired slug guarantees a server rejection.
-		expect(resolveModel("gpt-5.4-mini", [deprecated]).flagValue).toBe("gpt-6-luna");
+		expect(resolveCodexModel("gpt-5.4-mini", [deprecated]).flagValue).toBe("gpt-6-luna");
 		// Cycle: a->b->a terminates deterministically.
 		const a = entry("gpt-5.4-mini", { upgrade: "gpt-5.5-mini" });
 		const b = entry("gpt-5.5-mini", { upgrade: "gpt-5.4-mini" });
-		expect(resolveModel("gpt-5.4-mini", [a, b]).flagValue).toBe("gpt-5.5-mini");
+		expect(resolveCodexModel("gpt-5.4-mini", [a, b]).flagValue).toBe("gpt-5.5-mini");
 	});
 });
 
