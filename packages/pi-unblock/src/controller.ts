@@ -1,7 +1,7 @@
 // Controller: the event-driven unblock logic between pi's extension events
 // and the consult core. Ports are injected (notify, inject, runConsult,
-// clock) so tests drive it with stub peers; extensions/index.ts adapts the
-// real pi API onto it.
+// clock, confirm) so tests drive it with stub peers; extensions/index.ts
+// adapts the real pi API onto it.
 //
 // Contract notes (from the hardened v1 design):
 // - Failure-loop consults are async and injected at the next turn; a consult
@@ -9,11 +9,16 @@
 //   notify instead of transcript injection.
 // - Failed consults consume the streak reset and the cooldown anchor (the
 //   gate must not retry-storm a broken reviewer CLI).
+// - A trigger suppressed by cooldown/budget resets the streak, so the loop
+//   can re-trigger once the gate opens instead of wedging past threshold.
 // - Publish-boundary consults are synchronous and blocking behind a user
-//   confirm; they are human-ordered, so they do not spend the auto budget.
+//   confirm. The verdict BLOCKS the call and travels as the block reason, so
+//   the model reads the review BEFORE the push runs; re-issuing the same
+//   command consumes a one-shot bypass (no second consult, no re-confirm).
 // - Auto consults never fire without the autoUnblockOnFailure flag; the
 //   /unblock command path (manualConsult) bypasses the budget but still
 //   respects the in-flight mutex.
+import type { ConsultOptions } from "@estebanforge/pi-ask-shared";
 import { runConsult as defaultRunConsult, type ConsultPeer } from "@estebanforge/pi-ask-shared";
 import { buildConsultPrompt, buildNotice, type FailureLine, type TranscriptTurn } from "./assemble.js";
 import {
@@ -22,6 +27,7 @@ import {
 	noteConsultStarted,
 	noteToolResult,
 	newUnblockState,
+	resetStreak,
 	type TriggerDecision,
 	type UnblockState,
 } from "./policy.js";
@@ -54,6 +60,11 @@ export interface ControllerPorts {
 	confirm?(title: string, detail: string): Promise<boolean>;
 }
 
+export interface PublishVerdict {
+	block: true;
+	reason: string;
+}
+
 export class UnblockController {
 	private readonly ports: ControllerPorts;
 	settings: UnblockSettings;
@@ -61,6 +72,8 @@ export class UnblockController {
 	private turn = 0;
 	/** Turn the in-flight consult started at; staleness stamp. */
 	private consultTurn = -1;
+	/** One-shot publish bypass: exact command string already reviewed. */
+	private publishBypass: string | null = null;
 	private readonly ring: ObservationRecord[] = [];
 
 	constructor(settings: UnblockSettings, ports: ControllerPorts) {
@@ -73,8 +86,15 @@ export class UnblockController {
 	}
 
 	/** Record one tool result. Fires an async failure-loop consult when the
-	 *  policy triggers; never blocks the caller. */
-	onToolResult(toolName: string, ok: boolean, command: string | undefined, output: string): void {
+	 *  policy triggers; never blocks the caller. `signal` aborts the detached
+	 *  consult when the turn ends (an aborted consult was stale anyway). */
+	onToolResult(
+		toolName: string,
+		ok: boolean,
+		command: string | undefined,
+		output: string,
+		signal?: AbortSignal,
+	): void {
 		const isShell = SHELL_TOOLS.has(toolName);
 		const tool = isShell ? "exec" : toolName;
 		const obs: ObservationRecord = {
@@ -108,21 +128,25 @@ export class UnblockController {
 			cooldownSec: this.settings.cooldownSec,
 			maxAutoConsults: this.settings.maxAutoConsultsPerSession,
 		});
-		if (!started) {
-			this.ports.notify("unblock: consult gate blocked (cooldown/budget)");
+		if (!started.started) {
+			// In-flight: the running consult's settle consumes the streak.
+			// Cooldown/budget: reset the streak so the loop can re-trigger once
+			// the gate opens instead of wedging past the threshold forever.
+			if (started.blockedBy !== "in-flight") resetStreak(this.state);
+			this.ports.notify(`unblock: consult gate blocked (${started.blockedBy})`);
 			return;
 		}
 		this.consultTurn = this.turn;
-		void this.runFailureConsult(decision.key, decision.count);
+		void this.runFailureConsult(decision.key, decision.count, signal);
 	}
 
-	/** Async loop consult: settles the policy state either way, injects when
-	 *  fresh, notifies when stale or failed. */
-	private async runFailureConsult(key: string, count: number): Promise<void> {
-		const settled = this.consult(key, count);
+	/** Async loop consult: settles the policy state either way (key-scoped,
+	 *  so the settle cannot wipe a concurrent loop's streak), injects when
+	 *  fresh, notifies when stale, aborted, or failed. */
+	private async runFailureConsult(key: string, count: number, signal?: AbortSignal): Promise<void> {
 		try {
-			const result = await settled;
-			noteConsultSettled(this.state);
+			const result = await this.consult(key, count, undefined, signal);
+			noteConsultSettled(this.state, key);
 			const stale = this.turn > this.consultTurn;
 			if (stale) {
 				this.ports.notify(`unblock: reviewer answered after the turn moved on\n${result.answer}`);
@@ -132,18 +156,24 @@ export class UnblockController {
 		} catch (err) {
 			// Failed consults still consume the streak reset + cooldown (both
 			// anchored at start); the executor transcript never sees the error.
-			noteConsultSettled(this.state);
+			noteConsultSettled(this.state, key);
 			const reason = err instanceof Error ? err.message : String(err);
 			this.ports.notify(`unblock: consult failed — ${reason}`);
 		}
 	}
 
-	/** Publish boundary: synchronous, blocking, behind a confirm. Returns a
-	 *  block verdict when the user declines (the shell command never runs).
-	 *  Headless UIs (no confirm support) degrade to skip-gate-and-log. */
-	async onBeforePublish(command: string): Promise<{ block: true; reason: string } | undefined> {
+	/** Publish boundary: synchronous, blocking, behind a confirm. On approval
+	 *  the consult verdict BLOCKS the call as the block reason (the model
+	 *  reads the review before any push runs); re-issuing the identical
+	 *  command consumes a one-shot bypass and runs. Returns a block verdict
+	 *  when the user declines, when the review lands, or never (run). */
+	async onBeforePublish(command: string, signal?: AbortSignal): Promise<PublishVerdict | undefined> {
 		if (!this.settings.confirmOnPush) return undefined;
 		if (!isPublishCommand(command)) return undefined;
+		if (this.publishBypass === command) {
+			this.publishBypass = null;
+			return undefined;
+		}
 		let approved: boolean;
 		try {
 			if (!this.ports.confirm) throw new Error("no confirm UI");
@@ -157,46 +187,62 @@ export class UnblockController {
 		}
 		// Human-ordered consult: synchronous, no auto-budget spend, but the
 		// in-flight mutex still applies.
-		if (!noteConsultStarted(this.state, this.ports.nowMs(), { cooldownSec: 0, maxAutoConsults: Infinity })) {
+		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
+			cooldownSec: 0,
+			maxAutoConsults: Number.POSITIVE_INFINITY,
+		});
+		if (!started.started) {
 			this.ports.notify("unblock: a consult is already in flight; publishing without review");
 			return undefined;
 		}
 		try {
-			const result = await this.consult(`publish:${commandRootOf(command)}`, 1);
-			this.ports.inject(buildNotice(result.answer));
+			const result = await this.consult(`publish:${commandRootOf(command)}`, 1, undefined, signal);
+			// Verdict first, command second: block with the review as the
+			// reason, and arm a one-shot bypass so the model's re-issue runs
+			// without a second consult or confirm.
+			this.publishBypass = command;
+			return {
+				block: true,
+				reason: `pre-publish review — re-run the command to proceed:\n${result.answer}`,
+			};
 		} catch (err) {
+			// A broken reviewer must not wedge publishing: log and let it run.
 			const reason = err instanceof Error ? err.message : String(err);
 			this.ports.notify(`unblock: pre-publish consult failed — ${reason}`);
+			return undefined;
 		} finally {
-			noteConsultSettled(this.state);
+			noteConsultSettled(this.state, `publish:${commandRootOf(command)}`);
 		}
-		return undefined;
 	}
 
 	/** Manual /unblock: explicit human consult, bypasses the auto budget. */
-	async manualConsult(focus?: string): Promise<void> {
-		if (
-			!noteConsultStarted(this.state, this.ports.nowMs(), {
-				cooldownSec: 0,
-				maxAutoConsults: Infinity,
-			})
-		) {
+	async manualConsult(focus?: string, signal?: AbortSignal): Promise<void> {
+		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
+			cooldownSec: 0,
+			maxAutoConsults: Number.POSITIVE_INFINITY,
+		});
+		if (!started.started) {
 			this.ports.notify("unblock: a consult is already in flight");
 			return;
 		}
 		try {
-			const result = await this.consult("manual", 1, focus);
+			const result = await this.consult("manual", 1, focus, signal);
 			this.ports.inject(buildNotice(result.answer));
 		} catch (err) {
 			const reason = err instanceof Error ? err.message : String(err);
 			this.ports.notify(`unblock: consult failed — ${reason}`);
 		} finally {
-			noteConsultSettled(this.state);
+			noteConsultSettled(this.state, "manual");
 		}
 	}
 
 	/** Shared consult runner over the current ring + failure records. */
-	private consult(triggerKey: string, failureCount: number, focus?: string) {
+	private consult(
+		triggerKey: string,
+		failureCount: number,
+		focus?: string,
+		signal?: AbortSignal,
+	): ReturnType<typeof defaultRunConsult> {
 		const failures: FailureLine[] = this.ring
 			.filter((r) => !r.ok)
 			.slice(-3)
@@ -223,14 +269,16 @@ export class UnblockController {
 			},
 		});
 		const { binary, args } = resolveCliFor(this.settings.reviewer, this.settings.binary);
-		return this.ports.runConsult({
+		const opts: ConsultOptions = {
 			peer: this.settings.reviewer as ConsultPeer,
 			binary,
 			args,
 			prompt,
 			timeoutMs: this.settings.timeoutSec * 1000,
 			model: this.settings.model,
-		});
+			signal,
+		};
+		return this.ports.runConsult(opts);
 	}
 }
 

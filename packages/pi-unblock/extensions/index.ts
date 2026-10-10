@@ -21,7 +21,9 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 			},
 			runConsult,
 			nowMs: () => Date.now(),
-			confirm: (title, message) => ctx.ui.confirm(title, message),
+			// Headless JSON/print modes have no dialogs: absent confirm makes
+			// the publish gate degrade to skip-and-log instead of blocking.
+			confirm: ctx.hasUI ? (title, message) => ctx.ui.confirm(title, message) : undefined,
 		});
 	});
 
@@ -30,8 +32,10 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 		controller?.onTurnStart();
 	});
 
-	// Observe every tool result; shell commands carry their command line.
-	pi.on("tool_result", (event) => {
+	// Observe every tool result; shell commands carry their command line. The
+	// context signal aborts a detached consult when the turn ends (an aborted
+	// consult was stale anyway).
+	pi.on("tool_result", (event, ctx) => {
 		if (!controller) return;
 		const command =
 			typeof event.input.command === "string" && event.input.command.trim()
@@ -41,13 +45,14 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
 			.join("\n");
-		controller.onToolResult(event.toolName, !event.isError, command, output);
+		controller.onToolResult(event.toolName, !event.isError, command, output, ctx.signal);
 	});
 
 	// Publish boundary: blockable pre-execution hook. The controller returns
-	// { block: true, reason } when the user declines; anything else lets the
-	// command run.
-	pi.on("tool_call", async (event) => {
+	// { block: true, reason } when the user declines or when the pre-publish
+	// review lands (the reason carries the verdict; the model re-issues the
+	// command to consume the one-shot bypass).
+	pi.on("tool_call", async (event, ctx) => {
 		if (!controller) return undefined;
 		if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
 		const command =
@@ -55,14 +60,14 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 				? event.input.command
 				: "";
 		if (!command) return undefined;
-		return controller.onBeforePublish(command);
+		return controller.onBeforePublish(command, ctx.signal);
 	});
 
 	pi.registerCommand("unblock", {
 		description: "Consult the peer reviewer on demand (focus text optional)",
-		handler: async (args) => {
+		handler: async (args, ctx) => {
 			if (!controller) return;
-			await controller.manualConsult(args.trim() || undefined);
+			await controller.manualConsult(args.trim() || undefined, ctx.signal);
 		},
 	});
 }

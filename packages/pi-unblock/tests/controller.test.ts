@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { runConsult, type ConsultOptions } from "@estebanforge/pi-ask-shared";
+import { ConsultError, runConsult, type ConsultOptions } from "@estebanforge/pi-ask-shared";
 import { UnblockController, type ControllerPorts } from "../src/controller.js";
 import { DEFAULT_SETTINGS, type UnblockSettings } from "../src/settings.js";
 
@@ -102,7 +102,7 @@ describe("UnblockController: failure loop -> consult -> injection (E2E)", () => 
 
 	it("a failed consult consumes the streak and notifies only", async () => {
 		const { ports, injections, notifications } = makePorts({
-			runConsult: () => Promise.reject(Object.assign(new Error("consult failed: timeout"), {})),
+			runConsult: () => Promise.reject(new ConsultError("timeout")),
 		});
 		const c = new UnblockController(settingsWith(), ports);
 		await loopUntilTrigger(c);
@@ -112,6 +112,37 @@ describe("UnblockController: failure loop -> consult -> injection (E2E)", () => 
 		notifications.length = 0;
 		await loopUntilTrigger(c);
 		expect(notifications.some((n) => n.includes("consult failed"))).toBe(true);
+	});
+
+	it("a trigger suppressed by cooldown resets the streak instead of wedging", async () => {
+		// Fixed clock: every consult attempt inside the 600s cooldown window is
+		// gate-blocked, and each rejected consult still anchors the cooldown.
+		const { ports, notifications } = makePorts({
+			nowMs: () => 1_000_000,
+			runConsult: () => Promise.reject(new ConsultError("timeout")),
+		});
+		const c = new UnblockController(
+			settingsWith({ cooldownSec: 600, maxAutoConsultsPerSession: 99 }),
+			ports,
+		);
+		// First loop: trigger fires, consult starts (anchors the cooldown),
+		// fails, settles — streak consumed by the settle.
+		c.onTurnStart();
+		for (let i = 0; i < 3; i++) c.onToolResult("bash", false, "npm test", "fail");
+		await new Promise((r) => setTimeout(r, 20));
+		// Second loop: trigger fires, gate blocks on cooldown, streak RESETS
+		// (the fix under test).
+		c.onTurnStart();
+		for (let i = 0; i < 3; i++) c.onToolResult("bash", false, "npm test", "fail");
+		await new Promise((r) => setTimeout(r, 20));
+		// Third loop: proof the streak was reset rather than wedged — the
+		// trigger fires a third time and the gate blocks again. With the old
+		// bug the second loop would have wedged past-threshold forever.
+		c.onTurnStart();
+		for (let i = 0; i < 3; i++) c.onToolResult("bash", false, "npm test", "fail");
+		await new Promise((r) => setTimeout(r, 20));
+		const blocked = notifications.filter((n) => n.includes("gate blocked (cooldown)")).length;
+		expect(blocked).toBe(2);
 	});
 });
 
@@ -126,13 +157,21 @@ describe("UnblockController: publish boundary", () => {
 		expect(injections).toHaveLength(0);
 	});
 
-	it("on approval consults synchronously, injects, and lets the command run", async () => {
+	it("on approval blocks with the review as reason, then bypasses the re-issue", async () => {
 		const base = makePorts({ confirm: () => Promise.resolve(true) });
 		const c = new UnblockController(settingsWith(), await stubConsult(base.ports));
-		const verdict = await c.onBeforePublish("git commit -m x && git push");
-		expect(verdict).toBeUndefined();
-		expect(base.injections).toHaveLength(1);
-		expect(base.injections[0]).toContain("REVIEW VERDICT");
+		// First issuance: blocked, verdict travels as the reason (the model
+		// reads the review BEFORE the push runs).
+		const first = await c.onBeforePublish("git commit -m x && git push");
+		expect(first?.block).toBe(true);
+		expect(first?.reason).toContain("REVIEW VERDICT");
+		expect(base.injections).toHaveLength(0);
+		// Re-issue of the identical command consumes the one-shot bypass.
+		const second = await c.onBeforePublish("git commit -m x && git push");
+		expect(second).toBeUndefined();
+		// The bypass is one-shot: a third call gates again.
+		const third = await c.onBeforePublish("git commit -m x && git push");
+		expect(third?.block).toBe(true);
 	});
 
 	it("ignores non-publish commands entirely", async () => {

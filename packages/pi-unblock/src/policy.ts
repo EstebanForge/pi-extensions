@@ -145,30 +145,38 @@ export function noteToolResult(
 
 /** Try to start a consult: consumes one unit of the session budget and
  *  anchors the cooldown. Failed consults deliberately consume both — the
- *  gate must not retry-storm a broken reviewer CLI. Returns false when
- *  blocked (already in flight, budget spent, or inside the cooldown). */
+ *  gate must not retry-storm a broken reviewer CLI. */
 export function noteConsultStarted(
 	state: UnblockState,
 	nowMs: number,
 	opts: { cooldownSec?: number; maxAutoConsults?: number } = {},
-): boolean {
+): { started: boolean; blockedBy?: "in-flight" | "budget" | "cooldown" } {
 	const cooldownSec = opts.cooldownSec ?? 120;
 	const maxAutoConsults = opts.maxAutoConsults ?? 3;
-	if (state.consultInFlight) return false;
-	if (state.consultsUsed >= maxAutoConsults) return false;
+	if (state.consultInFlight) return { started: false, blockedBy: "in-flight" };
+	if (state.consultsUsed >= maxAutoConsults) return { started: false, blockedBy: "budget" };
 	if (state.lastConsultAtMs !== null && nowMs - state.lastConsultAtMs < cooldownSec * 1000) {
-		return false;
+		return { started: false, blockedBy: "cooldown" };
 	}
 	state.consultInFlight = true;
 	state.consultsUsed += 1;
 	state.lastConsultAtMs = nowMs;
-	return true;
+	return { started: true };
 }
 
-/** Settle an in-flight consult: clears the flag and consumes any failure
- *  streak, so a settled (even failed) consult starts the world clean. */
-export function noteConsultSettled(state: UnblockState): void {
+/** Settle an in-flight consult. With a key: consumes only the matching
+ *  failure streak (a publish or manual consult settling must not wipe a
+ *  concurrent failure loop's count). Without: clears any streak.
+ *  Always clears the in-flight flag. */
+export function noteConsultSettled(state: UnblockState, key?: string): void {
 	state.consultInFlight = false;
+	if (key === undefined || state.streak?.key === key) state.streak = null;
+}
+
+/** Drop the current failure streak without touching the in-flight flag.
+ *  Used when a trigger is suppressed (cooldown/budget): the streak starts
+ *  over instead of wedging past the threshold forever. */
+export function resetStreak(state: UnblockState): void {
 	state.streak = null;
 }
 

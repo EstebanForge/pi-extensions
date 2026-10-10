@@ -9,6 +9,7 @@ import {
 	noteConsultSettled,
 	noteConsultStarted,
 	noteToolResult,
+	resetStreak,
 	type ToolObservation,
 } from "../src/policy.js";
 
@@ -99,31 +100,34 @@ describe("failure streak", () => {
 describe("consult gates", () => {
 	it("blocks while a consult is in flight", () => {
 		const st = newUnblockState();
-		expect(noteConsultStarted(st, 1_000_000)).toBe(true);
-		expect(noteConsultStarted(st, 1_000_001)).toBe(false);
+		expect(noteConsultStarted(st, 1_000_000).started).toBe(true);
+		expect(noteConsultStarted(st, 1_000_001)).toEqual({ started: false, blockedBy: "in-flight" });
 		noteConsultSettled(st);
 	});
 
 	it("blocks after the session budget is spent", () => {
 		const st = newUnblockState();
-		noteConsultStarted(st, 1_000_000);
+		// cooldownSec 0 isolates the budget gate.
+		expect(noteConsultStarted(st, 1_000_000, { cooldownSec: 0 }).started).toBe(true);
 		noteConsultSettled(st);
-		noteConsultStarted(st, 1_100_000);
+		expect(noteConsultStarted(st, 1_100_000, { cooldownSec: 0 }).started).toBe(true);
 		noteConsultSettled(st);
-		noteConsultStarted(st, 1_200_000);
+		expect(noteConsultStarted(st, 1_200_000, { cooldownSec: 0 }).started).toBe(true);
 		noteConsultSettled(st);
 		// maxAutoConsults 3: the fourth is manual-only territory.
-		expect(noteConsultStarted(st, 1_300_000, { maxAutoConsults: 3 })).toBe(false);
+		expect(
+			noteConsultStarted(st, 1_300_000, { maxAutoConsults: 3, cooldownSec: 0 }),
+		).toEqual({ started: false, blockedBy: "budget" });
 	});
 
 	it("blocks within the cooldown and allows after it", () => {
 		const st = newUnblockState();
-		expect(noteConsultStarted(st, 1_000_000, { cooldownSec: 120 })).toBe(true);
+		expect(noteConsultStarted(st, 1_000_000, { cooldownSec: 120 }).started).toBe(true);
 		noteConsultSettled(st);
 		// 60s later: inside the 120s cooldown.
-		expect(noteConsultStarted(st, 1_060_000, { cooldownSec: 120 })).toBe(false);
+		expect(noteConsultStarted(st, 1_060_000, { cooldownSec: 120 })).toEqual({ started: false, blockedBy: "cooldown" });
 		// 121s later: clear.
-		expect(noteConsultStarted(st, 1_121_000, { cooldownSec: 120 })).toBe(true);
+		expect(noteConsultStarted(st, 1_121_000, { cooldownSec: 120 }).started).toBe(true);
 	});
 
 	it("settling clears the in-flight flag and the streak", () => {
@@ -132,6 +136,28 @@ describe("consult gates", () => {
 		noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
 		noteConsultSettled(st);
 		// The failed consult consumed its streak: the counter is back to zero.
+		expect(noteToolResult(st, obs("exec", false, 1, "npm test"), GATES).trigger).toBe(false);
+	});
+});
+
+describe("key-scoped settle and resetStreak", () => {
+	it("a settle with a key preserves a non-matching streak", () => {
+		const st = newUnblockState();
+		noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
+		const first = noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
+		expect(first.trigger).toBe(false);
+		// A publish consult settles with its own key: the failure loop's
+		// count must survive.
+		noteConsultSettled(st, "publish:git");
+		expect(noteToolResult(st, obs("exec", false, 1, "npm test"), GATES).trigger).toBe(true);
+	});
+
+	it("resetStreak drops the streak without touching the in-flight flag", () => {
+		const st = newUnblockState();
+		expect(noteConsultStarted(st, 1_000_000).started).toBe(true);
+		noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
+		resetStreak(st);
+		expect(st.consultInFlight).toBe(true);
 		expect(noteToolResult(st, obs("exec", false, 1, "npm test"), GATES).trigger).toBe(false);
 	});
 });
