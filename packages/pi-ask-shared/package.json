@@ -1,7 +1,7 @@
 {
   "name": "@estebanforge/pi-ask-shared",
   "version": "0.1.1",
-  "description": "Shared background-run registry, wake sender, stop handler, and tool-description text for the @estebanforge ask extensions. Plain library, no Pi entrypoint: each ask package depends on it and Pi installs it transitively.",
+  "description": "Shared runtime for the @estebanforge ask extensions: background-run registry, wake sender, stop handler, one-shot spawn lifecycle, layered config primitives, per-CLI peer adapters (claude/codex/agy), and the cross-peer consult core. Plain library, no Pi entrypoint: consumers depend on it and Pi installs it transitively.",
   "keywords": [
     "pi",
     "delegation",

@@ -108,6 +108,14 @@ Second-opinion reference models over transcripts.
 pi install npm:@estebanforge/pi-mixture-of-agents
 ```
 
+### [pi-rtk-optimizer](packages/pi-rtk-optimizer)
+
+RTK command rewriting and tool output compaction.
+
+```bash
+pi install npm:@estebanforge/pi-rtk-optimizer
+```
+
 ### [pi-show-me-the-meat](packages/pi-show-me-the-meat)
 
 Reading-diff tool: reduces a git diff to the lines that carry the change.
@@ -130,6 +138,22 @@ Per-session token cost ledger.
 
 ```bash
 pi install npm:@estebanforge/pi-token-cost-ledger
+```
+
+### [pi-tool-display](packages/pi-tool-display)
+
+OpenCode-style tool rendering for Pi.
+
+```bash
+pi install npm:@estebanforge/pi-tool-display
+```
+
+### [pi-unblock](packages/pi-unblock)
+
+Failure-loop guard: after the same command fails repeatedly, consults a peer reviewer and injects its guidance mid-run; gates `git push` / `gh pr create` behind a pre-publish review.
+
+```bash
+pi install npm:@estebanforge/pi-unblock
 ```
 
 ### [pi-zendesk-me](packages/pi-zendesk-me)

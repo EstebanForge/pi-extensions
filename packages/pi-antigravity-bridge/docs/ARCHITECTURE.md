@@ -19,7 +19,7 @@ src/driver.ts         stream-json driver: persistent agy process, turn serializa
 src/stream-events.ts  agy NDJSON event parser (init / step_update / result) + usage mapping onto pi's Usage
 src/native-tools.ts   maps agy read-only tool steps to real pi builtins (read/ls/grep/find) for native re-execution
 src/skills.ts         activate_skill bridge: exposes the pi Agent Skills catalog to agy, answered by the bridge directly
-src/discovery.ts      conversation-id binding for the AskAntigravity one-shot tool (agy -p never prints its conversation id)
+src/discovery.ts      DELETED (phase 4 done): conversation-id binding for the AskAntigravity one-shot tool now lives in pi-ask-shared's peer adapter (peers/antigravity), which ask-tool consumes
 src/models.ts         agy models -> pi Model projection (full catalog, per-model effort)
 src/sessions.ts       atomic JSON store: pi session -> agy conversation + watermark
 src/config.ts         persisted runtime config (engine + acp block, bridgeTools, digest, mode, model/thinking defaults)

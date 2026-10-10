@@ -4,7 +4,7 @@ Event-driven unblock gate for [Pi](https://pi.dev). No model-facing tool: the tr
 
 ## What it does
 
-**Failure-loop consults.** When the same tool fails `threshold` times in a row (shell failures keyed on the command root, so unrelated commands don't stack), the extension consults a peer reviewer through a one-shot headless run and injects the guidance as a visible `[SYSTEM NOTICE ...]` message at the next turn. Stale answers (the conversation moved on) degrade to a plain notification. Failed consults still consume the streak reset and the cooldown — the gate never retry-storms a broken reviewer CLI.
+**Failure-loop consults.** When the same tool fails `threshold` times in a row (shell failures keyed on the command root, so unrelated commands don't stack), the extension consults a peer reviewer through a one-shot headless run and injects the guidance as a visible `[SYSTEM NOTICE ...]` message delivered mid-run (steer). Stale answers (the conversation moved on) degrade to a plain notification. Failed consults still consume the streak reset and the cooldown — the gate never retry-storms a broken reviewer CLI. Publish and manual (`/unblock`) consults run outside that budget and cooldown.
 
 **Publish boundary.** `git push` and `gh pr create` (including inside compound commands) pass a confirm dialog first. Declined commands are blocked without running. Accepted commands get a synchronous consult whose answer is injected before the command runs.
 
