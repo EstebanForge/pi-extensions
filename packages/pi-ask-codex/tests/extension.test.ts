@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach, beforeEach } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	classifySlug,
 	resolveCodexModel,
@@ -203,4 +206,91 @@ describe("pi-ask-codex extension entry", () => {
 
     expect(tools).toContain("AskCodex");
   });
+});
+
+// --- execute() against a fake codex fixture: time-budget notice ------------
+
+describe("execute(): time-budget notice and non-positive timeout guard", () => {
+	let tempRoot: string;
+	let toolDef: { name: string; execute: (...a: any[]) => Promise<any> } | null = null;
+	const prevBin = process.env.CODEX_BIN;
+	const prevPromptFile = process.env.FIXTURE_PROMPTFILE;
+
+	const writeCodexFixture = (): string => {
+		const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("--version")) { process.stdout.write("codex-cli 0.0.0-fake\\n"); process.exit(0); }
+if (args.includes("models")) { process.exit(0); }
+if (process.env.FIXTURE_PROMPTFILE) {
+  require("node:fs").writeFileSync(process.env.FIXTURE_PROMPTFILE, args[args.length - 1] ?? "");
+}
+process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "99999999-8888-7777-6666-555555555555" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "OK" } }) + "\\n");
+process.exit(0);
+`;
+		const p = join(tempRoot, `codex-fixture-${Date.now()}`);
+		writeFileSync(p, script, { mode: 0o755 });
+		return p;
+	};
+
+	const makePi = () => {
+		const tools: any[] = [];
+		const pi: any = new Proxy(
+			{
+				registerTool: (def: any) => void tools.push(def),
+				registerCommand: () => {},
+				getFlag: () => undefined,
+				exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+			},
+			{
+				get(target, prop) {
+					return prop in target ? (target as any)[prop] : () => {};
+				},
+			},
+		);
+		return { pi, tools };
+	};
+
+	const callExecute = (overrides: { params?: Record<string, unknown> } = {}) =>
+		toolDef!.execute(
+			"t",
+			{ prompt: "hi", ...overrides.params },
+			new AbortController().signal,
+			undefined,
+			{ cwd: tempRoot, model: { provider: "zai", baseUrl: "zai" } },
+		);
+
+	beforeEach(async () => {
+		tempRoot = mkdtempSync(join(tmpdir(), "codex-exec-"));
+		process.env.CODEX_BIN = writeCodexFixture();
+		const { pi, tools } = makePi();
+		await factory(pi);
+		toolDef = tools[0];
+	});
+
+	afterEach(() => {
+		rmSync(tempRoot, { recursive: true, force: true });
+		if (prevBin === undefined) delete process.env.CODEX_BIN;
+		else process.env.CODEX_BIN = prevBin;
+		if (prevPromptFile === undefined) delete process.env.FIXTURE_PROMPTFILE;
+		else process.env.FIXTURE_PROMPTFILE = prevPromptFile;
+	});
+
+	it("appends the time-budget notice to the positional prompt at the resolved default (10m)", async () => {
+		const promptFile = join(tempRoot, "prompt.txt");
+		process.env.FIXTURE_PROMPTFILE = promptFile;
+		await callExecute({ params: { prompt: "summarize the diff" } });
+		const seen = readFileSync(promptFile, "utf8");
+		expect(seen.startsWith("summarize the diff")).toBe(true);
+		expect(seen).toContain("[TIME BUDGET]");
+		expect(seen).toContain("about 10 minutes");
+	});
+
+	it("rejects non-positive timeoutMinutes without spawning", async () => {
+		const promptFile = join(tempRoot, "prompt-zero.txt");
+		process.env.FIXTURE_PROMPTFILE = promptFile;
+		const res = await callExecute({ params: { prompt: "x", timeoutMinutes: 0 } });
+		expect(res.content?.[0]?.text).toMatch(/positive number of minutes/);
+		expect(existsSync(promptFile)).toBe(false);
+	});
 });

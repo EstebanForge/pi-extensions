@@ -102,7 +102,7 @@ Interactive picker for the default model, reasoning effort, and sandbox. If the 
 | `sandbox` | no | `danger-full-access` (default) / `workspace-write` / `read-only`. Overrides the configured default. |
 | `sessionId` | no | Omit for one-shot. Pass a prior call's `details.sessionId` to continue that conversation. |
 | `cwd` | no | Workspace path. Defaults to the current project root. |
-| `timeoutMinutes` | no | Hard cap in minutes. Default `10`. |
+| `timeoutMinutes` | no | Hard cap on the Codex run in minutes. Default `10`. Above 0, at most 35791 (fractional minutes allowed). The prompt carries a matching `[TIME BUDGET]` notice; rejected values return a tool error without spawning. |
 
 ## Sandbox note (containers / restricted kernels)
 

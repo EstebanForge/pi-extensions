@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backgroundFlagText, summarizePrompt } from "../src/text.js";
+import { backgroundFlagText, buildTimeBudgetNotice, summarizePrompt } from "../src/text.js";
 
 describe("summarizePrompt", () => {
 	it("flattens whitespace and passes short prompts through", () => {
@@ -15,6 +15,49 @@ describe("summarizePrompt", () => {
 
 	it("honors a custom max", () => {
 		expect(summarizePrompt("abcdef", 5)).toBe("ab...");
+	});
+});
+
+describe("buildTimeBudgetNotice", () => {
+	it("formats minute-scale budgets with the task framing", () => {
+		const out = buildTimeBudgetNotice(10 * 60_000);
+		expect(out).toContain("[TIME BUDGET]");
+		expect(out).toContain("about 10 minutes");
+		expect(out).toContain("terminated at the limit");
+		expect(out).toContain("complete final answer");
+		expect(out).toContain("most valuable complete subset");
+	});
+
+	it("formats sub-minute budgets in seconds with the direct-answer framing", () => {
+		const out = buildTimeBudgetNotice(45_000);
+		expect(out).toContain("[TIME BUDGET]");
+		expect(out).toContain("about 45 seconds");
+		expect(out).not.toContain("minute");
+		expect(out).toContain("direct, concise final answer immediately");
+		expect(out).not.toContain("subset");
+	});
+
+	it("formats one-minute budgets in seconds (the seconds form owns everything under two minutes)", () => {
+		const out = buildTimeBudgetNotice(60_000);
+		expect(out).toContain("about 60 seconds");
+		expect(out).toContain("direct, concise final answer immediately");
+	});
+
+	it("switches to the task framing at two minutes and above", () => {
+		expect(buildTimeBudgetNotice(120_000)).toContain("about 2 minutes");
+		expect(buildTimeBudgetNotice(119_999)).toContain("about 119 seconds");
+	});
+
+	it("never reports zero seconds", () => {
+		expect(buildTimeBudgetNotice(400)).toBe("");
+		expect(buildTimeBudgetNotice(999)).toBe("");
+		expect(buildTimeBudgetNotice(1000)).toMatch(/about 1 second\./);
+	});
+
+	it("returns empty for absent or non-positive caps", () => {
+		expect(buildTimeBudgetNotice(0)).toBe("");
+		expect(buildTimeBudgetNotice(-5)).toBe("");
+		expect(buildTimeBudgetNotice(Number.NaN)).toBe("");
 	});
 });
 

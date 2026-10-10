@@ -116,7 +116,7 @@ Interactive picker for the default model, permission mode, effort, and the full-
 | `cwd` | no | Workspace path. Defaults to the current project root. |
 | `systemPrompt` | no | Replace Claude's default system prompt (`--system-prompt`). |
 | `appendSystemPrompt` | no | Append to Claude's default system prompt (`--append-system-prompt`). |
-| `timeoutMinutes` | no | Hard cap in minutes. Default `10`. |
+| `timeoutMinutes` | no | Hard cap on the Claude run in minutes. Default `10`. Above 0, at most 35791 (fractional minutes allowed). The prompt carries a matching `[TIME BUDGET]` notice; rejected values return a tool error without spawning. |
 
 ## Conflict guard against pi-claude-bridge
 

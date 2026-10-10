@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -37,6 +37,7 @@ afterEach(() => {
 	if (savedClaudeBin === undefined) delete process.env.CLAUDE_BIN;
 	else process.env.CLAUDE_BIN = savedClaudeBin;
 	delete process.env.FIXTURE_MODE;
+	delete process.env.FIXTURE_PROMPTFILE;
 	rmSync(tempRoot, { recursive: true, force: true });
 });
 
@@ -370,8 +371,16 @@ const args = process.argv.slice(2);
 if (args.includes("--version")) { process.stdout.write("claude-fixture 1.0\\n"); process.exit(0); }
 const sid = "11111111-2222-3333-4444-555555555555";
 const L = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
-// drain stdin (the extension writes the prompt here)
-process.stdin.on("data", () => {}).on("end", () => {});
+// Capture the stdin prompt synchronously when asked: an async 'end' handler
+// can lose the race against process.exit after the events are emitted.
+if (process.env.FIXTURE_PROMPTFILE) {
+	const fsmod = require("node:fs");
+	const chunks = [];
+	const buf = Buffer.alloc(65536);
+	let n;
+	while ((n = fsmod.readSync(0, buf, 0, buf.length)) > 0) chunks.push(Buffer.from(buf.slice(0, n)));
+	fsmod.writeFileSync(process.env.FIXTURE_PROMPTFILE, Buffer.concat(chunks).toString("utf8"));
+}
 if (process.env.FIXTURE_MODE === "iserror") {
   L({type:"system",subtype:"init",session_id:sid,tools:[]});
   L({type:"result",subtype:"error_during_execution",is_error:true,result:"",num_turns:2});
@@ -437,6 +446,66 @@ describe("execute() against a fake claude fixture", () => {
 		expect(res.content?.[0]?.text).toContain("OK");
 		expect(res.details?.sessionId).toBe("11111111-2222-3333-4444-555555555555");
 		expect(res.details?.resultIsError).toBe(false);
+	});
+
+	it("appends the time-budget notice to the stdin prompt at the resolved default (10m)", async () => {
+		process.env.CLAUDE_BIN = writeClaudeFixture("ok");
+		process.env.FIXTURE_MODE = "ok";
+		const promptFile = join(tempRoot, `stdin-${Date.now()}.txt`);
+		process.env.FIXTURE_PROMPTFILE = promptFile;
+		writeAgentFile("settings.json", { packages: ["npm:pi-ask-codex"] });
+		const { pi, getTool } = makePiWithTool();
+		await factory(pi);
+		try {
+			await callExecute(getTool(), { params: { prompt: "summarize the diff" } });
+			const seen = readFileSync(promptFile, "utf8");
+			expect(seen.startsWith("summarize the diff")).toBe(true);
+			expect(seen).toContain("[TIME BUDGET]");
+			expect(seen).toContain("about 10 minutes");
+		} finally {
+			delete process.env.FIXTURE_PROMPTFILE;
+		}
+	});
+
+	it("rejects non-positive timeoutMinutes without spawning", async () => {
+		process.env.CLAUDE_BIN = writeClaudeFixture("ok");
+		process.env.FIXTURE_MODE = "ok";
+		const promptFile = join(tempRoot, `stdin-zero-${Date.now()}.txt`);
+		process.env.FIXTURE_PROMPTFILE = promptFile;
+		writeAgentFile("settings.json", { packages: ["npm:pi-ask-codex"] });
+		const { pi, getTool } = makePiWithTool();
+		await factory(pi);
+		try {
+			for (const timeoutMinutes of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 35792]) {
+				const res = await callExecute(getTool(), { params: { prompt: "x", timeoutMinutes } });
+				expect(res.content?.[0]?.text).toMatch(/positive number of minutes/);
+			}
+			expect(existsSync(promptFile)).toBe(false);
+		} finally {
+			delete process.env.FIXTURE_PROMPTFILE;
+		}
+	});
+
+	it("accepts the 35791-minute ceiling and fractional minutes (0.5 -> 30 seconds)", async () => {
+		process.env.CLAUDE_BIN = writeClaudeFixture("ok");
+		process.env.FIXTURE_MODE = "ok";
+		writeAgentFile("settings.json", { packages: ["npm:pi-ask-codex"] });
+		const { pi, getTool } = makePiWithTool();
+		await factory(pi);
+		try {
+			const ceilingFile = join(tempRoot, "stdin-ceiling.txt");
+			process.env.FIXTURE_PROMPTFILE = ceilingFile;
+			const res = await callExecute(getTool(), { params: { prompt: "p1", timeoutMinutes: 35791 } });
+			expect(res.content?.[0]?.text).toContain("OK");
+			expect(readFileSync(ceilingFile, "utf8")).toContain("about 35791 minutes");
+
+			const halfFile = join(tempRoot, "stdin-half.txt");
+			process.env.FIXTURE_PROMPTFILE = halfFile;
+			await callExecute(getTool(), { params: { prompt: "p2", timeoutMinutes: 0.5 } });
+			expect(readFileSync(halfFile, "utf8")).toContain("about 30 seconds");
+		} finally {
+			delete process.env.FIXTURE_PROMPTFILE;
+		}
 	});
 
 	it("circular-delegation guard: refuses when provider is claude-bridge", async () => {

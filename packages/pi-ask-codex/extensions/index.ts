@@ -59,6 +59,8 @@ import {
 	consumeCodexEvent,
 	createStopHandler,
 	createWakeSender,
+	buildTimeBudgetNotice,
+	MAX_TIMEOUT_MINUTES,
 	emptyCodexEventState,
 	loadLayeredRaw,
 	REASONING_VALUES,
@@ -701,7 +703,7 @@ export default async function (pi: ExtensionAPI) {
 			),
 			timeoutMinutes: Type.Optional(
 				Type.Number({
-					description: `Hard cap on the Codex run in minutes. Default ${DEFAULT_TIMEOUT_MIN}.`,
+					description: `Hard cap on the Codex run in minutes. Default ${DEFAULT_TIMEOUT_MIN}. Fractional minutes allowed; must be above 0 and at most ${MAX_TIMEOUT_MINUTES}. The prompt carries a matching [TIME BUDGET] notice.`,
 				}),
 			),
 			includeContext: Type.Optional(
@@ -877,10 +879,28 @@ export default async function (pi: ExtensionAPI) {
 
 			const start = Date.now();
 			const cwd = params.cwd || ctx.cwd || process.cwd();
-
-			// Opt-in full-context export (isolated stays the default).
 			let effectivePrompt = params.prompt;
 			let contextFile: string | null = null;
+
+			// Validate the timeout BEFORE staging the includeContext file, so a
+			// rejected timeout does not leak the staged conversation file.
+			const timeoutMin = params.timeoutMinutes ?? DEFAULT_TIMEOUT_MIN;
+			if (!(timeoutMin > 0 && Number.isFinite(timeoutMin) && timeoutMin <= MAX_TIMEOUT_MINUTES)) {
+				// timeoutMinutes: 0 would arm runProcess's watchdog with a 0ms
+				// timeout (Node clamps to 1ms) and kill the peer instantly.
+				return {
+					content: [{ type: "text", text: `timeoutMinutes must be a positive number of minutes up to ${MAX_TIMEOUT_MINUTES} (for example 0.5 for 30 seconds).` }],
+					details: { ...emptyDetails(requestedModel, resolved.flagValue), exitCode: 1 },
+				};
+			}
+			// Tell the peer its wall-clock budget so it can pace toward a
+			// complete answer instead of being killed mid-task by the watchdog.
+			// effectivePrompt only: params.prompt stays clean for background-run
+			// summaries and registry listings.
+			const budget = buildTimeBudgetNotice(timeoutMin * 60_000);
+			if (budget) effectivePrompt += `\n\n${budget}`;
+
+			// Opt-in full-context export (isolated stays the default).
 			if (params.includeContext) {
 				try {
 					const { messages } = buildSessionContext(ctx.sessionManager.getBranch());
@@ -916,7 +936,6 @@ export default async function (pi: ExtensionAPI) {
 				};
 			}
 
-			const timeoutMin = params.timeoutMinutes ?? DEFAULT_TIMEOUT_MIN;
 
 			// Continuity: validate sessionId (Codex ids are UUIDs) before
 			// threading it into the resume positional. A leading-dash value

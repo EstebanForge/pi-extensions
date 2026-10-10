@@ -30,7 +30,7 @@ Project-scoped `.pi/unblock-settings.json`, every key optional:
 	"model": null,
 	"threshold": 3,
 	"cooldownSec": 120,
-	"timeoutSec": 45,
+	"timeoutSec": 45, // 5..2147483 seconds; clamped, never instant-kills the reviewer
 	"maxAutoConsultsPerSession": 3,
 	"preprompt": "",
 	"contextMaxTurns": 4,

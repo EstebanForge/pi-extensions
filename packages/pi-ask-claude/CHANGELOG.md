@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Peer prompts now carry a `[TIME BUDGET]` notice matching the resolved timeout (default 10 minutes), so the spawned agent can pace toward a complete final answer instead of being killed mid-run with its work lost. `timeoutMinutes: 0` is rejected with a clear error instead of arming an instant-kill watchdog.
+
 ### Fixed
 - The project config directory follows pi's `CONFIG_DIR_NAME` again instead of a hardcoded `.pi`, matching the pre-refactor path helper on rebranded distributions.
 

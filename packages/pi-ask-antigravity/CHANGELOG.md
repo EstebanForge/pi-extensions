@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Peer prompts now carry a `[TIME BUDGET]` notice matching the resolved timeout (default 10 minutes), placed before the plan-mode guard banners so the safety constraints stay the last text the model reads. `timeoutMinutes: 0` is rejected with a clear error instead of arming an instant-kill watchdog.
+
 ### Fixed
 
 - Project-scope config files resolve under `.pi/` again (`<project>/.pi/ask-*.json`): the shared-layer refactor passed the workspace root where the shared primitive expects the directory containing the file, so project configs would have been read from and written to the workspace root. Restores pre-refactor behavior.

@@ -2,7 +2,7 @@
 // over defaults. Deliberately flat: no global/project layering in v1, no
 // per-trigger overrides (recorded v2 considerations).
 import { join } from "node:path";
-import { tryReadJson } from "@estebanforge/pi-ask-shared";
+import { MAX_TIMEOUT_MS, tryReadJson } from "@estebanforge/pi-ask-shared";
 
 export type Reviewer = "claude" | "codex" | "agy";
 
@@ -74,7 +74,9 @@ export function loadUnblockSettings(cwd: string): UnblockSettings {
 		model: typeof raw.model === "string" ? raw.model : DEFAULT_SETTINGS.model,
 		threshold: Math.max(2, num(raw.threshold, DEFAULT_SETTINGS.threshold)),
 		cooldownSec: Math.max(0, num(raw.cooldownSec, DEFAULT_SETTINGS.cooldownSec)),
-		timeoutSec: Math.max(5, num(raw.timeoutSec, DEFAULT_SETTINGS.timeoutSec)),
+		// Upper clamp: consult timeoutMs above setTimeout's 2^31-1 ms ceiling
+		// would clamp to 1ms and kill the reviewer instantly.
+		timeoutSec: Math.min(Math.max(5, num(raw.timeoutSec, DEFAULT_SETTINGS.timeoutSec)), Math.floor(MAX_TIMEOUT_MS / 1000)),
 		maxAutoConsultsPerSession: Math.max(
 			1,
 			num(raw.maxAutoConsultsPerSession, DEFAULT_SETTINGS.maxAutoConsultsPerSession),

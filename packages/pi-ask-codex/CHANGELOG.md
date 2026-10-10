@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Peer prompts now carry a `[TIME BUDGET]` notice matching the resolved timeout (default 10 minutes), so the spawned agent can pace toward a complete final answer instead of being killed mid-run with its work lost. `timeoutMinutes: 0` is rejected with a clear error instead of arming an instant-kill watchdog.
+
 ### Fixed
 - The bundled-catalog probe rejects partial output: a timeout or aborted run no longer passes its exit check, so a truncated catalog can never ship half-parsed model aliases.
 

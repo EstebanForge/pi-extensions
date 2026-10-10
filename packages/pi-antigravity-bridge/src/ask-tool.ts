@@ -23,6 +23,8 @@ import { Type } from "typebox";
 import {
 	buildAgyArgs,
 	buildFinalPrompt,
+	buildTimeBudgetNotice,
+	MAX_TIMEOUT_MINUTES,
 	CONVERSATIONS_DIR,
 	CONV_ID_RE,
 	filterHiddenModels,
@@ -231,7 +233,7 @@ export async function registerAskAntigravityTool(
 				}),
 			),
 			timeoutMinutes: Type.Optional(
-				Type.Number({ description: `Hard cap on the agy run in minutes. Default ${DEFAULT_TIMEOUT_MIN}.` }),
+				Type.Number({ description: `Hard cap on the agy run in minutes. Default ${DEFAULT_TIMEOUT_MIN}. Fractional minutes allowed; must be above 0 and at most ${MAX_TIMEOUT_MINUTES}. The prompt carries a matching [TIME BUDGET] notice.` }),
 			),
 			includeContext: Type.Optional(
 				Type.Boolean({
@@ -422,6 +424,14 @@ export async function registerAskAntigravityTool(
 			}
 
 			const timeoutMin = params.timeoutMinutes ?? DEFAULT_TIMEOUT_MIN;
+			if (!(timeoutMin > 0 && Number.isFinite(timeoutMin) && timeoutMin <= MAX_TIMEOUT_MINUTES)) {
+				// timeoutMinutes: 0 would arm runProcess's watchdog with a 0ms
+				// timeout (Node clamps to 1ms) and kill the peer instantly.
+				return {
+					content: [{ type: "text", text: `timeoutMinutes must be a positive number of minutes up to ${MAX_TIMEOUT_MINUTES} (for example 0.5 for 30 seconds).` }],
+					details: emptyDetails(requestedModel, resolved.model),
+				};
+			}
 
 			const rawConvId = params.conversationId;
 			const isContinuation =
@@ -447,8 +457,13 @@ export async function registerAskAntigravityTool(
 			}
 			const useDigest: boolean =
 				typeof params.digest === "boolean" ? params.digest : mode === "plan";
+			// Budget notice into the prompt BEFORE buildFinalPrompt: the plan-mode
+			// guard banners must stay the final text (last-read recency), so the
+			// notice can't go after them. The builder itself stays notice-free so
+			// callers can't double-wrap.
+			const budget = buildTimeBudgetNotice(timeoutMin * 60_000);
 			const finalPrompt: string = buildFinalPrompt(
-				params.prompt,
+				budget ? `${params.prompt}\n\n${budget}` : params.prompt,
 				mode,
 				useDigest,
 				reviewerAgent !== null,

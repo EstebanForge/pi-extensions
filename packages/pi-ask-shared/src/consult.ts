@@ -18,6 +18,7 @@ import {
 	buildAgyArgs,
 	buildClaudeArgs,
 	buildCodexArgs,
+	buildTimeBudgetNotice,
 	buildFinalPrompt,
 	consumeClaudeEvent,
 	consumeCodexEvent,
@@ -27,11 +28,12 @@ import {
 	type ResolvedModel,
 	type SandboxMode,
 } from "./index.js";
-import { RunSpawnError, runProcess, type RunProcessOutcome } from "./run.js";
+import { MAX_TIMEOUT_MS, RunSpawnError, runProcess, type RunProcessOutcome } from "./run.js";
 
 export type ConsultPeer = "claude" | "codex" | "agy";
 
 export type ConsultFailureReason =
+	| "invalid-options"
 	| "empty-answer"
 	/** The peer ran but reported an error result (e.g. claude is_error). */
 	| "peer-error"
@@ -165,6 +167,10 @@ function peerSetup(opts: ConsultOptions): {
 	extract: (outcome: RunProcessOutcome) => { answer: string; sessionId: string | null; peerError: boolean };
 } {
 	const { peer } = opts;
+	// Peer agents never see the deadline value; give them the budget so they
+	// can pace toward a complete answer instead of dying mid-task.
+	const budget = buildTimeBudgetNotice(opts.timeoutMs);
+	const prompt = budget ? `${opts.prompt}\n\n${budget}` : opts.prompt;
 	if (peer === "claude") {
 		const c = opts.claude ?? {};
 		const state = emptyClaudeEventState();
@@ -181,7 +187,7 @@ function peerSetup(opts: ConsultOptions): {
 				}),
 			],
 			// Variadic flags ahead of the prompt force the stdin transport.
-			stdin: opts.prompt,
+			stdin: prompt,
 			onLine: (line) => {
 				try {
 					consumeClaudeEvent(JSON.parse(line) as never, state);
@@ -213,7 +219,7 @@ function peerSetup(opts: ConsultOptions): {
 					extraArgs: c.extraArgs ?? [],
 					// The prompt is the trailing positional after `--`; codex's
 					// stdio is ignore, so nothing blocks on stdin.
-					prompt: opts.prompt,
+					prompt,
 				}),
 			],
 			onLine: (line) => {
@@ -250,7 +256,7 @@ function peerSetup(opts: ConsultOptions): {
 				timeoutMinutes: Math.max(1, Math.ceil(opts.timeoutMs / 60_000)),
 				addDirs: a.addDirs ?? [],
 				extraArgs: a.extraArgs ?? [],
-				prompt: buildFinalPrompt(opts.prompt, mode, false, false),
+				prompt: buildFinalPrompt(prompt, mode, false, false),
 			}),
 		],
 		extract: (outcome) => ({
@@ -263,6 +269,13 @@ function peerSetup(opts: ConsultOptions): {
 
 export async function runConsult(opts: ConsultOptions): Promise<ConsultResult> {
 	const { binary, timeoutMs, signal, cwd } = opts;
+	if (!(typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMEOUT_MS)) {
+		// runProcess's watchdog clamps non-positive (and 2^31ms-plus) setTimeout
+		// values to 1ms, which would kill the peer instantly.
+		throw new ConsultError("invalid-options", {
+			message: `consult timeoutMs must be a positive finite number up to ${MAX_TIMEOUT_MS}, got ${timeoutMs}`,
+		});
+	}
 
 	let outcome: RunProcessOutcome;
 	let setup: ReturnType<typeof peerSetup>;

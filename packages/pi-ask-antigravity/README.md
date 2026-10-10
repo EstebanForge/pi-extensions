@@ -113,7 +113,7 @@ Interactive picker for the default model and default thinking. If the project co
 | `mode` | no | `plan` (review-shaped; not enforced, see the modes table) or `accept-edits` (agy applies edits, default). |
 | `digest` | no | Prefix the prompt with `(Use compact digests, not full file contents.)`. Defaults on for `plan`, off for `accept-edits`. |
 | `conversationId` | no | Omit for a one-shot (agy starts fresh). Pass the id from a prior call's result (`details.conversationId`) to resume that agy conversation with full context. See [Two modes](#two-modes-one-shot-vs-continued-conversation). |
-| `timeoutMinutes` | no | Hard cap on the run. Default 10. |
+| `timeoutMinutes` | no | Hard cap on the agy run in minutes. Default 10. Above 0, at most 35791 (fractional minutes allowed). The prompt carries a matching `[TIME BUDGET]` notice; rejected values return a tool error without spawning. |
 
 ## Environment
 

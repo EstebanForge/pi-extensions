@@ -411,3 +411,56 @@ test("execute: background=true is refused (no wake into the pi session from a ne
 	assert.match(result.content[0].text, /background is not supported by the bridge's AskAntigravity/);
 	assert.match(result.content[0].text, /without background/);
 });
+
+test("execute: prompt carries the time-budget notice before the plan guard, guard stays final", () =>
+	withEnvs(
+		{ AGY_SKIP_PERMISSIONS: "true" },
+		async () => {
+			const agentsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ask-agents-root-"));
+			const argvFile = path.join(agentsRoot, "argv.txt");
+			const tool = await registerTool();
+			const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ask-cwd-"));
+			await withEnvs(
+				{ AGY_AGENTS_ROOT: agentsRoot, AGY_BIN: makeArgvCapturingAgyBin(argvFile) },
+				async () => {
+					const result = await tool.execute("t1", { prompt: "review this", mode: "plan", cwd }, undefined, undefined, { cwd });
+					assert.equal(result.content[0].text, "ok");
+					const argv = fs.readFileSync(argvFile, "utf8").split("\0");
+					const prompt = argv[argv.indexOf("-p") + 1] ?? "";
+					const noticeIdx = prompt.indexOf("[TIME BUDGET]");
+					const guardIdx = prompt.indexOf("Do not create, modify, or delete any files");
+					assert.ok(noticeIdx !== -1, "prompt must carry the time-budget notice");
+					assert.match(prompt, /about 10 minutes/);
+					assert.ok(guardIdx !== -1, "plan guard must stay in the prompt");
+					assert.ok(noticeIdx < guardIdx, "notice must sit before the safety guard");
+					assert.ok(
+						prompt.trimEnd().endsWith("if information you need is missing, state exactly what is missing in your answer."),
+						"guard stays final",
+					);
+					fs.rmSync(cwd, { recursive: true, force: true });
+					fs.rmSync(agentsRoot, { recursive: true, force: true });
+				},
+			);
+		},
+	));
+
+test("execute: rejects non-positive timeoutMinutes without spawning", () =>
+	withEnvs(
+		{ AGY_SKIP_PERMISSIONS: "true" },
+		async () => {
+			const agentsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ask-agents-root-"));
+			const argvFile = path.join(agentsRoot, "argv.txt");
+			const tool = await registerTool();
+			const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ask-cwd-"));
+			await withEnvs(
+				{ AGY_AGENTS_ROOT: agentsRoot, AGY_BIN: makeArgvCapturingAgyBin(argvFile) },
+				async () => {
+					const result = await tool.execute("t1", { prompt: "x", mode: "plan", cwd, timeoutMinutes: 0 }, undefined, undefined, { cwd });
+					assert.match(result.content[0].text, /positive number of minutes/);
+					assert.ok(!fs.existsSync(argvFile), "agy must not spawn");
+					fs.rmSync(cwd, { recursive: true, force: true });
+					fs.rmSync(agentsRoot, { recursive: true, force: true });
+				},
+			);
+		},
+	));

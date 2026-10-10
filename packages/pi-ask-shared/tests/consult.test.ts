@@ -3,6 +3,8 @@
 // sessionId} result for consumer extensions (pi-unblock consults). The peer
 // fake emits the real CLI grammars pinned in the peers-* suites.
 import { execFile } from "node:child_process";
+import { readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -132,6 +134,71 @@ describe("runConsult: agy (raw transport)", () => {
 		expect(r.sessionId).toBeNull();
 		expect(r.exitCode).toBe(0);
 	});
+
+	it("appends the time-budget notice to the peer prompt (consult framing, exact seconds)", async () => {
+		const fixture = await fixtureArg();
+		const promptFile = join(tmpdir(), `consult-prompt-${process.pid}-${Date.now()}.txt`);
+		try {
+			const r = await runConsult({
+				peer: "agy",
+				binary,
+				args: [fixture, "promptdump", promptFile],
+				prompt: "review this diff",
+				timeoutMs: 45_000,
+			});
+			expect(r.exitCode).toBe(0);
+			const seen = readFileSync(promptFile, "utf8");
+			expect(seen.startsWith("review this diff")).toBe(true);
+			expect(seen).toContain("[TIME BUDGET]");
+			expect(seen).toContain("about 45 seconds");
+			expect(seen).toContain("direct, concise final answer immediately");
+		} finally {
+			rmSync(promptFile, { force: true });
+		}
+	});
+
+	it("appends the notice on the claude transport (stdin)", async () => {
+		const fixture = await fixtureArg();
+		const promptFile = join(tmpdir(), `consult-prompt-${process.pid}-${Date.now()}.txt`);
+		process.env.FAKE_PROMPTFILE = promptFile;
+		try {
+			await runConsult({
+				peer: "claude",
+				binary,
+				args: [fixture, "claude-consult"],
+				prompt: "review this diff",
+				timeoutMs: 45_000,
+			});
+			const seen = readFileSync(promptFile, "utf8");
+			expect(seen).toContain("[TIME BUDGET]");
+			expect(seen).toContain("about 45 seconds");
+		} finally {
+			delete process.env.FAKE_PROMPTFILE;
+			rmSync(promptFile, { force: true });
+		}
+	});
+
+	it("appends the notice on the codex transport (positional)", async () => {
+		const fixture = await fixtureArg();
+		const promptFile = join(tmpdir(), `consult-prompt-${process.pid}-${Date.now()}.txt`);
+		process.env.FAKE_PROMPTFILE = promptFile;
+		try {
+			await runConsult({
+				peer: "codex",
+				binary,
+				args: [fixture, "codex-consult"],
+				prompt: "review this diff",
+				timeoutMs: 45_000,
+			});
+			const seen = readFileSync(promptFile, "utf8");
+			expect(seen.startsWith("review this diff")).toBe(true);
+			expect(seen).toContain("[TIME BUDGET]");
+			expect(seen).toContain("about 45 seconds");
+		} finally {
+			delete process.env.FAKE_PROMPTFILE;
+			rmSync(promptFile, { force: true });
+		}
+	});
 });
 
 describe("runConsult: failure surfaces", () => {
@@ -177,6 +244,15 @@ describe("runConsult: failure surfaces", () => {
 				signal: ac.signal,
 			}),
 		).rejects.toSatisfy((e: unknown) => e instanceof ConsultError && e.reason === "aborted");
+	});
+
+	it("rejects non-positive or non-finite timeoutMs as invalid-options", async () => {
+		const fixture = await fixtureArg();
+		for (const timeoutMs of [0, -1000, Number.NaN, Number.POSITIVE_INFINITY, 3_000_000_000]) {
+			await expect(
+				runConsult({ peer: "agy", binary, args: [fixture, "ansi"], prompt: "x", timeoutMs }),
+			).rejects.toSatisfy((e: unknown) => e instanceof ConsultError && e.reason === "invalid-options");
+		}
 	});
 
 	it("maps a missing binary to ConsultError(spawn)", async () => {

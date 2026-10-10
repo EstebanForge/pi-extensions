@@ -58,6 +58,7 @@ switch (mode) {
 		const chunks = [];
 		for await (const c of process.stdin) chunks.push(c);
 		const prompt = Buffer.concat(chunks).toString();
+		if (process.env.FAKE_PROMPTFILE) fs.writeFileSync(process.env.FAKE_PROMPTFILE, prompt);
 		if (!prompt.trim()) {
 			process.stderr.write("no prompt on stdin\n");
 			process.exit(4);
@@ -71,10 +72,12 @@ switch (mode) {
 		process.exit(0);
 	}
 	// Emits the real codex exec --json grammar (thread.started, agent_message),
-	// asserting the prompt arrived as the trailing positional argv item.
+	// asserting the prompt arrived as the trailing positional argv item, with
+	// the time-budget notice allowed as a suffix appended by the consult core.
 	case "codex-consult": {
 		const prompt = process.argv[process.argv.length - 1] ?? "";
-		if (prompt !== "review this diff") {
+		if (process.env.FAKE_PROMPTFILE) fs.writeFileSync(process.env.FAKE_PROMPTFILE, prompt);
+		if (!prompt.startsWith("review this diff")) {
 			process.stderr.write(`bad positional: ${prompt}\n`);
 			process.exit(4);
 		}
@@ -83,6 +86,13 @@ switch (mode) {
 			{ type: "item.completed", item: { type: "agent_message", text: "codex says: LGTM" } },
 		];
 		writeSync1(events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+		process.exit(0);
+	}
+	// Records the trailing positional (the agy prompt) to argv[3] as a file, so
+	// tests can assert what the peer actually received.
+	case "promptdump": {
+		fs.writeFileSync(process.argv[3], process.argv[process.argv.length - 1]);
+		writeSync1("ok\n");
 		process.exit(0);
 	}
 	// Raw stdout with ANSI SGR + OSC sequences and CRLF noise.

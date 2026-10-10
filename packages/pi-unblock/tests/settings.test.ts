@@ -50,6 +50,11 @@ describe("loadUnblockSettings", () => {
 		expect(s.confirmOnPush).toBe(DEFAULT_SETTINGS.confirmOnPush);
 	});
 
+	it("clamps timeoutSec to setTimeout's 32-bit ceiling", () => {
+		const cwd = withConfig(JSON.stringify({ timeoutSec: 99_999_999 }));
+		expect(loadUnblockSettings(cwd).timeoutSec).toBe(Math.floor(2_147_483_647 / 1000));
+	});
+
 	it("merges ignoredCommands as an array of strings", () => {
 		const cwd = withConfig(JSON.stringify({ ignoredCommands: ["ffmpeg", 3] }));
 		expect(loadUnblockSettings(cwd).ignoredCommands).toEqual(["ffmpeg"]);

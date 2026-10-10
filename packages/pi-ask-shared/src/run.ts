@@ -67,7 +67,20 @@ export class RunSpawnError extends Error {
 	}
 }
 
+/** setTimeout's hard ceiling: Node clamps anything above 2^31-1 ms to 1ms,
+ * which would kill the peer instantly. */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
+/** The same ceiling expressed in minutes for callers that think in minutes. */
+export const MAX_TIMEOUT_MINUTES = Math.floor(MAX_TIMEOUT_MS / 60_000);
+
 export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> {
+	// Arm nothing on an impossible timeout: values above setTimeout's 2^31-1 ms
+	// ceiling clamp to 1ms and kill the peer instantly.
+	if (!(Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 && opts.timeoutMs <= MAX_TIMEOUT_MS)) {
+		throw new Error(
+			`runProcess: timeoutMs must be a positive finite number up to ${MAX_TIMEOUT_MS} (got ${opts.timeoutMs})`,
+		);
+	}
 	const {
 		binary,
 		args,

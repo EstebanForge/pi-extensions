@@ -5,6 +5,32 @@ export function summarizePrompt(prompt: string, max = 80): string {
 }
 
 /**
+ * Tell a spawned peer its wall-clock budget so it can pace toward a complete
+ * answer instead of being killed mid-task by the runProcess watchdog. Models
+ * have no clock, so this buys scope pacing, not timekeeping. Magnitude-based:
+ * sub-two-minute budgets get a direct-answer framing (read-only consults),
+ * longer ones get the complete-answer-or-subset framing. Empty for absent
+ * caps and anything under one second, which the watchdog would turn into an
+ * instant kill - callers guard those separately.
+ */
+export function buildTimeBudgetNotice(timeoutMs: number): string {
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return "";
+	if (timeoutMs < 1000) {
+		// Below one second the watchdog fires before any model could read the
+		// prompt; "about 1 second" would overstate the budget.
+		return "";
+	}
+	if (timeoutMs < 120_000) {
+		const sec = Math.floor(timeoutMs / 1000);
+		return `[TIME BUDGET] You have about ${sec} ${sec === 1 ? "second" : "seconds"}. The run is terminated at the limit and you may be cut off mid-task. Provide a direct, concise final answer immediately.`;
+	}
+	// Floor, never round: the notice must not claim more time than the
+	// watchdog grants.
+	const min = Math.floor(timeoutMs / 60_000);
+	return `[TIME BUDGET] You have about ${min} minutes of wall-clock time. The run is terminated at the limit and you may be cut off mid-task. Deliver a complete final answer before it; if the task cannot fit, deliver the most valuable complete subset and state what remains.`;
+}
+
+/**
  * The model-facing description for the `background` flag. One text, byte-identical
  * across all ask tools except the resume-handle name, so model behavior stays
  * consistent package to package.
