@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- The bundled-catalog probe rejects partial output: a timeout or aborted run no longer passes its exit check, so a truncated catalog can never ship half-parsed model aliases.
 
 - Project-scope config files resolve under `.pi/` again (`<project>/.pi/ask-*.json`): the shared-layer refactor passed the workspace root where the shared primitive expects the directory containing the file, so project configs would have been read from and written to the workspace root. Restores pre-refactor behavior.
 - The bundled-catalog probe (`discoverCodexModels`) now actually lives in the shared peer adapter, matching what this changelog already claimed; the extension imports it back.

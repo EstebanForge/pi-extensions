@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- The project config directory follows pi's `CONFIG_DIR_NAME` again instead of a hardcoded `.pi`, matching the pre-refactor path helper on rebranded distributions.
 
 - Project-scope config files resolve under `.pi/` again (`<project>/.pi/ask-*.json`): the shared-layer refactor passed the workspace root where the shared primitive expects the directory containing the file, so project configs would have been read from and written to the workspace root. Restores pre-refactor behavior.
 

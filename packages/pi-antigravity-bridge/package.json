@@ -54,7 +54,7 @@
     }
   },
   "dependencies": {
-    "@estebanforge/pi-ask-shared": "^0.1.0",
+    "@estebanforge/pi-ask-shared": "^0.1.2",
     "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }

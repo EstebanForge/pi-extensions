@@ -118,12 +118,12 @@ interface Config {
 // --- Config ----------------------------------------------------------------
 
 /** Layered config paths: global resolves via pi's getAgentDir() (rebranded
- *  distro safe); project is <cwd>/.pi. Resolution stays extension-local by
- *  design — codex/antigravity hardcode ~/.pi/agent. */
+ *  distro safe); project is <cwd>/<CONFIG_DIR_NAME>. Resolution stays
+ *  extension-local by design — codex/antigravity hardcode ~/.pi/agent. */
 function configPathsFor(cwd: string) {
 	return configPaths({
 		globalDir: getAgentDir(),
-		projectDir: path.join(cwd, ".pi"),
+		projectDir: path.join(cwd, CONFIG_DIR_NAME),
 		fileName: "ask-claude.json",
 	});
 }
