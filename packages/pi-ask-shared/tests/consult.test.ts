@@ -32,6 +32,28 @@ describe("sanitizeReviewerOutput", () => {
 	it("leaves plain text and newlines untouched", () => {
 		expect(sanitizeReviewerOutput("line one\nline two")).toBe("line one\nline two");
 	});
+
+	// Hardening: nested/obfuscated escape sequences must not reassemble into
+	// live terminal control codes inside display:true notices.
+	it("strips nested CSI reassembly to a fixed point", () => {
+		expect(sanitizeReviewerOutput("\x1b[\x1b[0m1m")).not.toContain("\x1b");
+	});
+
+	it("strips colon-parameter CSI", () => {
+		expect(sanitizeReviewerOutput("\x1b[38:2:1:2:3m")).not.toContain("\x1b");
+	});
+
+	it("strips unterminated OSC to end of input", () => {
+		expect(sanitizeReviewerOutput("ok\x1b]0;x")).toBe("ok");
+	});
+
+	it("strips DCS sequences", () => {
+		expect(sanitizeReviewerOutput("\x1bPq\x1b\\")).not.toContain("\x1b");
+	});
+
+	it("strips 8-bit C1 CSI", () => {
+		expect(sanitizeReviewerOutput("a\x9b1mb")).toBe("ab");
+	});
 });
 
 describe("runConsult: claude (stdin transport, JSONL events)", () => {

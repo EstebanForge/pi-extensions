@@ -121,15 +121,37 @@ export interface ConsultResult {
 	aborted: boolean;
 }
 
-const ANSI_CSI_OSC_RE =
-	/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+// Escape-sequence stripping, hardest first. CSI covers colon parameters and
+// intermediate bytes; the 8-bit C1 form (0x9b) is an equal-introducer; OSC and
+// DCS/SOS/PM/APC get terminated and unterminated variants (an unterminated
+// string eats up to the next escape so nothing after it survives live).
+// Applied repeatedly to a fixed point: nested sequences like ESC [ ESC [ 0 m
+// reassemble into a live escape after a single pass.
+const ESCAPE_PATTERNS: RegExp[] = [
+	/\x1b\[[0-9:;<=>?]*[!-/]*[@-~]/g,
+	/\x9b[0-9:;<=>?]*[!-/]*[@-~]/g,
+	/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,
+	/\x1b\][^\x07\x1b]*/g,
+	/\x1b[PX^_][\s\S]*?(?:\x1b\\|\x9c)/g,
+	/\x1b[PX^_][\s\S]*$/g,
+	/\x07/g,
+];
 
-/** Strip terminal control sequences (CSI SGR/cursor, OSC titles), normalize
+/** Strip terminal control sequences (CSI SGR/cursor incl. colon parameters and
+ *  the 8-bit C1 form, OSC titles incl. unterminated, DCS strings), normalize
  *  CRLF, and trim. Applied to every consult answer before it can reach a
- *  transcript. */
+ *  transcript; iterated to a fixed point so obfuscated/nested sequences cannot
+ *  reassemble into live escapes. */
 export function sanitizeReviewerOutput(text: string): string {
-	return text
-		.replace(ANSI_CSI_OSC_RE, "")
+	let out = text;
+	for (let i = 0; i < 8; i++) {
+		const next = ESCAPE_PATTERNS.reduce((acc, re) => acc.replace(re, ""), out);
+		if (next === out) break;
+		out = next;
+	}
+	// Terminal backstop: no escape or C1 introducer survives sanitization.
+	return out
+		.replace(/[\x1b\x9b]/g, "")
 		.replace(/\r\n?/g, "\n")
 		.trim();
 }

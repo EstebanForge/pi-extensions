@@ -32,7 +32,12 @@ export async function discoverCodexModels(
 			args: ["debug", "models", "--bundled"],
 			timeoutMs: opts.timeoutMs ?? 8_000,
 		});
-		text = outcome.exitCode === 0 ? outcome.stdoutRaw : "";
+		// A partial catalog is worse than none: the watchdog maps a SIGTERM
+		// kill to exitCode null (coalesced to 0), so exitCode alone would
+		// accept truncated stdout after a timeout and ship a broken model list
+		// (aliases would reach codex as a literal -m flag). Require a clean,
+		// timely exit.
+		text = outcome.exitCode === 0 && !outcome.timedOut && !outcome.aborted ? outcome.stdoutRaw : "";
 	} catch {
 		return [];
 	}
