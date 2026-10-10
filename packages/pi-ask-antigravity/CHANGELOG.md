@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Peer prompts now carry a `[TIME BUDGET]` notice matching the resolved timeout (default 10 minutes), placed before the plan-mode guard banners so the safety constraints stay the last text the model reads. `timeoutMinutes: 0` is rejected with a clear error instead of arming an instant-kill watchdog.
+- Peer prompts now carry a `[TIME BUDGET]` notice matching the resolved timeout (default 10 minutes), placed before the plan-mode guard banners so the safety constraints stay the last text the model reads. `timeoutMinutes` values that cannot arm a real timer (non-positive, non-finite, above the 35791-minute ceiling) are rejected with a clear error instead of arming an instant-kill watchdog.
 
 ### Fixed
 
