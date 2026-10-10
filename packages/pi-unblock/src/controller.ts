@@ -19,7 +19,12 @@
 //   /unblock command path (manualConsult) bypasses the budget but still
 //   respects the in-flight mutex.
 import type { ConsultOptions } from "@estebanforge/pi-ask-shared";
-import { runConsult as defaultRunConsult, type ConsultPeer } from "@estebanforge/pi-ask-shared";
+import {
+	ConsultError,
+	runConsult as defaultRunConsult,
+	sanitizeReviewerOutput,
+	type ConsultPeer,
+} from "@estebanforge/pi-ask-shared";
 import { buildConsultPrompt, buildNotice, type FailureLine, type TranscriptTurn } from "./assemble.js";
 import {
 	isPublishCommand,
@@ -129,10 +134,12 @@ export class UnblockController {
 			maxAutoConsults: this.settings.maxAutoConsultsPerSession,
 		});
 		if (!started.started) {
-			// In-flight: the running consult's settle consumes the streak.
-			// Cooldown/budget: reset the streak so the loop can re-trigger once
-			// the gate opens instead of wedging past the threshold forever.
-			if (started.blockedBy !== "in-flight") resetStreak(this.state);
+			// Gate closed (cooldown, budget, or another consult in flight):
+			// reset the streak so the loop can re-trigger once the gate opens
+			// instead of wedging past the threshold forever. An in-flight
+			// consult's settle may carry a different key, so the reset cannot
+			// wait for it.
+			resetStreak(this.state);
 			this.ports.notify(`unblock: consult gate blocked (${started.blockedBy})`);
 			return;
 		}
@@ -157,7 +164,7 @@ export class UnblockController {
 			// Failed consults still consume the streak reset + cooldown (both
 			// anchored at start); the executor transcript never sees the error.
 			noteConsultSettled(this.state, key);
-			const reason = err instanceof Error ? err.message : String(err);
+			const reason = this.describeFailure(err);
 			this.ports.notify(`unblock: consult failed — ${reason}`);
 		}
 	}
@@ -185,11 +192,10 @@ export class UnblockController {
 		if (!approved) {
 			return { block: true, reason: "publish declined at the unblock gate" };
 		}
-		// Human-ordered consult: synchronous, no auto-budget spend, but the
-		// in-flight mutex still applies.
+		// Human-ordered consult: synchronous, outside the auto budget and
+		// cooldown (spend: false), but the in-flight mutex still applies.
 		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
-			cooldownSec: 0,
-			maxAutoConsults: Number.POSITIVE_INFINITY,
+			spend: false,
 		});
 		if (!started.started) {
 			this.ports.notify("unblock: a consult is already in flight; publishing without review");
@@ -207,7 +213,7 @@ export class UnblockController {
 			};
 		} catch (err) {
 			// A broken reviewer must not wedge publishing: log and let it run.
-			const reason = err instanceof Error ? err.message : String(err);
+			const reason = this.describeFailure(err);
 			this.ports.notify(`unblock: pre-publish consult failed — ${reason}`);
 			return undefined;
 		} finally {
@@ -217,10 +223,7 @@ export class UnblockController {
 
 	/** Manual /unblock: explicit human consult, bypasses the auto budget. */
 	async manualConsult(focus?: string, signal?: AbortSignal): Promise<void> {
-		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
-			cooldownSec: 0,
-			maxAutoConsults: Number.POSITIVE_INFINITY,
-		});
+		const started = noteConsultStarted(this.state, this.ports.nowMs(), { spend: false });
 		if (!started.started) {
 			this.ports.notify("unblock: a consult is already in flight");
 			return;
@@ -229,14 +232,25 @@ export class UnblockController {
 			const result = await this.consult("manual", 1, focus, signal);
 			this.ports.inject(buildNotice(result.answer));
 		} catch (err) {
-			const reason = err instanceof Error ? err.message : String(err);
+			const reason = this.describeFailure(err);
 			this.ports.notify(`unblock: consult failed — ${reason}`);
 		} finally {
 			noteConsultSettled(this.state, "manual");
 		}
 	}
 
-	/** Shared consult runner over the current ring + failure records. */
+	/** Human-facing failure line: reason plus a sanitized stderr tail. Consult
+ *  failures never carry unsanitized CLI output into notifications. */
+private describeFailure(err: unknown): string {
+	if (err instanceof ConsultError) {
+		const parts = [err.message];
+		if (err.stderr) parts.push(sanitizeReviewerOutput(err.stderr).slice(-500));
+		return parts.filter(Boolean).join("\n");
+	}
+	return err instanceof Error ? err.message : String(err);
+}
+
+/** Shared consult runner over the current ring + failure records. */
 	private consult(
 		triggerKey: string,
 		failureCount: number,

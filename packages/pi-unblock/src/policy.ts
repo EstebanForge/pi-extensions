@@ -135,6 +135,10 @@ export function noteToolResult(
 		};
 	}
 	if (state.consultInFlight) {
+		// The gate swallowed this streak's one shot (the in-flight settle may
+		// carry a different key), so drop it: a fresh streak can re-trigger
+		// once the gate opens instead of wedging past the threshold forever.
+		state.streak = null;
 		return { trigger: false, key, count: streak.count, blockedBy: "in-flight" };
 	}
 	if (state.consultsUsed >= (gates.maxAutoConsults ?? 3)) {
@@ -149,7 +153,7 @@ export function noteToolResult(
 export function noteConsultStarted(
 	state: UnblockState,
 	nowMs: number,
-	opts: { cooldownSec?: number; maxAutoConsults?: number } = {},
+	opts: { cooldownSec?: number; maxAutoConsults?: number; spend?: boolean } = {},
 ): { started: boolean; blockedBy?: "in-flight" | "budget" | "cooldown" } {
 	const cooldownSec = opts.cooldownSec ?? 120;
 	const maxAutoConsults = opts.maxAutoConsults ?? 3;
@@ -159,8 +163,14 @@ export function noteConsultStarted(
 		return { started: false, blockedBy: "cooldown" };
 	}
 	state.consultInFlight = true;
-	state.consultsUsed += 1;
-	state.lastConsultAtMs = nowMs;
+	// spend: false (publish boundary, /unblock) runs outside the auto budget:
+	// no consultsUsed increment, no cooldown anchor, so human-ordered consults
+	// never starve the automatic failure-loop gate.
+	const spend = opts.spend ?? true;
+	if (spend) {
+		state.consultsUsed += 1;
+		state.lastConsultAtMs = nowMs;
+	}
 	return { started: true };
 }
 
@@ -182,27 +192,88 @@ export function resetStreak(state: UnblockState): void {
 
 // --- Publish boundary -------------------------------------------------------
 
-/** Split a command line into shell segments on ; && || |, then tokenize. */
-function shellSegments(command: string): string[][] {
-	return command
-		.split(/\s*(?:&&|\|\||;|\|)\s*/)
-		.map((seg) => seg.trim().split(/\s+/).filter(Boolean));
+const COMMAND_WRAPPERS = new Set(["sudo", "env", "command", "nohup", "stdbuf", "time"]);
+
+/** Resolve the segment's binary name: skip environment assignments and known
+ *  wrapper commands (sudo/env/command/...), then strip any path prefix. */
+function segmentBinary(tokens: string[]): string | null {
+	let i = 0;
+	while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++;
+	while (i < tokens.length && COMMAND_WRAPPERS.has(tokens[i] ?? "")) {
+		i++;
+		while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++;
+	}
+	const bin = tokens[i];
+	if (!bin) return null;
+	return bin.includes("/") ? (bin.split("/").pop() ?? bin) : bin;
 }
 
-/** True when the command line publishes: `git push` or `gh pr create`,
- *  including inside compound commands and behind environment assignments.
- *  Tokenized inspection, not substring matching (agy amendment 2). */
+/** Split a command line into shell segments on ; && || | & and newlines,
+ *  then tokenize each segment with quote-aware splitting (so FOO="a b"
+ *  stays one assignment token and quoted payloads do not leak tokens). */
+function shellSegments(command: string): string[][] {
+	return command
+		.split(/\s*(?:&&|\|\||;|\||&|\n)\s*/)
+		.map((seg) => tokenizeSegment(seg.trim()))
+		.filter((tokens) => tokens.length > 0);
+}
+
+function tokenizeSegment(segment: string): string[] {
+	const tokens: string[] = [];
+	let cur = "";
+	let started = false;
+	let quote: string | null = null;
+	for (let i = 0; i < segment.length; i++) {
+		const ch = segment[i];
+		if (quote) {
+			if (ch === quote) quote = null;
+			else cur += ch;
+			started = true;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			quote = ch;
+			started = true;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < segment.length) {
+			cur += segment[i + 1];
+			i++;
+			started = true;
+			continue;
+		}
+		if (/\s/.test(ch)) {
+			if (started) {
+				tokens.push(cur);
+				cur = "";
+				started = false;
+			}
+			continue;
+		}
+		cur += ch;
+		started = true;
+	}
+	if (started) tokens.push(cur);
+	return tokens;
+}
+
+/** True when the command line publishes: any `git ... push` or
+ *  `gh ... pr create` invocation, including behind flags (git -C repo push),
+ *  wrappers (sudo/env/command), absolute paths, environment assignments, and
+ *  inside compound commands. Tokenized: the publish token must follow the
+ *  segment's resolved git/gh binary, so `echo git push` does not gate.
+ *  Residual gaps (documented): quoted re-execution like bash -c 'git push'
+ *  and wrapper argument forms (nice -n 5 git push). */
 export function isPublishCommand(command: string): boolean {
 	if (!command.trim()) return false;
 	for (const tokens of shellSegments(command)) {
-		let i = 0;
-		// Skip env assignments (FOO=1 git push).
-		while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++;
-		const a = tokens[i];
-		const b = tokens[i + 1];
-		const c = tokens[i + 2];
-		if (a === "git" && b === "push") return true;
-		if (a === "gh" && b === "pr" && c === "create") return true;
+		const bin = segmentBinary(tokens);
+		if (bin === "git" && tokens.includes("push")) return true;
+		if (bin === "gh") {
+			const idx = tokens.indexOf("pr");
+			if (idx !== -1 && tokens[idx + 1] === "create") return true;
+		}
 	}
 	return false;
 }
+

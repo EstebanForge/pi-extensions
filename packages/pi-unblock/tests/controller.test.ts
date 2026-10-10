@@ -114,6 +114,50 @@ describe("UnblockController: failure loop -> consult -> injection (E2E)", () => 
 		expect(notifications.some((n) => n.includes("consult failed"))).toBe(true);
 	});
 
+	it("a trigger blocked by an in-flight consult resets instead of wedging", async () => {
+		// Controlled consult: holds until released, then resolves.
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const consults: string[] = [];
+		const { ports } = makePorts({
+			runConsult: (opts) => {
+				consults.push(opts.prompt);
+				return gate.then(() => ({
+					answer: "ok",
+					sessionId: null,
+					exitCode: 0,
+					timedOut: false,
+					aborted: false,
+					stderr: "",
+				}));
+			},
+		});
+		const c = new UnblockController(
+			settingsWith({ maxAutoConsultsPerSession: 99, cooldownSec: 0 }),
+			ports,
+		);
+		// Loop A triggers consult 1, which holds in flight.
+		c.onTurnStart();
+		await loopUntilTrigger(c);
+		expect(consults).toHaveLength(1);
+		// Loop B reaches threshold while A is in flight: the policy swallows
+		// the one shot and resets the streak — no second consult in flight.
+		c.onTurnStart();
+		for (let i = 0; i < 3; i++) c.onToolResult("bash", false, "cargo build", "fail");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(consults).toHaveLength(1);
+		// A settles; a fresh B loop must reach a REAL consult — proof the
+		// streak was reset rather than wedged past the threshold.
+		release();
+		await new Promise((r) => setTimeout(r, 50));
+		c.onTurnStart();
+		for (let i = 0; i < 3; i++) c.onToolResult("bash", false, "cargo build", "fail");
+		await new Promise((r) => setTimeout(r, 50));
+		expect(consults).toHaveLength(2);
+	});
+
 	it("a trigger suppressed by cooldown resets the streak instead of wedging", async () => {
 		// Fixed clock: every consult attempt inside the 600s cooldown window is
 		// gate-blocked, and each rejected consult still anchors the cooldown.

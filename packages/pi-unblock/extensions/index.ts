@@ -16,7 +16,11 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 			inject: (text) => {
 				void pi.sendMessage(
 					{ customType: "pi-unblock/notice", content: text, display: true },
-					{ deliverAs: "nextTurn" },
+					// steer, not nextTurn: nextTurn queues for the user's NEXT
+					// prompt (drained alongside the next user message), which a
+					// stuck mid-run loop would never see. steer delivers into the
+					// live run.
+					{ deliverAs: "steer" },
 				);
 			},
 			runConsult,

@@ -48,3 +48,11 @@ Project-scoped `.pi/unblock-settings.json`, every key optional:
 ```
 pi install npm:@estebanforge/pi-unblock
 ```
+
+## Known limitations
+
+- Publish matcher residual gaps: quoted re-execution (`bash -c 'git push'`) and wrapper argument forms (`nice -n 5 git push`) bypass the gate. Plain `git push`, flags (`git -C repo push`), wrappers (`sudo`/`env`/`command`), absolute paths, and compound segments are covered.
+- The consult prompt includes tails (2 KB) of recent tool output, so secrets your commands printed travel to the reviewer CLI. Reviewer CLIs run under your own credentials; treat the reviewer as inside your trust boundary. Heuristic redaction is a possible future addition.
+- In-flight reviewer processes are detached: on pi exit they run to their timeout instead of being killed with the session.
+- A publish bypass (re-issuing the reviewed command) never expires within the session.
+- `binary` in `.pi/unblock-settings.json` is project trust, same class as project extensions: a cloned repo can point it at an arbitrary executable.

@@ -141,6 +141,25 @@ describe("consult gates", () => {
 });
 
 describe("key-scoped settle and resetStreak", () => {
+	it("reaching the threshold while in flight resets the streak (no wedge)", () => {
+		const st = newUnblockState();
+		expect(noteConsultStarted(st, 0).started).toBe(true); // in flight, never settles here
+		noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
+		noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
+		expect(noteToolResult(st, obs("exec", false, 1, "npm test"), GATES)).toEqual({
+			trigger: false,
+			key: "exec:npm",
+			count: 3,
+			blockedBy: "in-flight",
+		});
+		// The dead streak is gone: once the in-flight consult settles, a
+		// fresh streak re-climbs to a live trigger.
+		noteConsultSettled(st);
+		noteToolResult(st, obs("exec", false, 2, "npm test"), GATES);
+		noteToolResult(st, obs("exec", false, 2, "npm test"), GATES);
+		expect(noteToolResult(st, obs("exec", false, 2, "npm test"), GATES).trigger).toBe(true);
+	});
+
 	it("a settle with a key preserves a non-matching streak", () => {
 		const st = newUnblockState();
 		noteToolResult(st, obs("exec", false, 1, "npm test"), GATES);
@@ -159,6 +178,46 @@ describe("key-scoped settle and resetStreak", () => {
 		resetStreak(st);
 		expect(st.consultInFlight).toBe(true);
 		expect(noteToolResult(st, obs("exec", false, 1, "npm test"), GATES).trigger).toBe(false);
+	});
+});
+
+describe("isPublishCommand: real-world forms", () => {
+	it("gates flag and path variants of git push", () => {
+		expect(isPublishCommand("git -C repo push")).toBe(true);
+		expect(isPublishCommand("git -c a=b push")).toBe(true);
+		expect(isPublishCommand("/usr/bin/git push")).toBe(true);
+		expect(isPublishCommand("git push --dry-run")).toBe(true);
+		expect(isPublishCommand("git push origin main")).toBe(true);
+	});
+
+	it("gates wrapper invocations and compound segments", () => {
+		expect(isPublishCommand("sudo git push")).toBe(true);
+		expect(isPublishCommand("env git push")).toBe(true);
+		expect(isPublishCommand("command git push")).toBe(true);
+		expect(isPublishCommand('FOO="a b" git push')).toBe(true);
+		expect(isPublishCommand("git status & git push")).toBe(true);
+		expect(isPublishCommand("git add -A && git commit -m x && git push")).toBe(true);
+		expect(isPublishCommand("gh -R o/r pr create")).toBe(true);
+	});
+
+	it("does not gate non-publish commands", () => {
+		expect(isPublishCommand("echo git push")).toBe(false);
+		expect(isPublishCommand("git status")).toBe(false);
+		expect(isPublishCommand("gh pr view")).toBe(false);
+		expect(isPublishCommand("git pushd")).toBe(false);
+		expect(isPublishCommand("")).toBe(false);
+	});
+});
+
+describe("consult gates: budget spending", () => {
+	it("publish/manual consults (spend: false) do not spend budget or arm cooldown", () => {
+		const st = newUnblockState();
+		for (let i = 0; i < 5; i++) {
+			expect(noteConsultStarted(st, i * 1000, { spend: false }).started).toBe(true);
+			noteConsultSettled(st);
+		}
+		// The auto gate is untouched: full budget, no cooldown anchor.
+		expect(noteConsultStarted(st, 10_000, { maxAutoConsults: 3, cooldownSec: 600 }).started).toBe(true);
 	});
 });
 
