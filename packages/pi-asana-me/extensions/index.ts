@@ -21,8 +21,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { searchObjectsTool } from "../lib/tools/search";
 import { getMeTool } from "../lib/tools/me";
 import { getMyTasksTool } from "../lib/tools/my-tasks";
@@ -46,6 +45,7 @@ import {
   CONFIRM_WRITE_FLAG_DESCRIPTION,
   getConfirmWriteEnabled,
   setConfirmWriteEnabled,
+  getSettingsPath,
 } from "../lib/confirm";
 
 // Compact tool guidance appended to the system prompt. Intentionally small:
@@ -303,9 +303,10 @@ function asana(pi: ExtensionAPI): void {
   });
 }
 
-// Settings modal for /asana config. Single flag today, but the SettingsList
-// path scales if more flags are added later. Non-TUI callers get a status
-// notify instead (custom components are terminal-only).
+// Settings dialog for /asana config, on the shared pi-tui-dialogs kit.
+// Non-TUI callers get a status notify instead (custom components are
+// terminal-only). Reads the live file-backed value, not pi.getFlag (which is
+// in-memory only).
 async function openConfigModal(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -320,7 +321,7 @@ async function openConfigModal(
     return;
   }
 
-  const items: SettingItem[] = [
+  const rows: DialogRow[] = [
     {
       id: CONFIRM_WRITE_FLAG,
       label: "Confirm before posting writes",
@@ -332,30 +333,34 @@ async function openConfigModal(
 
   const pending = new Map<string, boolean>();
 
-  await ctx.ui.custom((tui, theme, _kb, done) => {
-    const container = new Container();
-    container.addChild(
-      new Text(theme.fg("accent", theme.bold("Asana extension settings")), 1, 1),
-    );
-    const settingsList = new SettingsList(
-      items,
-      Math.min(items.length + 2, 15),
-      getSettingsListTheme(),
-      (_id: string, newValue: string) => {
-        pending.set(CONFIRM_WRITE_FLAG, newValue === "on");
-      },
-      () => done(undefined),
-    );
-    container.addChild(settingsList);
-    return {
-      render: (w: number) => container.render(w),
-      invalidate: () => container.invalidate(),
-      handleInput: (data: string) => {
-        settingsList.handleInput?.(data);
-        tui.requestRender();
-      },
-    };
-  });
+  await ctx.ui.custom<void>(
+    (host, theme, _kb, done) => {
+      const menu = new DialogMenu(
+        host,
+        theme,
+        {
+          title: "Asana extension settings",
+          subtitle: `Settings file: ${getSettingsPath()}`,
+          rows,
+          footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+          onChange: (_id, value) => {
+            // Stage the change; persist on close, not here.
+            pending.set(CONFIRM_WRITE_FLAG, value === "on");
+          },
+        },
+        () => done(),
+      );
+      return {
+        render: (w: number) => menu.render(w),
+        invalidate: () => menu.invalidate(),
+        handleInput: (data: string) => {
+          menu.handleInput(data);
+          host.requestRender();
+        },
+      };
+    },
+    DIALOG_OPTIONS,
+  );
 
   // Drop net-zero flips, persist genuine deltas. File-backed setter applies
   // live; no reload needed (the next write-tool call reads module state).

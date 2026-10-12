@@ -7,13 +7,13 @@ import { pathToFileURL } from "node:url";
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Static } from "typebox";
 import { Type } from "typebox";
-import { getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 
 /**
  * Single source of truth for the CodeGraph settings flags. Drives registerFlag,
  * the /codegraph status display, autocomplete, the toggle subcommand, and the
- * interactive SettingsList menu. One flag today; structured so more can land
+ * interactive settings dialog (pi-tui-dialogs). One flag today; structured so more can land
  * without touching the command surface.
  */
 const FLAGS = [
@@ -1122,7 +1122,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 
   // /codegraph — status display by default; `toggle <flag>` (or bare
   // `<flag>`) flips a boolean. In TUI, bare /codegraph opens an interactive
-  // SettingsList menu (same component /settings uses). ExtensionAPI exposes
+  // settings dialog (same kit /settings uses). ExtensionAPI exposes
   // no live setFlag, so a toggle writes through to the flag settings file
   // (<piDir>/pi-codegraph-enhanced.json) and reloads; the factory re-seeds
   // registerFlag defaults from disk, so the in-memory value picks up the
@@ -1196,7 +1196,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      // Status/menu mode. In TUI, open an interactive SettingsList so the
+      // Status/menu mode. In TUI, open an interactive settings dialog so the
       // user can flip flags in one visit; changes persist via the flag
       // settings file and a single reload fires on close. Outside TUI, fall
       // back to the read-only status panel — custom components are terminal-only.
@@ -1206,7 +1206,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
       }
 
       const pending = new Map<string, boolean>();
-      const items: SettingItem[] = FLAGS.map((f) => ({
+      const rows: DialogRow[] = FLAGS.map((f) => ({
         id: f.name,
         label: f.label,
         description: f.description,
@@ -1214,28 +1214,33 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
         values: ["on", "off"],
       }));
 
-      await ctx.ui.custom((tui, theme, _kb, done) => {
-        const container = new Container();
-        container.addChild(new Text(theme.fg("accent", theme.bold("CodeGraph settings")), 1, 1));
-        const settingsList = new SettingsList(
-          items,
-          Math.min(items.length + 2, 15),
-          getSettingsListTheme(),
-          (id, newValue) => {
-            pending.set(id, newValue === "on");
-          },
-          () => done(undefined),
-        );
-        container.addChild(settingsList);
-        return {
-          render: (w: number) => container.render(w),
-          invalidate: () => container.invalidate(),
-          handleInput: (data: string) => {
-            settingsList.handleInput?.(data);
-            tui.requestRender();
-          },
-        };
-      });
+      await ctx.ui.custom<void>(
+        (host, theme, _kb, done) => {
+          const menu = new DialogMenu(
+            host,
+            theme,
+            {
+              title: "CodeGraph settings",
+              subtitle: `Settings file: ${getFlagSettingsPath()} — applied on close`,
+              rows,
+              footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+              onChange: (id, value) => {
+                pending.set(id, value === "on");
+              },
+            },
+            () => done(),
+          );
+          return {
+            render: (w: number) => menu.render(w),
+            invalidate: () => menu.invalidate(),
+            handleInput: (data: string) => {
+              menu.handleInput(data);
+              host.requestRender();
+            },
+          };
+        },
+        DIALOG_OPTIONS,
+      );
 
       // Dialog closed. Drop net-zero flips, persist genuine deltas, reload once.
       const deltas: Array<[string, boolean]> = [];

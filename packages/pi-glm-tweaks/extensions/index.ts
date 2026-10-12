@@ -76,11 +76,11 @@
  * Auth is untouched. The provider's existing key (ZAI_API_KEY env, /login,
  * or models.json apiKey) continues to resolve against the new baseUrl.
  */
-import { getSettingsListTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { Type } from "typebox";
-import { loadFlagSettings, loadStringSettings, saveSetting } from "../lib/flag-settings";
+import { loadFlagSettings, loadStringSettings, saveSetting, getSettingsPath } from "../lib/flag-settings";
 import { ZaiMcpSearchClient, type ZaiSearchResult, type ZaiWebSearchArgs } from "../lib/zai-search";
 
 const PROVIDER = "zai";
@@ -674,8 +674,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Status/menu mode. In TUI, open an interactive SettingsList
-			// (same component /settings uses) so the user can flip several
+			// Status/menu mode. In TUI, open an interactive settings dialog
+			// (pi-tui-dialogs kit) so the user can flip several
 			// flags in one visit; changes persist to the settings file and a
 			// single reload fires on close. Outside TUI (RPC/headless), fall
 			// back to the read-only status panel — custom components are
@@ -687,7 +687,7 @@ export default function (pi: ExtensionAPI) {
 
 			const active = specFor(ctx.model) !== undefined;
 			const pending = new Map<string, boolean | string>();
-			const items: SettingItem[] = [
+			const rows: DialogRow[] = [
 				{
 					id: ROUTE_SETTING,
 					label: "API route",
@@ -705,37 +705,40 @@ export default function (pi: ExtensionAPI) {
 				})),
 			];
 
-			await ctx.ui.custom((tui, theme, _kb, done) => {
-				const container = new Container();
-				const header = active
-					? `GLM tweaks — ${ctx.model!.provider}/${ctx.model!.id} active`
-					: "GLM tweaks — inactive (select zai/glm-5.2, zai/glm-5.3, zai/glm-5.3-flash, or a newer glm-5.x)";
-				container.addChild(new Text(theme.fg("accent", theme.bold(header)), 1, 1));
-
-				const settingsList = new SettingsList(
-					items,
-					Math.min(items.length + 2, 15),
-					getSettingsListTheme(),
-					(id, newValue) => {
-						// Stage the change; persist + reload on close, not here,
-						// so the user can flip several settings per visit. The
-						// route item stages its enum value verbatim.
-						if (id === ROUTE_SETTING) pending.set(id, newValue);
-						else pending.set(id, newValue === "on");
-					},
-					() => done(undefined),
-				);
-				container.addChild(settingsList);
-
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => {
-						settingsList.handleInput?.(data);
-						tui.requestRender();
-					},
-				};
-			});
+			await ctx.ui.custom<void>(
+				(host, theme, _kb, done) => {
+					const header = active
+						? `GLM tweaks — ${ctx.model!.provider}/${ctx.model!.id} active`
+						: "GLM tweaks — inactive (select zai/glm-5.2, zai/glm-5.3, zai/glm-5.3-flash, or a newer glm-5.x)";
+					const menu = new DialogMenu(
+						host,
+						theme,
+						{
+							title: header,
+							subtitle: `Settings file: ${getSettingsPath()} — applied on close`,
+							rows,
+							footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+							onChange: (id, newValue) => {
+								// Stage the change; persist + reload on close, not here,
+								// so the user can flip several settings per visit. The
+								// route item stages its enum value verbatim.
+								if (id === ROUTE_SETTING) pending.set(id, newValue);
+								else pending.set(id, newValue === "on");
+							},
+						},
+						() => done(),
+					);
+					return {
+						render: (w: number) => menu.render(w),
+						invalidate: () => menu.invalidate(),
+						handleInput: (data: string) => {
+							menu.handleInput(data);
+							host.requestRender();
+						},
+					};
+				},
+				DIALOG_OPTIONS,
+			);
 
 			// Dialog closed. ctx is still valid here (reload is the only
 			// staleness trigger, and we haven't called it yet). Drop net-zero

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- `/glm` settings now render on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit instead of the bare pi-tui `SettingsList`: bordered rows, a help panel per setting, type-to-search, and the settings file path under the title. Same route + flag rows, same stage-then-apply-on-close behavior.
+
 ## 1.7.1 — 2026-09-07
 
 ### Removed

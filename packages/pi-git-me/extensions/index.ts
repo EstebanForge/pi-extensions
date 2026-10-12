@@ -21,8 +21,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { statusTool } from "../lib/tools/status";
 import { diffTool } from "../lib/tools/diff";
 import { logTool } from "../lib/tools/log";
@@ -50,6 +49,7 @@ import {
   setConfirmWriteEnabled,
   getAllowHeadlessWriteEnabled,
   setAllowHeadlessWriteEnabled,
+  getSettingsPath,
 } from "../lib/confirm";
 
 // Compact tool guidance appended to the system prompt. The first sentence is
@@ -351,10 +351,8 @@ function gitMe(pi: ExtensionAPI): void {
   });
 }
 
-// Settings modal for /git config. Two flags today; the SettingsList path
-// scales if more flags are added later. Non-TUI callers get a status notify.
-// Ported from pi-asana's openConfigModal; the gate is file-backed so no reload
-// is needed after a toggle.
+// Settings dialog for /git config, on the shared pi-tui-dialogs kit. The
+// gates are file-backed so no reload is needed after a toggle.
 async function openConfigModal(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -369,7 +367,7 @@ async function openConfigModal(
     return;
   }
 
-  const items: SettingItem[] = [
+  const rows: DialogRow[] = [
     {
       id: CONFIRM_WRITE_FLAG,
       label: "Review before git/gh writes",
@@ -388,30 +386,35 @@ async function openConfigModal(
 
   const pending = new Map<string, boolean>();
 
-  await ctx.ui.custom((tui, theme, _kb, done) => {
-    const container = new Container();
-    container.addChild(
-      new Text(theme.fg("accent", theme.bold("git-me extension settings")), 1, 1),
-    );
-    const settingsList = new SettingsList(
-      items,
-      Math.min(items.length + 2, 15),
-      getSettingsListTheme(),
-      (id: string, newValue: string) => {
-        pending.set(id, newValue === "on");
-      },
-      () => done(undefined),
-    );
-    container.addChild(settingsList);
-    return {
-      render: (w: number) => container.render(w),
-      invalidate: () => container.invalidate(),
-      handleInput: (data: string) => {
-        settingsList.handleInput?.(data);
-        tui.requestRender();
-      },
-    };
-  });
+  await ctx.ui.custom<void>(
+    (host, theme, _kb, done) => {
+      const menu = new DialogMenu(
+        host,
+        theme,
+        {
+          title: "git-me extension settings",
+          subtitle: `Settings file: ${getSettingsPath()}`,
+          rows,
+          footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+          onChange: (id, value) => {
+            // Stage the change; persist on close, not here, so the user can
+            // flip several flags per visit.
+            pending.set(id, value === "on");
+          },
+        },
+        () => done(),
+      );
+      return {
+        render: (w: number) => menu.render(w),
+        invalidate: () => menu.invalidate(),
+        handleInput: (data: string) => {
+          menu.handleInput(data);
+          host.requestRender();
+        },
+      };
+    },
+    DIALOG_OPTIONS,
+  );
 
   // Persist genuine deltas only (drop net-zero flips). The generic onChange
   // key is the flag id, so this scales to any number of flags without a

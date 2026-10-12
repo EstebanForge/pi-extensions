@@ -1,6 +1,7 @@
-import { getSettingsListTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
@@ -9,7 +10,7 @@ import {
   resetPlaintextBearerAuthWarning,
 } from "./security.js";
 import { ensureServer } from "./server.js";
-import { loadFlagSettings, saveFlagSetting } from "./flag-settings.js";
+import { loadFlagSettings, saveFlagSetting, getSettingsPath } from "./flag-settings.js";
 import { withDialogLock } from "./dialog-lock.js";
 
 type TextBlock = { type?: string; text?: string };
@@ -424,7 +425,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       }
 
       const pending = new Map<string, boolean>();
-      const items: SettingItem[] = FLAGS.map((f) => ({
+      const rows: DialogRow[] = FLAGS.map((f) => ({
         id: f.name,
         label: f.label,
         description: f.description,
@@ -436,34 +437,35 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
         ? `${health.status || health.health?.status || "unknown"}${health.version ? ` v${health.version}` : ""}`
         : "unreachable";
 
-      await ctx.ui.custom((tui, theme, _kb, done) => {
-        const container = new Container();
-        container.addChild(
-          new Text(theme.fg("accent", `agentmemory — server: ${healthText}`), 1, 1),
-        );
-
-        const settingsList = new SettingsList(
-          items,
-          Math.min(items.length + 2, 15),
-          getSettingsListTheme(),
-          (id, newValue) => {
-            // Stage the change; persist + reload on close, not here,
-            // so the user can flip several flags per visit.
-            pending.set(id, newValue === "on");
-          },
-          () => done(undefined),
-        );
-        container.addChild(settingsList);
-
-        return {
-          render: (w: number) => container.render(w),
-          invalidate: () => container.invalidate(),
-          handleInput: (data: string) => {
-            settingsList.handleInput?.(data);
-            tui.requestRender();
-          },
-        };
-      });
+      await ctx.ui.custom<void>(
+        (host, theme, _kb, done) => {
+          const menu = new DialogMenu(
+            host,
+            theme,
+            {
+              title: `agentmemory — server: ${healthText}`,
+              subtitle: `Settings file: ${getSettingsPath()} — applied on close`,
+              rows,
+              footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+              onChange: (id, value) => {
+                // Stage the change; persist + reload on close, not here,
+                // so the user can flip several flags per visit.
+                pending.set(id, value === "on");
+              },
+            },
+            () => done(),
+          );
+          return {
+            render: (w: number) => menu.render(w),
+            invalidate: () => menu.invalidate(),
+            handleInput: (data: string) => {
+              menu.handleInput(data);
+              host.requestRender();
+            },
+          };
+        },
+        DIALOG_OPTIONS,
+      );
 
       // Dialog closed. ctx is still valid here (reload is the only
       // staleness trigger, and we haven't called it yet). Drop net-zero
