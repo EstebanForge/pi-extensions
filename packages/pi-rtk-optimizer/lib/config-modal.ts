@@ -1,8 +1,8 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogTab } from "@estebanforge/pi-tui-dialogs";
 import { toOnOff } from "./boolean-format.js";
 import type { RtkIntegrationController } from "./command-register.js";
-import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 import {
 	DEFAULT_RTK_INTEGRATION_CONFIG,
 	RTK_SOURCE_FILTER_LEVELS,
@@ -448,69 +448,49 @@ function syncSettingValues(settingsList: SettingValueSyncTarget, config: RtkInte
 }
 
 async function openSettingsModal(ctx: ExtensionCommandContext, controller: RtkIntegrationController): Promise<void> {
-	const overlayOptions = { anchor: "center" as const, width: 86, maxHeight: "85%" as const, margin: 1 };
-
 	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => {
+		(host, theme, _keybindings, done) => {
 			let current = controller.getConfig();
-			let settingsModal: ZellijSettingsModal | null = null;
-			const allSettings = buildSettingItems(current);
-			const tabs = buildTabbedSettingGroups(allSettings);
 
-			settingsModal = new ZellijSettingsModal(
+			const menu = new DialogMenu(
+				host,
+				theme,
 				{
 					title: "Pi RTK Optimizer",
-					tabs,
-					activeTabIndex: 0,
+					subtitle: `Config: ${controller.getConfigPath()}`,
+					tabs: buildTabbedSettingGroups(buildSettingItems(current)).map<DialogTab>(({ label, settings }) => ({
+						label,
+						rows: settings,
+					})),
+					footer: [
+						"←/→ tabs · Type to search · Enter/Space change · Esc close",
+						"←/→ tabs · Enter/Space change · Esc close",
+						"Esc close",
+					],
 					onChange: (id, newValue) => {
 						current = applySetting(current, id, newValue);
 						controller.setConfig(current, ctx);
 						current = controller.getConfig();
-						if (settingsModal) {
-							syncSettingValues(settingsModal, current);
-						}
+						syncSettingValues(menu, current);
 					},
-					onClose: () => done(),
-					helpText: `Config: ${controller.getConfigPath()}`,
-					enableSearch: true,
 				},
-				theme,
-			);
-
-			const modal = new ZellijModal(
-				settingsModal,
-				{
-					borderStyle: "rounded",
-					titleBar: {
-						left: "Pi RTK Optimizer",
-					},
-					helpUndertitle: {
-						variants: [
-							"←/→ tabs • Type to search • Enter/Space change • Esc close",
-							"←/→ tabs • Type to search • Esc close",
-							"←/→ tabs • Esc close",
-						],
-						color: "dim",
-					},
-					overlay: overlayOptions,
-				},
-				theme,
+				() => done(),
 			);
 
 			return {
 				render(width: number) {
-					return modal.renderModal(width).lines;
+					return menu.render(width);
 				},
 				invalidate() {
-					modal.invalidate();
+					menu.invalidate();
 				},
 				handleInput(data: string) {
-					modal.handleInput(data);
-					tui.requestRender();
+					menu.handleInput(data);
+					host.requestRender();
 				},
 			};
 		},
-		{ overlay: true, overlayOptions },
+		DIALOG_OPTIONS,
 	);
 }
 

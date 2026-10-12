@@ -193,7 +193,7 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(settingsSnapshotText(controller.settings, settingsPath), "info");
 			return;
 		}
-		const pending = await openUnblockSettings(ctx.ui, controller.settings);
+		const pending = await openUnblockSettings(ctx, controller.settings);
 		if (!pending) return;
 		try {
 			const savedPath = saveUnblockSettings(ctx.cwd, pending);

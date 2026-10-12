@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- The `/unblock settings` dialog now renders on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit: bordered `label │ value` rows, a help panel for the selected setting, type-to-search, and inline validated input editors, replacing the bare SettingsList overlay. Behavior unchanged: cycle rows still flip in place, text rows still open a validated editor, and every change still saves when the dialog closes.
+
 ## [1.0.0] - 2026-10-11
 
 First release under this name (the failure-loop gate shipped earlier as a 0.1.x draft; this is the same extension, broadened and renamed).

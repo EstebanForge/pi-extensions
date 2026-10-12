@@ -1,19 +1,10 @@
-// Settings editor for /unblock settings: a SettingsList overlay (the
-// pi-ask-claude / pi-ask-codex config pattern) over the project settings
-// file. Row construction, value parsing, and the headless snapshot are pure
-// and unit-tested; this module also owns the overlay + inline-editor glue
-// (pi-tui Input inside the SettingsList submenu slot, engine-picker shape).
-import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import {
-	Container,
-	Input,
-	SettingsList,
-	Spacer,
-	Text,
-	type Component,
-	type SettingItem,
-} from "@earendil-works/pi-tui";
+// Settings editor for /unblock settings: the @estebanforge/pi-tui-dialogs
+// framed menu (RTK modal contract) over the project settings file. Row
+// construction, value parsing, and the headless snapshot are pure and
+// unit-tested; this module also owns the overlay + input-dialog glue.
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { SettingItem } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, InputView, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { SETTING_LIMITS, type Reviewer, type UnblockSettings } from "./settings.js";
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -271,50 +262,13 @@ export function buildSettingItems(s: UnblockSettings): SettingItem[] {
 	];
 }
 
-/** Inline single-line editor shown in the SettingsList submenu slot. Invalid
- *  input stays open with the error inline; enter saves, esc cancels. */
-function textInputEditor(opts: {
-	title: string;
-	hint: string;
-	initial: string;
-	validate: (raw: string) => ParseResult<unknown>;
-	theme: Theme;
-	done: (selectedValue?: string) => void;
-}): Component {
-	const container = new Container();
-	const border = (line: string) => opts.theme.fg("accent", line);
-	container.addChild(new DynamicBorder(border));
-	container.addChild(new Text(opts.theme.fg("accent", opts.theme.bold(opts.title)), 1, 1));
-
-	const input = new Input({ placeholder: opts.hint });
-	input.setValue(opts.initial);
-	input.focused = true;
-	const errorText = new Text("", 1, 0);
-	container.addChild(input);
-	container.addChild(errorText);
-
-	container.addChild(new Spacer(1));
-	container.addChild(new Text(opts.theme.fg("dim", "enter save · esc cancel"), 1, 0));
-	container.addChild(new DynamicBorder(border));
-
-	input.onSubmit = (value) => {
-		const parsed = opts.validate(value);
-		if (!parsed.ok) {
-			errorText.setText(opts.theme.fg("error", parsed.error));
-			return;
-		}
-		opts.done(value.trim());
-	};
-	input.onEscape = () => opts.done();
-
-	return {
-		render: (width: number) => container.render(width),
-		invalidate: () => container.invalidate(),
-		handleInput: (data: string) => {
-			input.handleInput(data);
-		},
-	};
-}
+/** Hosts the framed input editor inside the settings overlay (one overlay,
+ *  swapped views) so focus never has to jump between stacked overlays. */
+type EditorView = {
+	render(width: number): string[];
+	invalidate(): void;
+	handleInput(data: string): void;
+};
 
 /** Headless (rpc/json/print) snapshot: every knob and the file that backs it. */
 export function settingsSnapshotText(s: UnblockSettings, filePath: string): string {
@@ -345,75 +299,92 @@ export function settingsSnapshotText(s: UnblockSettings, filePath: string): stri
 	].join("\n");
 }
 
-/** Run the settings overlay. Resolves with the typed patch to save, or null
+/** Run the settings dialog. Resolves with the typed patch to save, or null
  *  when the user closed without touching anything. Persisting + applying the
  *  patch to the live controller stays with the caller. */
 export async function openUnblockSettings(
-	ui: ExtensionUIContext,
+	ctx: ExtensionCommandContext,
 	settings: UnblockSettings,
 ): Promise<Partial<UnblockSettings> | null> {
 	const pending: Partial<UnblockSettings> = {};
 	let touched = false;
+	// Local draft: edits show immediately; the caller persists the patch.
+	const draft: UnblockSettings = { ...settings };
 
-	await ui.custom(
-		(tui, theme, _keybindings, done) => {
-			const items = buildSettingItems(settings).map((item) => {
+	await ctx.ui.custom<void>(
+		(host, theme, _keybindings, done) => {
+			let editor: InputView | null = null;
+
+			const applyValue = (id: string, value: unknown) => {
+				(draft as unknown as Record<string, unknown>)[id] = value;
+				(pending as Record<string, unknown>)[id] = value;
+				touched = true;
+				// Refresh every row's display from the draft (placeholders differ from raw values).
+				for (const fresh of buildSettingItems(draft)) {
+					menu.updateValue(fresh.id, fresh.currentValue);
+				}
+				host.requestRender();
+			};
+
+			const rows: DialogRow[] = buildSettingItems(draft).map((item) => {
 				if (!EDITOR_IDS.has(item.id)) return item;
 				return {
 					...item,
-					submenu: (_currentValue: string, subDone: (selectedValue?: string) => void): Component =>
-						textInputEditor({
-							title: item.label,
-							hint: EDITOR_HINTS[item.id] ?? "",
-							initial: rawEditorInitial(item.id, settings),
-							validate: (raw) => parseRaw(item.id, raw),
+					onEdit: () => {
+						editor = new InputView(
+							host,
 							theme,
-							done: subDone,
-						}),
+							item.label,
+							{
+								initial: rawEditorInitial(item.id, draft),
+								help: EDITOR_HINTS[item.id] ?? "",
+								placeholder: "empty = default",
+								validate: (raw) => {
+									const parsed = parseRaw(item.id, raw);
+									return parsed.ok ? undefined : parsed.error;
+								},
+							},
+							(value) => {
+								editor = null;
+								if (value !== undefined) {
+									const parsed = parseRaw(item.id, value);
+									if (parsed.ok) applyValue(item.id, parsed.value);
+								}
+								host.requestRender();
+							},
+						);
+						host.requestRender();
+					},
 				};
 			});
 
-			const container = new Container();
-			container.addChild(new Text(theme.fg("accent", theme.bold("peer-review settings")), 1, 1));
-			container.addChild(
-				new Text(
-					theme.fg("muted", "Project file: .pi/unblock-settings.json — changes apply now and to future sessions"),
-					1,
-					0,
-				),
-			);
-
-			const list = new SettingsList(
-				items,
-				Math.min(items.length + 4, 17),
-				getSettingsListTheme(),
-				(id, newValue) => {
-					const parsed = parseRaw(id, newValue);
-					if (!parsed.ok) return; // cycle values are ours; editors validate before done()
-					(pending as Record<string, unknown>)[id] = parsed.value;
-					touched = true;
+			const menu = new DialogMenu(
+				host,
+				theme,
+				{
+					title: "peer-review settings",
+					subtitle: "Project file: .pi/unblock-settings.json — changes save when the dialog closes",
+					rows,
+					footer: "↑↓ navigate · Enter edit · Type to search · Esc close",
+					onChange: (id, value) => {
+						const parsed = parseRaw(id, value);
+						if (parsed.ok) applyValue(id, parsed.value);
+					},
 				},
-				() => done(undefined),
-			);
-			container.addChild(list);
-
-			container.addChild(
-				new Text(theme.fg("dim", "↑↓ navigate · enter/space change · esc close"), 1, 0),
+				() => done(),
 			);
 
+			const active = (): EditorView | DialogMenu => editor ?? menu;
 			return {
-				render: (width: number) => container.render(width),
-				invalidate: () => container.invalidate(),
+				render: (width: number) => active().render(width),
+				invalidate: () => active().invalidate(),
 				handleInput: (data: string) => {
-					list.handleInput?.(data);
-					tui.requestRender();
+					active().handleInput(data);
+					host.requestRender();
 				},
 			};
 		},
-		{
-			overlay: true,
-			overlayOptions: { anchor: "center" as const, width: 80, maxHeight: "85%" as const, margin: 1 },
-		},
+		DIALOG_OPTIONS,
 	);
 
 	return touched ? pending : null;

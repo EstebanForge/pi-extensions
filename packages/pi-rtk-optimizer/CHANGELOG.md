@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Settings modal rebuilt on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit. Same four tabs, same type-to-search, same live-apply cycling, same footer hints; the kit replaces the vendored Zellij modal (`lib/zellij-modal.ts` deleted), and the config file path now shows under the title.
+
 ## 1.0.2 (2026-10-02)
 
 ### Added
