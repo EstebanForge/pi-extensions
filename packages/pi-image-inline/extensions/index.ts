@@ -76,7 +76,7 @@ export default function (pi: ExtensionAPI) {
 	// the CLI flag (--image-inline-strip-read) overrides per session.
 	pi.registerFlag(STRIP_READ_FLAG, {
 		description:
-			"Strip image pixels from read results too (zero-pixel lockdown runs). Default false.",
+			"Strip image pixels from read results too (zero-pixel lockdown runs). Default false: everyday coding. True for untrusted images, sensitive screens, or cost-capped batch runs.",
 		type: "boolean",
 		default: loadStripRead(),
 	});
@@ -247,7 +247,7 @@ export default function (pi: ExtensionAPI) {
 				currentValue: current ? "on" : "off",
 				values: ["on", "off"],
 				description:
-					"When on, read results are stripped of image pixels too, so the model never sees any image from any tool. Screenshots still render for you in the transcript, and the placeholder tells the model to ask you instead of retrying. When off (default), images the model explicitly reads pass through for its vision. The change is saved to the settings file and a reload follows, because extension flags are seeded at startup.",
+					"Default off: everyday work. The model sees the images it asks to read, which is what you want when it inspects UI screenshots, diagrams, or design files. Turn on for lockdown runs: untrusted content, screenshots that can show secrets on your screen, or batch runs where vision token spend must stay at zero. On, the model never sees a pixel from any tool; images still render for you in the transcript, and the placeholder tells the model to ask you instead of retrying. Saving writes the settings file and reloads, because flags seed at startup.",
 			},
 		];
 
