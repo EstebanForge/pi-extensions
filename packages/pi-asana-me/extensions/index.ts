@@ -267,7 +267,7 @@ function asana(pi: ExtensionAPI): void {
         }
         case "config": {
           // /asana config -> interactive settings modal (TUI) or status (else).
-          // File-backed (lib/confirm.ts): stages flips in the SettingsList, then
+          // File-backed (lib/confirm.ts): stages flips in the settings dialog, then
           // persists genuine deltas via setConfirmWriteEnabled — applies live,
           // no reload needed (the next write-tool call reads module state).
           await openConfigModal(ctx);
