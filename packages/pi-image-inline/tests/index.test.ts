@@ -110,7 +110,7 @@ describe("tool_result wiring", () => {
 		const event = { toolCallId: "r1", input: {}, content: [IMAGE], isError: false };
 		expect(pi.result("read", event)).toBeUndefined();
 
-		pi.flags.set("image-inline-strip-read", true);
+		pi.flags.set("image-inline-vision-lockdown", true);
 		const result = pi.result("read", event) as { content: Array<{ text: string }> };
 		expect(result.content[0].text).not.toContain("call the read tool");
 	});

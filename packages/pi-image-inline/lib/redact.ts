@@ -31,14 +31,14 @@ export function isCaptureTool(toolName: string): boolean {
 
 // The capture placeholder wording is locked by the behavior contract; keep it
 // one whole literal per branch so greps and reviews see it intact. The read
-// branch must NOT tell the model to call read again: under stripRead lockdown
+// branch must NOT tell the model to call read again: under vision lockdown
 // that read is stripped too, and the instruction would loop.
 export function capturePlaceholder(info: ImageInfo): string {
 	return `[Screenshot captured and rendered in terminal for user: ${info.path ?? "unknown path"} (${dims(info)}). Model vision was not loaded to save tokens. To inspect pixels agentically, call the read tool on this path.]`;
 }
 
 export function readPlaceholder(info: ImageInfo): string {
-	return `[Image read rendered in terminal for user: ${info.path ?? "unknown path"} (${dims(info)}). Model vision was not loaded to save tokens. stripRead lockdown is active; ask the operator to disable it if these pixels are needed.]`;
+	return `[Image read rendered in terminal for user: ${info.path ?? "unknown path"} (${dims(info)}). Model vision was not loaded to save tokens. Vision lockdown is active; ask the operator to disable it if these pixels are needed.]`;
 }
 
 function dims(info: ImageInfo): string {

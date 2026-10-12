@@ -15,8 +15,8 @@
  *
  *   2. READ EXEMPTION — results of the read tool always pass through
  *      untouched. The model asked for vision explicitly; stripping it would
- *      cause re-read loops. Exception: stripRead lockdown (config or
- *      --image-inline-strip-read), where reads are stripped too and the
+ *      cause re-read loops. Exception: vision lockdown (config or
+ *      --image-inline-vision-lockdown), where reads are stripped too and the
  *      placeholder tells the model why.
  *
  *   3. CLI CAPTURES — `agent-browser screenshot <path>` via the shell never
@@ -61,10 +61,10 @@ import {
 	type ImageBlock,
 	type ImageInfo,
 } from "../lib/redact";
-import { getSettingsPath, loadStripRead, saveStripRead } from "../lib/settings";
+import { getSettingsPath, loadVisionLockdown, saveVisionLockdown } from "../lib/settings";
 
 const ENTRY_TYPE = "image-inline";
-const STRIP_READ_FLAG = "image-inline-strip-read";
+const VISION_LOCKDOWN_FLAG = "image-inline-vision-lockdown";
 
 interface EntryData {
 	path: string;
@@ -73,17 +73,17 @@ interface EntryData {
 
 export default function (pi: ExtensionAPI) {
 	// Flags are in-memory only, so the persisted choice seeds the default and
-	// the CLI flag (--image-inline-strip-read) overrides per session.
-	pi.registerFlag(STRIP_READ_FLAG, {
+	// the CLI flag (--image-inline-vision-lockdown) overrides per session.
+	pi.registerFlag(VISION_LOCKDOWN_FLAG, {
 		description:
 			"Strip image pixels from read results too (zero-pixel lockdown runs). Default false: everyday coding. True for untrusted images, sensitive screens, or cost-capped batch runs.",
 		type: "boolean",
-		default: loadStripRead(),
+		default: loadVisionLockdown(),
 	});
 
-	function stripReadActive(): boolean {
-		const flag = pi.getFlag(STRIP_READ_FLAG);
-		return typeof flag === "boolean" ? flag : loadStripRead();
+	function visionLockdownActive(): boolean {
+		const flag = pi.getFlag(VISION_LOCKDOWN_FLAG);
+		return typeof flag === "boolean" ? flag : loadVisionLockdown();
 	}
 
 	const cliStartTimes = new Map<string, number>();
@@ -106,7 +106,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (event.toolName === "read") {
 			// Exempt by default: the model asked for vision explicitly.
-			if (!stripReadActive()) return;
+			if (!visionLockdownActive()) return;
 			return stripImages(event, readPlaceholder);
 		}
 
@@ -225,16 +225,16 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("image-inline", {
-		description: "Configure image vision lockdown (stripRead)",
+		description: "Configure image vision lockdown (visionLockdown)",
 		handler: (args, ctx) => openSettingsModal(args, ctx),
 	});
 
 	async function openSettingsModal(_args: string, ctx: ExtensionCommandContext): Promise<void> {
-		const current = loadStripRead();
+		const current = loadVisionLockdown();
 
 		if (ctx.mode !== "tui") {
 			ctx.ui.notify(
-				`stripRead (vision lockdown): ${current ? "on" : "off"}. Persisted at ${getSettingsPath()}; per-session override: --image-inline-strip-read`,
+				`Vision lockdown (model never sees images): ${current ? "on" : "off"}. Persisted at ${getSettingsPath()}; per-session override: --image-inline-vision-lockdown`,
 				"info",
 			);
 			return;
@@ -242,8 +242,8 @@ export default function (pi: ExtensionAPI) {
 
 		const rows: DialogRow[] = [
 			{
-				id: STRIP_READ_FLAG,
-				label: "Strip read (vision lockdown)",
+				id: VISION_LOCKDOWN_FLAG,
+				label: "Vision lockdown (model never sees images)",
 				currentValue: current ? "on" : "off",
 				values: ["on", "off"],
 				description:
@@ -285,10 +285,10 @@ export default function (pi: ExtensionAPI) {
 		// Flags seed at factory load, so apply the same notify-then-reload
 		// pattern as pi-agentmemory: notify first, reload last.
 		if (pending.size === 0) return;
-		const next = pending.get(STRIP_READ_FLAG);
-		if (next === undefined || next === loadStripRead()) return;
-		saveStripRead(next);
-		ctx.ui.notify(`Saved stripRead=${next ? "on" : "off"}. Reloading...`, "info");
+		const next = pending.get(VISION_LOCKDOWN_FLAG);
+		if (next === undefined || next === loadVisionLockdown()) return;
+		saveVisionLockdown(next);
+		ctx.ui.notify(`Saved visionLockdown=${next ? "on" : "off"}. Reloading...`, "info");
 		await ctx.reload();
 	}
 }

@@ -1,8 +1,8 @@
-// File-backed stripRead setting for pi-image-inline.
+// File-backed visionLockdown setting for pi-image-inline.
 //
 // pi's extension flags are in-memory only: seeded from registerFlag's
 // `default` and CLI args at process start; there is no setFlag. So the
-// stripRead choice lives in a tiny settings file at <piDir>/pi-image-inline.json
+// visionLockdown choice lives in a tiny settings file at <piDir>/pi-image-inline.json
 // and seeds the flag's default at factory load. Same pattern as
 // pi-agentmemory's flag-settings and pi-token-cost-ledger's settings.json.
 
@@ -23,25 +23,25 @@ export function getSettingsPath(): string {
 }
 
 /**
- * Read the persisted stripRead lockdown switch. Missing or corrupt file, or
+ * Read the persisted vision lockdown switch. Missing or corrupt file, or
  * a non-boolean value, means false: vision stays available by default.
  */
-export function loadStripRead(): boolean {
+export function loadVisionLockdown(): boolean {
 	try {
 		const path = getSettingsPath();
 		if (!existsSync(path)) return false;
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-		return typeof parsed.stripRead === "boolean" ? parsed.stripRead : false;
+		return typeof parsed.visionLockdown === "boolean" ? parsed.visionLockdown : false;
 	} catch {
 		return false;
 	}
 }
 
 /**
- * Persist the stripRead lockdown switch. Read-modify-write so keys this
+ * Persist the vision lockdown switch. Read-modify-write so keys this
  * extension does not know about survive the update.
  */
-export function saveStripRead(value: boolean): void {
+export function saveVisionLockdown(value: boolean): void {
 	let parsed: Record<string, unknown> = {};
 	try {
 		const path = getSettingsPath();
@@ -51,6 +51,6 @@ export function saveStripRead(value: boolean): void {
 	} catch {
 		parsed = {};
 	}
-	parsed.stripRead = value;
+	parsed.visionLockdown = value;
 	writeFileSync(getSettingsPath(), `${JSON.stringify(parsed, null, 2)}\n`);
 }

@@ -77,7 +77,7 @@ describe("capturePlaceholder", () => {
 });
 
 describe("readPlaceholder", () => {
-	it("must not instruct the model to call read (loop guard under stripRead)", () => {
+	it("must not instruct the model to call read (loop guard under vision lockdown)", () => {
 		const text = readPlaceholder({ path: IMG_A, width: 10, height: 10 });
 		expect(text).not.toContain("call the read tool");
 		expect(text).toContain(IMG_A);

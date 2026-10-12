@@ -5,7 +5,8 @@
 ## [1.1.0] - 2026-10-12
 
 ### Added
-- `/image-inline` settings command: a bordered pi-tui-dialogs screen for the `stripRead` vision-lockdown toggle, with the settings file path under the title, a help panel explaining what lockdown means, and an automatic reload after saving (extension flags seed at startup). Headless mode prints the current value and file path instead. The JSON file stays the source of truth; the dialog is now the discoverable way to edit it.
+- `/image-inline` settings command: a bordered pi-tui-dialogs screen for the `visionLockdown` toggle, with the settings file path under the title, a help panel explaining when lockdown is worth enabling, and an automatic reload after saving (extension flags seed at startup). Headless mode prints the current value and file path instead. The JSON file stays the source of truth; the dialog is now the discoverable way to edit it.
+- **Renamed `stripRead` to `visionLockdown`** (flag `--image-inline-vision-lockdown`). The old name described the mechanism; the new one states the outcome: the model never sees a pixel from any tool. The old file key and flag are no longer read.
 
 ## [1.0.1] - 2026-10-07
 

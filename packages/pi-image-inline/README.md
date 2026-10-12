@@ -38,10 +38,10 @@ Run `/image-inline` in the TUI for the settings dialog (vision-lockdown toggle, 
 Lockdown mode for zero-pixel runs:
 
 ```json
-{ "stripRead": true }
+{ "visionLockdown": true }
 ```
 
-in `~/.pi/agent/pi-image-inline.json`, or pass `--image-inline-strip-read` for one session. Default false.
+in `~/.pi/agent/pi-image-inline.json`, or pass `--image-inline-vision-lockdown` for one session. Default false. Renamed from `stripRead` / `--image-inline-strip-read` in 1.1.0; the old key is no longer read.
 
 ## Terminal requirements
 
