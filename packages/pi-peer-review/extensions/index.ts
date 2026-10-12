@@ -18,7 +18,7 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		controller = new UnblockController(loadUnblockSettings(ctx.cwd), {
-			notify: (text) => ctx.ui.notify(text, "warning"),
+			notify: (text, level) => ctx.ui.notify(text, level ?? "warning"),
 			inject: (text) => {
 				void pi.sendMessage(
 					{ customType: "pi-peer-review/notice", content: text, display: true },
@@ -44,7 +44,7 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 			ports: {
 				runConsult,
 				nowMs: () => Date.now(),
-				notify: (text) => ctx.ui.notify(text, "warning"),
+				notify: (text, level) => ctx.ui.notify(text, level ?? "warning"),
 				injectNextTurn: (text) => {
 					void pi.sendMessage(
 						{ customType: "pi-peer-review/review", content: text, display: true },

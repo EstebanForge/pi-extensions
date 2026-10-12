@@ -248,10 +248,16 @@ describe("UnblockController: publish boundary", () => {
 
 describe("UnblockController: manual consult", () => {
 	it("/unblock injects the reviewer answer without spending the auto budget", async () => {
-		const { ports, injections } = makePorts();
+		const { ports, injections, notifications } = makePorts();
 		const c = new UnblockController(settingsWith(), await stubConsult(ports));
 		await c.manualConsult("why do the tests fail");
 		expect(injections).toHaveLength(1);
 		expect(injections[0]).toContain("REVIEW VERDICT");
+		// Immediate feedback line: who is consulting, on what, and a wait ask.
+		const info = notifications.find((n) => n.includes("consulting"));
+		expect(info).toBeDefined();
+		expect(info).toContain("consulting claude");
+		expect(info).toContain("on: why do the tests fail");
+		expect(info).toContain("please wait");
 	});
 });

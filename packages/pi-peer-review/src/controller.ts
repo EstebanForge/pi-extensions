@@ -37,7 +37,7 @@ import {
 	type TriggerDecision,
 	type UnblockState,
 } from "./policy.js";
-import { resolveCliFor, resolveReviewerCall, type UnblockSettings } from "./settings.js";
+import { describeCall, resolveCliFor, resolveReviewerCall, type UnblockSettings } from "./settings.js";
 
 /** Shell tools pi reports for command execution; policy keys them as exec. */
 const SHELL_TOOLS = new Set(["bash", "powershell", "exec"]);
@@ -56,7 +56,7 @@ export interface ObservationRecord {
 }
 
 export interface ControllerPorts {
-	notify(text: string): void;
+	notify: (text: string, level?: "info" | "warning") => void;
 	/** Inject a message into the model context at the next turn. */
 	inject(text: string): void;
 	runConsult: typeof defaultRunConsult;
@@ -261,7 +261,7 @@ export class UnblockController {
 		}
 	}
 
-	/** Manual /unblock: explicit human consult, bypasses the auto budget. */
+	/** The manual door: explicit human consult, bypasses the auto budget. */
 	async manualConsult(focus?: string, signal?: AbortSignal): Promise<void> {
 		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
 			spend: false,
@@ -272,6 +272,13 @@ export class UnblockController {
 			this.ports.notify("unblock: a consult is already in flight");
 			return;
 		}
+		// The consult is a headless CLI run: without this line the command
+		// looks dead until the answer lands.
+		const { model, effort } = resolveReviewerCall(this.settings, this.settings.reviewer);
+		this.ports.notify(
+			`unblock: consulting ${this.settings.reviewer} (${describeCall(model, effort)})${focus ? ` on: ${focus}` : ""} — usually answers within ${this.settings.timeoutSec}s; please wait`,
+			"info",
+		);
 		try {
 			const result = await this.consult("manual", 1, focus, signal);
 			this.ports.inject(buildNotice(result.answer));

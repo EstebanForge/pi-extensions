@@ -41,7 +41,7 @@ import {
 	type Backend,
 	type ChangeFile,
 } from "./snapshot.js";
-import { resolveCliFor, resolveReviewerCall, type Reviewer, type UnblockSettings } from "./settings.js";
+import { describeCall, resolveCliFor, resolveReviewerCall, type Reviewer, type UnblockSettings } from "./settings.js";
 
 /** Review consults read files and repos; they need real headroom. */
 const REVIEW_TIMEOUT_MS = 120_000;
@@ -63,7 +63,7 @@ const VERIFY_RE =
 export interface ReviewEnginePorts {
 	runConsult: typeof defaultRunConsult;
 	nowMs(): number;
-	notify(text: string): void;
+	notify(text: string, level?: "info" | "warning"): void;
 	/** Findings bound for the executor's next prompt (idle-safe delivery). */
 	injectNextTurn(text: string): void;
 	/** Mutex shared with the controller's consult gate. */
@@ -257,6 +257,15 @@ export class ReviewEngine {
 		const s = this.getSettings();
 		const peer = (opts.reviewer ?? s.reviewer) as ConsultPeer;
 		const { model, effort } = resolveReviewerCall(s, peer as Reviewer);
+		// The consult is a headless CLI run that can take minutes: without
+		// this line the command looks dead until findings land.
+		const scope = opts.full
+			? "a full audit since session start"
+			: `changes in ${delta.statuses.length} file(s)`;
+		this.ports.notify(
+			`peer-review: consulting ${peer} (${describeCall(model, effort)}) on ${scope} — reading the repo; this can take a few minutes, please wait`,
+			"info",
+		);
 		const { binary, args } = resolveCliFor(peer as Reviewer, s.binary);
 		const consultOpts: ConsultOptions = {
 			peer,

@@ -180,3 +180,9 @@ export function resolveReviewerCall(
 	const perEffort = { claude: s.claudeEffort, codex: s.codexEffort, agy: s.agyEffort }[reviewer];
 	return { model: perModel ?? s.model, effort: perEffort ?? s.effort };
 }
+
+/** Human-readable "model, effort" tail for consult notices; nulls read as
+ *  the reviewer CLI's own defaults instead of an empty pair. */
+export function describeCall(model: string | null, effort: string | null): string {
+	return [model ?? "default model", effort ? `${effort} effort` : "default effort"].join(", ");
+}

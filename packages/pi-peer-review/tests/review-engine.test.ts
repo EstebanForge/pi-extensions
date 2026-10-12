@@ -94,6 +94,10 @@ describe("ReviewEngine", () => {
 		expect(prompt).toContain("BLOCKER");
 		expect(prompt).toContain("NO_BLOCKERS");
 		expect(consultCalls[0]!.peer).toBe("claude");
+		// Immediate feedback line fired before the consult, with a wait ask.
+		const info = notices.find((n) => n.includes("consulting claude"));
+		expect(info).toBeDefined();
+		expect(info).toContain("please wait");
 
 		// Nothing changed since the review: no second consult, told instead.
 		await e.peerReview({});
