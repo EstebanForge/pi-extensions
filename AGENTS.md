@@ -35,6 +35,8 @@ Root owns the toolchain: one `tsconfig.json`, one `vitest.config.ts`, one devDep
 - Package names are a public contract with existing installs. Never rename or re-scope.
 - `files` must stay minimal: runtime only. Never ship `tests/`, configs, or docs in a tarball.
 - `pi.extensions` entrypoints are the install contract; do not move them.
+- Library packages (shared code with no Pi entrypoint) carry no `pi.extensions` field; `main`/`exports` point at source, and the npm scope is the only ownership prefix (inner name describes the concern, never the owner).
+- Every library package states in its README that it is a plain library with no Pi entrypoint, so readers do not mistake it for an installable extension.
 - New shared helpers across two or more packages go in a `packages/shared`-style library, not copy-paste.
 - This repo is the single source of truth. The pre-migration per-extension repos are deleted; all history lives here.
 - Conventional Commits; body explains why, not what.
