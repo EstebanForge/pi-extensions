@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 1.1.0 — 2026-10-12
+
 ### Changed
 - `/codegraph` settings now render on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit instead of the bare pi-tui `SettingsList`: bordered rows, a help panel per flag, type-to-search, and the settings file path under the title. Same flag, same stage-then-apply-on-close behavior.
 

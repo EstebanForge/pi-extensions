@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 1.5.0 — 2026-10-12
+
 ### Changed
 - `/git config` now renders on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit instead of the bare pi-tui `SettingsList`: bordered rows, a help panel per setting, type-to-search, and the settings file path under the title. Same two flags, same stage-then-apply-on-close behavior.
 

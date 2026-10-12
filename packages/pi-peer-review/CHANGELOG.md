@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-12
+
 ### Changed
 - The consult prompt no longer claims a failure that did not happen: `/unblock` and `/advice` now send "Trigger: manual consult" (with the focus text inline) instead of "manual failed 1 consecutive times", the publish-gate fallback describes the gate instead of a failure, and the reviewer frame covers both stuck sessions and on-request guidance. Automatic failure-loop consults keep the honest "failed N consecutive time(s)" line, with the failure label and the answer contract reworded to match (historical-context note for manual consults, "highest-priority recommendation first" closer).
 - Review-frame consults (the `/peer-review` door and the publish gate against unreviewed work) get a 10-minute timeout floor instead of 2 minutes: strong reviewers reading repos routinely pass the old ceiling, and a legitimate review was being killed mid-run.

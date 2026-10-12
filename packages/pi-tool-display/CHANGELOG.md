@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 1.3.0 (2026-10-12)
+
 ### Changed
 - `/tool-display` now renders on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit: `label │ value` rows grouped into Layout / Output / Diffs tabs (left/right to switch), type-to-search, per-row help, and the config file path under the title. The custom split-pane inspector and the vendored Zellij modal are gone (`lib/zellij-modal.ts`, `lib/settings-inspector-modal.ts`, and `lib/modal-icons.ts` deleted, about 2.1k lines), so the dialog looks like every other EstebanForge settings dialog. Changes still apply immediately; a preset swap re-syncs every row's display value. The former `/` advanced-notes toggle folded into the per-row help text.
 
