@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-12
+
 ### Changed
 
 - Default `timeoutMinutes` is now 30 (was 10). Delegations carry feedback, research, review, and analysis work that legitimately runs long; a short default kills the run mid-task and the caller re-pays the whole prompt at a higher timeout. Callers still override per call, lower or higher.
