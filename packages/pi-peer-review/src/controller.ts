@@ -276,7 +276,7 @@ export class UnblockController {
 		// looks dead until the answer lands.
 		const { model, effort } = resolveReviewerCall(this.settings, this.settings.reviewer);
 		this.ports.notify(
-			`unblock: consulting ${this.settings.reviewer} (${describeCall(model, effort)})${focus ? ` on: ${focus}` : ""} — usually answers within ${this.settings.timeoutSec}s; please wait`,
+			`unblock: consulting ${this.settings.reviewer} (${describeCall(model, effort)})${focus ? ` on: ${focus}` : ""} — please wait for the response`,
 			"info",
 		);
 		try {

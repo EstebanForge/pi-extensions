@@ -258,6 +258,6 @@ describe("UnblockController: manual consult", () => {
 		expect(info).toBeDefined();
 		expect(info).toContain("consulting claude");
 		expect(info).toContain("on: why do the tests fail");
-		expect(info).toContain("please wait");
+		expect(info).toContain("please wait for the response");
 	});
 });
