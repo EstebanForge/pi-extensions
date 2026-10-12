@@ -25,7 +25,7 @@ Works in any folder: with git it snapshots trees through a throwaway index (untr
 
 - **Failure-loop consults.** When the same tool fails `threshold` times in a row (shell failures keyed on the command root), the extension consults the reviewer through a one-shot headless run and injects the guidance mid-run (steer). Stale answers degrade to a notification. Failed consults still consume the streak reset and the cooldown — the gate never retry-storms a broken reviewer CLI.
 - **Publish boundary.** `git push` and `gh pr create` (including inside compound commands) pass a confirm dialog first, which now shows "N files changed since last peer review". Accepted commands get a synchronous consult — against the peer-review frame when there is unreviewed work — whose answer blocks the call until the model re-issues it.
-- `/unblock [focus text]` consults the reviewer on demand with the recent transcript slice as material.
+- `/unblock [focus text]` and `/advice [focus text]` are the same command (same handler, same arguments): consult the reviewer on demand with the recent transcript slice as material.
 
 `settings` works from every door: `/peer-review settings`, `/unblock settings`, `/advice settings`.
 
