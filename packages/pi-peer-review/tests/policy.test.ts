@@ -1,4 +1,4 @@
-// Pure policy characterization for pi-unblock. Zero I/O: state machines,
+// Pure policy characterization for pi-peer-review. Zero I/O: state machines,
 // predicates, and gates only. The extension entrypoint applies these to real
 // tool-call events; the consult core is consumed behind noteConsultStarted.
 import { describe, expect, it } from "vitest";

@@ -1,7 +1,7 @@
 /**
  * Antigravity (agy) CLI peer adapter: the agy-specific domain knowledge
  * shared by pi-ask-antigravity, pi-antigravity-bridge's ask-tool, and
- * (later) pi-unblock consults. Extracted verbatim from pi-ask-antigravity's
+ * (later) pi-peer-review consults. Extracted verbatim from pi-ask-antigravity's
  * extensions/index.ts (behavior-preserving).
  *
  * Scope: the `agy models` line grammar, tiered alias resolution, plan-mode

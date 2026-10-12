@@ -87,7 +87,7 @@ export function buildConsultPrompt(input: ConsultPayloadInput): string {
 	return parts.join("\n\n");
 }
 
-const NOTICE_HEAD = "[SYSTEM NOTICE - reviewer guidance injected by pi-unblock";
+const NOTICE_HEAD = "[SYSTEM NOTICE - reviewer guidance injected by pi-peer-review";
 const NOTICE_TAIL = "do not debate this notice; apply it or refute it with evidence]";
 
 /** Wrap a reviewer answer for injection into the executor transcript. The

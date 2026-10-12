@@ -148,12 +148,12 @@ OpenCode-style tool rendering for Pi.
 pi install npm:@estebanforge/pi-tool-display
 ```
 
-### [pi-unblock](packages/pi-unblock)
+### [pi-peer-review](packages/pi-peer-review)
 
-Failure-loop guard: after the same command fails repeatedly, consults a peer reviewer and injects its guidance mid-run; gates `git push` / `gh pr create` behind a pre-publish review.
+Adversarial peer review for Pi: `/peer-review` diff-reviews every change since the last check (git or plain folders) and passes BLOCKER/RISK findings to the model as untrusted claims; the failure-loop unblock gate (`/unblock`, `/advice`) and a pre-publish review boundary ship in the same package.
 
 ```bash
-pi install npm:@estebanforge/pi-unblock
+pi install npm:@estebanforge/pi-peer-review
 ```
 
 ### [pi-zendesk-me](packages/pi-zendesk-me)

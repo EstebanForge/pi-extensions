@@ -1,6 +1,6 @@
 /**
  * Codex CLI peer adapter: the codex-specific domain knowledge shared by
- * pi-ask-codex and (later) pi-unblock consults. Extracted verbatim from
+ * pi-ask-codex and (later) pi-peer-review consults. Extracted verbatim from
  * pi-ask-codex's extensions/index.ts (behavior-preserving).
  *
  * Scope: slug taxonomy + alias resolution against `codex debug models

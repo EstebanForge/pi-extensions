@@ -1,6 +1,6 @@
 // Consult-core characterization: runConsult composes the per-peer argv
 // builders, runProcess, and the stream-event parsers into one {answer,
-// sessionId} result for consumer extensions (pi-unblock consults). The peer
+// sessionId} result for consumer extensions (pi-peer-review consults). The peer
 // fake emits the real CLI grammars pinned in the peers-* suites.
 import { execFile } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";

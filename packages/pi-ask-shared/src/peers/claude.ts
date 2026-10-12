@@ -1,6 +1,6 @@
 /**
  * Claude Code peer adapter: the claude-specific domain knowledge shared by
- * pi-ask-claude and (later) pi-unblock consults. Extracted verbatim from
+ * pi-ask-claude and (later) pi-peer-review consults. Extracted verbatim from
  * pi-ask-claude's extensions/index.ts (behavior-preserving).
  *
  * Scope: argv construction for `claude -p`, the stream-json event grammar

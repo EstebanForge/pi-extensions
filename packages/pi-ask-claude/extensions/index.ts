@@ -249,7 +249,7 @@ export function bridgeConflictExists(agentDir: string, cwd: string): ConflictRes
 // --- claude process helpers ------------------------------------------------
 // buildClaudeArgs, the stream-json event grammar (consumeClaudeEvent), the
 // status-line vocabulary, and stderr noise filtering live in pi-ask-shared
-// (peers/claude.ts) so pi-unblock consults reuse the exact same contract.
+// (peers/claude.ts) so pi-peer-review consults reuse the exact same contract.
 
 function resolveClaude(): string {
 	return process.env.CLAUDE_BIN || "claude";

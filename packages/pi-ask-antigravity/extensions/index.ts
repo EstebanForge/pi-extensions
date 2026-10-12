@@ -101,7 +101,7 @@ const DEFAULT_SKIP_PERMISSIONS = true;
 // Per-family fallback tier, the pi->agy tier clamp (levelToTier), the static
 // alias overlay, and the line grammar now live in the shared peer adapter
 // (pi-ask-shared peers/antigravity.ts) alongside the argv builder and the
-// conversation-discovery technique, so pi-antigravity-bridge and pi-unblock
+// conversation-discovery technique, so pi-antigravity-bridge and pi-peer-review
 // reuse the exact same resolution contract.
 
 // Mode = which agy tool-loop policy to apply. Distinct from the alias layer.
@@ -188,7 +188,7 @@ function saveConfig(patch: Partial<Config>): SaveResult {
 // --- Prompt assembly: shared peer adapter ----------------------------------
 // The plan-mode guards (PLAN_HEADLESS_GUARD / AGENT_REVIEW_GUARD) and the
 // prompt assembler (buildFinalPrompt) live in pi-ask-shared
-// (peers/antigravity.ts) so the bridge's ask-tool and pi-unblock consults
+// (peers/antigravity.ts) so the bridge's ask-tool and pi-peer-review consults
 // inherit the identical guard discipline.
 export { AGENT_REVIEW_GUARD, PLAN_HEADLESS_GUARD } from "@estebanforge/pi-ask-shared";
 

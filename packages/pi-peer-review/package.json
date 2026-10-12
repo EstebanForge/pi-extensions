@@ -1,12 +1,13 @@
 {
-  "name": "@estebanforge/pi-unblock",
-  "version": "0.1.1",
-  "description": "Event-driven unblock gate: when the session's tool failures stack into a loop, consults a cross-family reviewer through a one-shot headless run and injects the guidance as a visible notice. Also guards publish boundaries (git push / gh pr create) behind a confirm-and-consult step. No model-facing tool: the trigger is deterministic, so the session cannot talk itself out of it.",
+  "name": "@estebanforge/pi-peer-review",
+  "version": "1.0.0",
+  "description": "Adversarial peer review for Pi: /peer-review diff-reviews every change since the last check under an adversarial frame (task, executor's claim, real diffs, claim audit) and passes BLOCKER/RISK findings to the model as untrusted claims. Also ships the failure-loop unblock gate (/unblock, /advice) and a pre-publish review boundary. No model-facing tool: the triggers are deterministic, so the session cannot talk itself out of them.",
   "keywords": [
     "pi-package",
     "pi-extension",
-    "unblock",
     "peer-review",
+    "code-review",
+    "unblock",
     "consult",
     "failure-loop",
     "guard"
@@ -20,7 +21,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EstebanForge/pi-extensions.git",
-    "directory": "packages/pi-unblock"
+    "directory": "packages/pi-peer-review"
   },
   "publishConfig": {
     "access": "public"

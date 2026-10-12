@@ -165,7 +165,7 @@ function saveConfig(patch: Partial<Config>): SaveResult {
 // --- Model discovery + alias resolution ------------------------------------
 // The slug taxonomy (classifySlug), the alias resolver (resolveModel), the
 // alias resolver (resolveModel), and the version
-// compare all live in pi-ask-shared (peers/codex.ts) so pi-unblock consults
+// compare all live in pi-ask-shared (peers/codex.ts) so pi-peer-review consults
 // reuse the exact same resolution contract.
 
 // bundled-catalog discovery probe: discoverCodexModels lives in the shared

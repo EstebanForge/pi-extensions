@@ -21,6 +21,7 @@
 import type { ConsultOptions } from "@estebanforge/pi-ask-shared";
 import {
 	ConsultError,
+	levelToTier,
 	runConsult as defaultRunConsult,
 	sanitizeReviewerOutput,
 	type ConsultPeer,
@@ -36,7 +37,7 @@ import {
 	type TriggerDecision,
 	type UnblockState,
 } from "./policy.js";
-import { resolveCliFor, type UnblockSettings } from "./settings.js";
+import { resolveCliFor, resolveReviewerCall, type UnblockSettings } from "./settings.js";
 
 /** Shell tools pi reports for command execution; policy keys them as exec. */
 const SHELL_TOOLS = new Set(["bash", "powershell", "exec"]);
@@ -63,6 +64,13 @@ export interface ControllerPorts {
 	/** Publish-boundary confirmation. Absent in UIs without dialogs
 	 *  (headless JSON/print): the gate degrades to skip-and-log. */
 	confirm?(title: string, detail: string): Promise<boolean>;
+	/** Peer-review frame for the publish consult; null = nothing unreviewed,
+	 *  fall back to the ring-based prompt. */
+	reviewMaterial?(signal?: AbortSignal): Promise<string | null>;
+	/** "N files changed since last peer review" for the confirm dialog. */
+	reviewStatusLine?(): Promise<string | null>;
+	/** The publish consult reviewed the wave: the engine advances its pointer. */
+	reviewSettled?(): void;
 }
 
 export interface PublishVerdict {
@@ -169,6 +177,23 @@ export class UnblockController {
 		}
 	}
 
+	/** Mutex access for the review engine: a review and a gate consult must
+	 *  never run the reviewer CLI concurrently. Human-ordered, so spend:false. */
+	tryGate(): { started: boolean; blockedBy?: string } {
+		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
+			spend: false,
+			// Human-ordered doors never inherit the auto budget or cooldown:
+			// only the in-flight mutex applies.
+			maxAutoConsults: Number.MAX_SAFE_INTEGER,
+			cooldownSec: 0,
+		});
+		return started.started ? { started: true } : { started: false, blockedBy: started.blockedBy };
+	}
+
+	endGate(): void {
+		noteConsultSettled(this.state);
+	}
+
 	/** Publish boundary: synchronous, blocking, behind a confirm. On approval
 	 *  the consult verdict BLOCKS the call as the block reason (the model
 	 *  reads the review before any push runs); re-issuing the identical
@@ -184,7 +209,15 @@ export class UnblockController {
 		let approved: boolean;
 		try {
 			if (!this.ports.confirm) throw new Error("no confirm UI");
-			approved = await this.ports.confirm("Publish?", command);
+			// The status line must never take the confirm dialog down with it:
+			// a broken git in the engine would otherwise fail the gate OPEN.
+			let statusLine: string | null = null;
+			try {
+				statusLine = this.ports.reviewStatusLine ? await this.ports.reviewStatusLine() : null;
+			} catch {
+				statusLine = null;
+			}
+			approved = await this.ports.confirm("Publish?", statusLine ? `${command}\n\n${statusLine}` : command);
 		} catch {
 			this.ports.notify(`unblock: no confirm UI available; letting ${commandRootOf(command)} run`);
 			return undefined;
@@ -196,17 +229,24 @@ export class UnblockController {
 		// cooldown (spend: false), but the in-flight mutex still applies.
 		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
 			spend: false,
+			// Human-ordered doors never inherit the auto budget or cooldown.
+			maxAutoConsults: Number.MAX_SAFE_INTEGER,
+			cooldownSec: 0,
 		});
 		if (!started.started) {
 			this.ports.notify("unblock: a consult is already in flight; publishing without review");
 			return undefined;
 		}
 		try {
-			const result = await this.consult(`publish:${commandRootOf(command)}`, 1, undefined, signal);
+			// Prefer the peer-review frame (diff vs pointer + task + claim) when
+			// there is unreviewed work; otherwise the ring snapshot as before.
+			const material = this.ports.reviewMaterial ? await this.ports.reviewMaterial(signal) : null;
+			const result = await this.consult(`publish:${commandRootOf(command)}`, 1, undefined, signal, material ?? undefined);
 			// Verdict first, command second: block with the review as the
 			// reason, and arm a one-shot bypass so the model's re-issue runs
 			// without a second consult or confirm.
 			this.publishBypass = command;
+			if (material) this.ports.reviewSettled?.();
 			return {
 				block: true,
 				reason: `pre-publish review — re-run the command to proceed:\n${result.answer}`,
@@ -223,7 +263,11 @@ export class UnblockController {
 
 	/** Manual /unblock: explicit human consult, bypasses the auto budget. */
 	async manualConsult(focus?: string, signal?: AbortSignal): Promise<void> {
-		const started = noteConsultStarted(this.state, this.ports.nowMs(), { spend: false });
+		const started = noteConsultStarted(this.state, this.ports.nowMs(), {
+			spend: false,
+			maxAutoConsults: Number.MAX_SAFE_INTEGER,
+			cooldownSec: 0,
+		});
 		if (!started.started) {
 			this.ports.notify("unblock: a consult is already in flight");
 			return;
@@ -250,12 +294,14 @@ private describeFailure(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-/** Shared consult runner over the current ring + failure records. */
+	/** Shared consult runner over the current ring + failure records. A
+	 *  promptOverride replaces the assembled ring prompt (peer-review frame). */
 	private consult(
 		triggerKey: string,
 		failureCount: number,
 		focus?: string,
 		signal?: AbortSignal,
+		promptOverride?: string,
 	): ReturnType<typeof defaultRunConsult> {
 		const failures: FailureLine[] = this.ring
 			.filter((r) => !r.ok)
@@ -271,27 +317,37 @@ private describeFailure(err: unknown): string {
 			summary: r.command ? `$ ${r.command}` : r.tool,
 			output: r.tail,
 		}));
-		const prompt = buildConsultPrompt({
-			triggerKey: focus ? `${triggerKey} — focus: ${focus}` : triggerKey,
-			failureCount,
-			recentFailures: failures,
-			transcriptTurns: turns,
-			settings: {
-				preprompt: this.settings.preprompt,
-				contextMaxTurns: this.settings.contextMaxTurns,
-				maxOutputCharsPerTurn: this.settings.maxOutputCharsPerTurn,
-			},
-		});
+		const prompt =
+			promptOverride ??
+			buildConsultPrompt({
+				triggerKey: focus ? `${triggerKey} — focus: ${focus}` : triggerKey,
+				failureCount,
+				recentFailures: failures,
+				transcriptTurns: turns,
+				settings: {
+					preprompt: this.settings.preprompt,
+					contextMaxTurns: this.settings.contextMaxTurns,
+					maxOutputCharsPerTurn: this.settings.maxOutputCharsPerTurn,
+				},
+			});
 		const { binary, args } = resolveCliFor(this.settings.reviewer, this.settings.binary);
+		const { model, effort } = resolveReviewerCall(this.settings, this.settings.reviewer);
+		const isReviewFrame = Boolean(promptOverride);
 		const opts: ConsultOptions = {
 			peer: this.settings.reviewer as ConsultPeer,
 			binary,
 			args,
 			prompt,
-			timeoutMs: this.settings.timeoutSec * 1000,
-			model: this.settings.model,
+			// Review frames read repos; give them review-grade headroom.
+			timeoutMs: isReviewFrame
+				? Math.max(120_000, 3 * this.settings.timeoutSec * 1000)
+				: this.settings.timeoutSec * 1000,
+			model,
 			signal,
 		};
+		if (this.settings.reviewer === "claude") opts.claude = { effort: effort ?? undefined, mode: "read" };
+		else if (this.settings.reviewer === "codex") opts.codex = { reasoning: effort ?? undefined, sandbox: "read-only" };
+		else opts.agy = { resolved: { model: model ?? "", effort: effort ? levelToTier(effort) : undefined } };
 		return this.ports.runConsult(opts);
 	}
 }

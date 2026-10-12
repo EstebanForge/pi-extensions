@@ -1,6 +1,6 @@
 // Consult core: one call per peer that composes the shared argv builders,
 // runProcess lifecycle, and stream-event parsers into a plain
-// {answer, sessionId} result. Consumers (pi-unblock, future review gates)
+// {answer, sessionId} result. Consumers (pi-peer-review, future review gates)
 // resolve their own CLI binary; this module owns the peer protocol only.
 //
 // Contract notes:

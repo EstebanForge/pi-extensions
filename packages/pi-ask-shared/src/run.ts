@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
 /**
- * Common peer-process lifecycle for the ask-* extensions and pi-unblock,
+ * Common peer-process lifecycle for the ask-* extensions and pi-peer-review,
  * extracted verbatim from runClaudeProcess / runCodexProcess / runAgyProcess.
  * Zero domain knowledge: no prompts, no model families, no session semantics.
  * Peer adapters map {model, prompt} to argv and own all output parsing; this

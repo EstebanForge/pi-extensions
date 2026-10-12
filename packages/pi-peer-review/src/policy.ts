@@ -1,4 +1,4 @@
-// Pure policy core for pi-unblock: failure-streak tracking, consult gating,
+// Pure policy core for pi-peer-review: failure-streak tracking, consult gating,
 // and publish-boundary detection. Zero I/O by design (house style): the
 // extension entrypoint feeds it tool-call events and acts on the decisions.
 //
