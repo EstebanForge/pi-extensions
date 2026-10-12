@@ -15,6 +15,13 @@ const baseInput = {
 	settings: { preprompt: "", contextMaxTurns: 4, maxOutputCharsPerTurn: 4000 },
 };
 
+const manualInput = {
+	...baseInput,
+	triggerKey: "manual",
+	failureCount: 1,
+	focus: "why do the tests fail",
+};
+
 describe("buildConsultPrompt", () => {
 	it("frames the review as a non-debatable system notice", () => {
 		const p = buildConsultPrompt(baseInput);
@@ -42,6 +49,37 @@ describe("buildConsultPrompt", () => {
 		});
 		expect(p).not.toContain("undefined");
 		expect(p).not.toContain("null");
+	});
+
+	it("manual consults state the focus honestly and invent no failure", () => {
+		const p = buildConsultPrompt(manualInput);
+		expect(p).toContain("Trigger: manual consult on: why do the tests fail");
+		expect(p).not.toContain("failed 1");
+		expect(p).toContain("Recent failures (historical context):");
+		expect(p).toContain("The executor is stuck or has asked");
+		expect(p).toContain("highest-priority");
+		expect(p).not.toContain("If the loop is");
+	});
+
+	it("manual consults without focus still render a clean trigger", () => {
+		const p = buildConsultPrompt({ ...manualInput, focus: undefined });
+		expect(p).toContain("Trigger: manual consult.");
+		// No invented failure: "consecutive" belongs to the auto path only.
+		expect(p).not.toContain("consecutive");
+	});
+
+	it("auto triggers stay failure-honest with singular/plural", () => {
+		expect(buildConsultPrompt({ ...baseInput, failureCount: 1 })).toContain(
+			"failed 1 consecutive time.",
+		);
+		expect(buildConsultPrompt(baseInput)).toContain("failed 3 consecutive times.");
+		expect(buildConsultPrompt(baseInput)).toContain("Recent failures:");
+	});
+
+	it("publish-gate fallback describes the gate, not a failure", () => {
+		const p = buildConsultPrompt({ ...baseInput, triggerKey: "publish:push" });
+		expect(p).toContain('publish gate for "push"');
+		expect(p).not.toContain("consecutive");
 	});
 
 	it("caps per-turn output via center truncation", () => {

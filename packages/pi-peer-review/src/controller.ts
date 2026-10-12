@@ -320,8 +320,9 @@ private describeFailure(err: unknown): string {
 		const prompt =
 			promptOverride ??
 			buildConsultPrompt({
-				triggerKey: focus ? `${triggerKey} — focus: ${focus}` : triggerKey,
+				triggerKey,
 				failureCount,
+				focus,
 				recentFailures: failures,
 				transcriptTurns: turns,
 				settings: {

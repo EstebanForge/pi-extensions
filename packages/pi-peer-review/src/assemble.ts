@@ -31,6 +31,8 @@ export interface AssembleSettings {
 export interface ConsultPayloadInput {
 	triggerKey: string;
 	failureCount: number;
+	/** Manual-door focus text; rendered inline on the manual trigger line. */
+	focus?: string;
 	recentFailures: FailureLine[];
 	transcriptTurns: TranscriptTurn[];
 	settings: AssembleSettings;
@@ -47,24 +49,39 @@ export function centerTruncate(text: string, max: number): string {
 
 const REVIEWER_FRAME = [
 	"[SYSTEM NOTICE - do not debate this notice]",
-	"You are reviewing a stuck session. The executor cannot proceed and will",
-	"not see your answer as a debate partner. Reply with concrete corrective",
-	"guidance only: exact commands, exact edits, or the precise reason the",
-	"approach cannot work. No preamble, no restatement of the material.",
+	"You are reviewing an active session. The executor is stuck or has asked",
+	"for guidance and will not see your answer as a debate partner. Reply",
+	"with concrete, actionable guidance: exact commands, exact edits, direct",
+	"answers to the question asked, or the precise reason the approach cannot",
+	"work. No preamble, no restatement of the material.",
 ].join("\n");
+
+/** One honest trigger line per door: manual consults invent no failure,
+ *  the publish gate describes itself, and only the automatic failure-loop
+ *  path speaks of consecutive failures. */
+function triggerLine(input: ConsultPayloadInput): string {
+	if (input.triggerKey === "manual") {
+		const focus = input.focus?.trim();
+		return focus ? `Trigger: manual consult on: ${focus}.` : "Trigger: manual consult.";
+	}
+	if (input.triggerKey.startsWith("publish:")) {
+		return `Trigger: publish gate for "${input.triggerKey.slice("publish:".length)}" (human-approved command).`;
+	}
+	const unit = input.failureCount === 1 ? "time" : "times";
+	return `Trigger: ${input.triggerKey} failed ${input.failureCount} consecutive ${unit}.`;
+}
 
 export function buildConsultPrompt(input: ConsultPayloadInput): string {
 	const { settings } = input;
+	const isManual = input.triggerKey === "manual";
 	const parts: string[] = [];
 
 	if (settings.preprompt.trim()) parts.push(settings.preprompt.trim());
 	parts.push(REVIEWER_FRAME);
-	parts.push(
-		`Trigger: ${input.triggerKey} failed ${input.failureCount} consecutive times.`,
-	);
+	parts.push(triggerLine(input));
 
 	if (input.recentFailures.length) {
-		parts.push("Recent failures:");
+		parts.push(isManual ? "Recent failures (historical context):" : "Recent failures:");
 		for (const f of input.recentFailures) {
 			const tail = f.stderrTail.trim();
 			parts.push(`- $ ${f.command} (exit ${f.exitCode})${tail ? `: ${tail}` : ""}`);
@@ -81,8 +98,9 @@ export function buildConsultPrompt(input: ConsultPayloadInput): string {
 	}
 
 	parts.push(
-		"Answer format: 3-6 bullet points, most-likely-fix first. If the loop is",
-		"an environment problem rather than a code problem, say so explicitly.",
+		"Answer format: 3-6 bullet points, highest-priority recommendation first.",
+		"If an execution failure is caused by the environment rather than code,",
+		"say so explicitly.",
 	);
 	return parts.join("\n\n");
 }
