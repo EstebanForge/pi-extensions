@@ -41,10 +41,9 @@ import {
 	type Backend,
 	type ChangeFile,
 } from "./snapshot.js";
-import { describeCall, resolveCliFor, resolveReviewerCall, type Reviewer, type UnblockSettings } from "./settings.js";
+import { describeCall, resolveCliFor, resolveReviewerCall, REVIEW_TIMEOUT_MS, type Reviewer, type UnblockSettings } from "./settings.js";
 
 /** Review consults read files and repos; they need real headroom. */
-const REVIEW_TIMEOUT_MS = 120_000;
 /** Candidate cap for the mtime walk (files backend). */
 const WALK_CAP = 20_000;
 /** Per-file content tail kept in audit mode. */
@@ -227,7 +226,7 @@ export class ReviewEngine {
 		};
 	}
 	/** The pointer moves to what was actually reviewed, never to a fresh
-	 *  snapshot: edits made while the consult ran (up to 120s+) stay under
+	 *  snapshot: edits made while the consult ran (up to 10 min+) stay under
 	 *  review. Git: the diffed tree. Files: the computed hash map. */
 	private advancePointer(cause: string, delta?: Delta): void {
 		this.pointer = delta
@@ -263,7 +262,7 @@ export class ReviewEngine {
 			? "a full audit since session start"
 			: `changes in ${delta.statuses.length} file(s)`;
 		this.ports.notify(
-			`peer-review: consulting ${peer} (${describeCall(model, effort)}) on ${scope} — reading the repo; this can take a few minutes, please wait`,
+			`peer-review: consulting ${peer} (${describeCall(model, effort)}) on ${scope} — please wait for the response`,
 			"info",
 		);
 		const { binary, args } = resolveCliFor(peer as Reviewer, s.binary);

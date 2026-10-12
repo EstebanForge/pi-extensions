@@ -10,7 +10,7 @@ Adversarial peer review for [Pi](https://pi.dev). The premise: the executor mode
 - Contract: the reviewer must tag findings `BLOCKER:` / `RISK:` / `NIT:` (max 5), cite `file:line` evidence or write `UNVERIFIED:` lines instead of guessing, and answer `NO_BLOCKERS` when nothing rises to blocking. A marker-free answer is shown to you but never auto-sent.
 - Delivery: you always see the full text. `BLOCKER` and `RISK` findings are also injected into the model's next prompt as untrusted claims: "verify each against the code, fix the real ones, list the rejected ones".
 - On a second pass over the same work, the frame switches to verification mode: prove the previous findings closed, hunt regressions, no new NITs.
-- Budget-honest: an empty delta consults nothing, a failed or timed-out review never advances the pointer (coverage is not lost), a mid-run call is refused, and the consult timeout is a code constant (>= 120s) so file-reading reviews cannot livelock.
+- Budget-honest: an empty delta consults nothing, a failed or timed-out review never advances the pointer (coverage is not lost), a mid-run call is refused, and the consult timeout is a code constant (>= 10 min) so file-reading reviews cannot livelock.
 
 ```text
 /peer-review              review changes since the last check
@@ -72,7 +72,7 @@ Project-scoped `.pi/unblock-settings.json`, every key optional:
 - `model` / `effort`: defaults for whichever reviewer is active; `effort` is the thinking/reasoning level (claude: `default|low|medium|high|xhigh`, codex: `minimal..max`, agy: `low|medium|high`). Null uses the CLI's own default.
 - The six per-reviewer keys (`claudeModel`, `codexEffort`, ...) beat the global pair when set, so each peer can keep its own model and effort.
 - `/peer-review claude` (or `codex`, `agy`) overrides the reviewer for that one call while keeping the per-reviewer defaults.
-- `timeoutSec` clamps to `5..2147483`; peer-review consults get `max(120s, 3 x timeoutSec)` regardless, because reading repos takes longer than unblocking.
+- `timeoutSec` clamps to `5..2147483`; peer-review consults get `max(10 min, 3 x timeoutSec)` regardless, because reading repos takes longer than unblocking.
 - `preprompt` is always sent ahead of every frame — the standing adversarial instruction (e.g. "Attack the premise first").
 
 Every key is editable through the settings editor; it enforces the same clamps the loader applies (`threshold` >= 2, `timeoutSec` 5..2147483, ...).

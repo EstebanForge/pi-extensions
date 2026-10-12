@@ -37,7 +37,7 @@ import {
 	type TriggerDecision,
 	type UnblockState,
 } from "./policy.js";
-import { describeCall, resolveCliFor, resolveReviewerCall, type UnblockSettings } from "./settings.js";
+import { describeCall, resolveCliFor, resolveReviewerCall, REVIEW_TIMEOUT_MS, type UnblockSettings } from "./settings.js";
 
 /** Shell tools pi reports for command execution; policy keys them as exec. */
 const SHELL_TOOLS = new Set(["bash", "powershell", "exec"]);
@@ -348,7 +348,7 @@ private describeFailure(err: unknown): string {
 			prompt,
 			// Review frames read repos; give them review-grade headroom.
 			timeoutMs: isReviewFrame
-				? Math.max(120_000, 3 * this.settings.timeoutSec * 1000)
+				? Math.max(REVIEW_TIMEOUT_MS, 3 * this.settings.timeoutSec * 1000)
 				: this.settings.timeoutSec * 1000,
 			model,
 			signal,

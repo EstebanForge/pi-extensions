@@ -170,6 +170,10 @@ export function resolveCliFor(reviewer: Reviewer, binaryOverride: string | null)
 	return { binary: binaryOverride ?? reviewer, args: [] };
 }
 
+/** Floor for review-frame consults: they read files and repos, and strong
+ *  reviewers with high thinking effort routinely pass 2 minutes. */
+export const REVIEW_TIMEOUT_MS = 600_000;
+
 /** Model/effort resolution for one consult: per-reviewer keys beat the
  *  global pair, null falls through to the CLI's own defaults. */
 export function resolveReviewerCall(
