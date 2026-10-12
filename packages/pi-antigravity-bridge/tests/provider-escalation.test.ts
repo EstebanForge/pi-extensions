@@ -49,6 +49,10 @@ const ESC = 30; // ms; fast escalation for tests
 class RecordingDriver {
 	seen: { opts?: DriverTurnRequest } = {};
 	runCalls = 0;
+	/** When true, reentry() returns the live handle (model mid-turn). */
+	liveReentry = false;
+	/** When true, run() throws (driver start failure). */
+	failRun = false;
 	#handle = {
 		id: "fake-turn",
 		outcome: Promise.resolve({ status: "OK" as const, response: "ok", finished: true, aborted: false }),
@@ -59,10 +63,11 @@ class RecordingDriver {
 		return this.#handle;
 	}
 	kickIdle(): void {}
-	reentry(): null {
-		return null;
+	reentry() {
+		return this.liveReentry ? this.#handle : null;
 	}
 	async run(opts: DriverTurnRequest) {
+		if (this.failRun) throw new Error("boom");
 		this.runCalls += 1;
 		this.seen.opts = opts;
 		return this.#handle;
@@ -152,11 +157,14 @@ test("escalation: failAll spares escalated calls (turn end must not fake a failu
 	assert.equal(done.state, "done");
 });
 
-test("escalation: continuation with a dead agy turn settles quietly for escalated calls", async () => {
+test("escalation: unpolled result with a dead agy turn is re-delivered as a late prompt", async () => {
 	const d = new RecordingDriver();
 	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
-	const p = rt.onToolCall("call-1", "AskClaude", {}, new AbortController().signal);
-	await p; // sentinel: escalated
+	const p = rt.onToolCall("call-1", "ask_user_question", {}, new AbortController().signal);
+	await p; // sentinel: escalated; the model ended its turn instead of polling
+	// Turn end: the extension stamps live escalations with the conversation id
+	// (first-turn parks never reach the provider's store.set).
+	rt.stampConversation("conv-9");
 
 	const streamSimple = createStreamSimple({
 		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
@@ -166,18 +174,233 @@ test("escalation: continuation with a dead agy turn settles quietly for escalate
 	});
 	const context: TranscriptContext = normalizeContext({
 		systemPrompt: undefined,
-		messages: [toolResultMessage("call-1", "REVIEW OUTPUT")],
+		messages: [toolResultMessage("call-1", "USER ANSWER")],
 	});
 	const errors: AssistantMessage[] = [];
 	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
 	for await (const ev of stream) {
 		if (ev.type === "error") errors.push(ev.error);
 	}
-	// No error, no new agy prompt: the result is in the poll handle.
+	// The strand is gone: the answer reaches agy as a late prompt in the SAME
+	// conversation, not a quiet settle into a registry nobody polls.
+	assert.equal(errors.length, 0);
+	assert.equal(d.runCalls, 1);
+	const prompt = d.seen.opts?.prompt ?? "";
+	assert.match(prompt, /Late tool delivery/);
+	assert.match(prompt, /USER ANSWER/);
+	assert.match(prompt, /without calling bridge_poll_result/);
+	assert.equal(d.seen.opts?.conversationId, "conv-9");
+	// The entry stays pollable for a late model poll; the claim is single-use.
+	assert.equal(rt.poll("call-1")?.state, "done");
+	assert.equal(rt.claimUndelivered("call-1"), undefined);
+});
+
+test("escalation: two stranded results in one pass redeliver in a single late prompt", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	await rt.onToolCall("c1", "ask_user_question", {}, new AbortController().signal);
+	await rt.onToolCall("c2", "git_commit", {}, new AbortController().signal);
+	rt.stampConversation("conv-m");
+
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: d as unknown as StreamDriver,
+		roundTrips: rt,
+	});
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("c1", "ANSWER ONE"), toolResultMessage("c2", "COMMIT SHA")],
+	});
+	const errors: AssistantMessage[] = [];
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const ev of stream) {
+		if (ev.type === "error") errors.push(ev.error);
+	}
+	assert.equal(errors.length, 0);
+	assert.equal(d.runCalls, 1);
+	const prompt = d.seen.opts?.prompt ?? "";
+	assert.match(prompt, /ANSWER ONE/);
+	assert.match(prompt, /COMMIT SHA/);
+	assert.equal(d.seen.opts?.conversationId, "conv-m");
+});
+
+test("escalation: unbindable conversation settles quietly and releases the claims", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	// c1: stranded in an earlier pass (pending entry consumed by resolve).
+	await rt.onToolCall("c1", "ask_user_question", {}, new AbortController().signal);
+	rt.resolve("c1", "STRANDED ANSWER", false);
+	// c2: escalated and still pending; its result anchors the pass.
+	await rt.onToolCall("c2", "git_commit", {}, new AbortController().signal);
+
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: d as unknown as StreamDriver,
+		roundTrips: rt,
+	});
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("c2", "COMMIT SHA")],
+	});
+	const errors: AssistantMessage[] = [];
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const ev of stream) {
+		if (ev.type === "error") errors.push(ev.error);
+	}
+	// No stamp, no store record: a late prompt would hit a brand-new
+	// conversation that never asked. Quiet settle; claims are released so a
+	// later pass with a bound conversation can still sweep them.
 	assert.equal(errors.length, 0);
 	assert.equal(d.runCalls, 0);
-	assert.ok(rt.poll("call-1"));
-	assert.equal(rt.poll("call-1")?.state, "done");
+	assert.ok(rt.claimUndelivered("c1"));
+	assert.ok(rt.claimUndelivered("c2"));
+});
+
+test("escalation: a strand from an earlier pass is swept on the next fresh pass", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	await rt.onToolCall("c1", "ask_user_question", {}, new AbortController().signal);
+	rt.resolve("c1", "STRANDED ANSWER", false);
+	// No tombstone, no pending id: only the registry sweep can find it.
+	assert.deepEqual(rt.deadIds, []);
+	assert.deepEqual(rt.pendingIds, []);
+
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: d as unknown as StreamDriver,
+		roundTrips: rt,
+	});
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [{ role: "user", content: "continue", timestamp: Date.now() } as unknown as Message],
+	});
+	const errors: AssistantMessage[] = [];
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const ev of stream) {
+		if (ev.type === "error") errors.push(ev.error);
+	}
+	assert.equal(errors.length, 0);
+	assert.equal(d.runCalls, 1);
+	assert.match(d.seen.opts?.prompt ?? "", /STRANDED ANSWER/);
+	assert.match(d.seen.opts?.prompt ?? "", /continue/);
+});
+
+test("escalation: a failed redelivery run releases its claims for the next pass", async () => {
+	const d = new RecordingDriver();
+	d.failRun = true;
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	await rt.onToolCall("c1", "ask_user_question", {}, new AbortController().signal);
+	rt.stampConversation("conv-x");
+
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: d as unknown as StreamDriver,
+		roundTrips: rt,
+	});
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("c1", "USER ANSWER")],
+	});
+	const errors: AssistantMessage[] = [];
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const ev of stream) {
+		if (ev.type === "error") errors.push(ev.error);
+	}
+	assert.equal(errors.length, 1);
+	assert.equal(d.runCalls, 0);
+	// The claim came back: the next pass can retry the delivery.
+	assert.ok(rt.claimUndelivered("c1"));
+});
+
+test("escalation: live turn that ends without polling redelivers after outcome", async () => {
+	const d = new RecordingDriver();
+	d.liveReentry = true;
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	const p = rt.onToolCall("c1", "ask_user_question", {}, new AbortController().signal);
+	await p; // escalated; the answer lands while the model is still mid-turn
+	rt.stampConversation("conv-b");
+
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: d as unknown as StreamDriver,
+		roundTrips: rt,
+	});
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("c1", "LATE ANSWER")],
+	});
+	const errors: AssistantMessage[] = [];
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const ev of stream) {
+		if (ev.type === "error") errors.push(ev.error);
+	}
+	// The reentered live turn re-attaches WITHOUT a run() (it was started by
+	// an earlier pass); the post-outcome redelivery is the only run here.
+	assert.equal(d.runCalls, 1);
+	const prompt = d.seen.opts?.prompt ?? "";
+	assert.match(prompt, /Late tool delivery/);
+	assert.match(prompt, /LATE ANSWER/);
+	assert.equal(d.seen.opts?.conversationId, "conv-b");
+	assert.equal(errors.length, 0);
+});
+
+test("escalation: delivered tracking is terminal-only, single-use, and poll stays pure", () => {
+	const reg = new EscalationRegistry();
+	reg.escalate("c1", "tool");
+	// A running call cannot be marked: only a terminal result counts as read.
+	assert.equal(reg.markDelivered("c1"), false);
+	reg.settleDone("c1", "out", false);
+	// The provider's escalatedNames peek must not mark anything delivered.
+	assert.equal(reg.poll("c1")?.delivered ?? false, false);
+	assert.equal(reg.markDelivered("c1"), true);
+	assert.equal(reg.claimUndelivered("c1"), undefined);
+
+	reg.escalate("c2", "tool");
+	reg.settleDone("c2", "out2", false);
+	const v = reg.claimUndelivered("c2");
+	assert.ok(v);
+	assert.equal(v.text, "out2");
+	assert.equal(reg.claimUndelivered("c2"), undefined);
+	// The entry is kept: a late model poll still gets the result.
+	assert.equal(reg.poll("c2")?.state, "done");
+	assert.equal(reg.poll("c2")?.text, "out2");
+
+	// Registry-wide sweep: done-only, single-use; unclaim restores.
+	reg.escalate("c3", "tool");
+	reg.settleDone("c3", "out3", false);
+	assert.deepEqual(reg.claimAllUndelivered().map((x) => x.callId), ["c3"]);
+	assert.deepEqual(reg.claimAllUndelivered(), []);
+	reg.unclaim("c3"); // delivery failed to start: back to the pool
+	assert.ok(reg.claimUndelivered("c3"));
+	// Failed escalations stay with the tombstone path, never the sweep.
+	reg.escalate("c4", "tool");
+	reg.settleFailed("c4", "boom");
+	assert.deepEqual(reg.claimAllUndelivered(), []);
+	assert.equal(reg.claimUndelivered("c4"), undefined);
+	// Everything is claimed, delivered, or failed now: the sweep is empty.
+	assert.deepEqual(reg.claimAllUndelivered(), []);
+});
+
+test("escalation: stampConversation marks only running entries", () => {
+	const reg = new EscalationRegistry();
+	reg.escalate("live", "tool");
+	reg.escalate("settled", "tool");
+	reg.settleDone("settled", "x", false);
+	reg.stampConversation("conv-1");
+	assert.equal(reg.poll("live")?.conversationId, "conv-1");
+	assert.equal(reg.poll("settled")?.conversationId, undefined);
+	// First stamp wins: the ended turn that owned the call fixes the route;
+	// a later turn-end must not re-route a still-running delivery.
+	reg.stampConversation("conv-2");
+	assert.equal(reg.poll("live")?.conversationId, "conv-1");
+	// A call that escalates after the stamp belongs to a later turn.
+	reg.escalate("fresh", "tool");
+	assert.equal(reg.poll("fresh")?.conversationId, undefined);
 });
 
 test("escalation: ack and poll answers are model-readable", () => {
@@ -188,6 +411,12 @@ test("escalation: ack and poll answers are model-readable", () => {
 	assert.match(ackText, /AskClaude/);
 	assert.match(ackText, /abc-1/);
 	assert.match(ackText, new RegExp(POLL_TOOL_NAME));
+	// Hardened contract: polling is mandatory. The old ack licensed stopping
+	// ("if you stop polling, the bridge re-delivers the result in a later
+	// turn") and gemini took the exit, stranding an ask_user_question answer.
+	assert.match(ackText, /Do NOT end your turn/);
+	assert.match(ackText, /strands the result/);
+	assert.doesNotMatch(ackText, /re-delivers the result in a later turn/);
 
 	const unknown = formatPollAnswer("nope", undefined);
 	assert.equal(unknown.isError, true);

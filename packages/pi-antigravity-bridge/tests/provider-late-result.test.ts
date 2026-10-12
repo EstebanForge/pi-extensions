@@ -246,13 +246,20 @@ test("late delivery: deferred while a pending park anchors the pass, delivered o
 	for await (const ev of s1) {
 		if (ev.type === "error") errors1.push(ev.error);
 	}
-	assert.equal(errors1.length, 0); // quiet stop via the escalated path
+	assert.equal(errors1.length, 0); // quiet note: no conversation to deliver into
 	assert.deepEqual(rt.deadIds, ["call-b"]); // tombstone survived for pass 2
 	assert.equal(rt.poll("call-a")?.state, "done");
-	assert.equal(seen.opts, undefined); // no new agy prompt this pass
+	// No stamp and no store record: a context-free late prompt would hit a
+	// brand-new conversation. The result stays pollable and the claims are
+	// released for a pass that knows the conversation.
+	assert.equal(seen.opts, undefined);
+	// The claim was released (observed without consuming: claimUndelivered
+	// would mark it delivered and defeat the pass-2 sweep).
+	assert.equal(rt.poll("call-a")?.delivered, false);
 
-	// Pass 2: fresh pass (no pending parks) delivers B as a late prompt. A
-	// fresh driver instance keeps the per-pass capture clean.
+	// Pass 2: fresh pass (no pending parks) delivers B from its tombstone AND
+	// re-sweeps A (released above). A fresh driver instance keeps the
+	// per-pass capture clean.
 	const seen2: { opts?: DriverTurnRequest } = {};
 	const driver2 = fakeDriver(seen2);
 	const streamSimple2 = createStreamSimple({
@@ -274,6 +281,10 @@ test("late delivery: deferred while a pending park anchors the pass, delivered o
 	assert.match(seen2.opts.prompt, /B OUTPUT/);
 	assert.match(seen2.opts.prompt, /exec_command/);
 	assert.match(seen2.opts.prompt, /continue$/);
+	// The sweep re-claims A on this pass: the strand is not lost to the
+	// quiet settle above.
+	assert.match(seen2.opts.prompt, /A OUTPUT/);
+	assert.match(seen2.opts.prompt, /AskClaude/);
 	assert.deepEqual(rt.deadIds, []);
 });
 

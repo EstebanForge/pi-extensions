@@ -434,6 +434,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			outcome.status === "OK" ? "info" : "warn",
 		);
 		roundTrips.failAll(FAIL_REASON_TURN_END);
+		// Stamp live escalations with the ended turn's conversation: the park
+		// pass returns before the provider's store.set, so a first-turn park
+		// has no other record of where its result must be re-delivered.
+		if (outcome.conversationId) roundTrips.stampConversation(outcome.conversationId);
 	};
 	streamDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
@@ -817,7 +821,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (name === POLL_TOOL_NAME) {
 				const wanted = typeof args.callId === "string" ? args.callId : "";
 				mcpLog("poll-tool", { callId: wanted });
-				return Promise.resolve(formatPollAnswer(wanted, roundTrips.poll(wanted)));
+				const view = roundTrips.poll(wanted);
+				// A terminal answer means the model RECEIVED the result; mark it
+				// so the redelivery path never double-delivers. poll() itself
+				// stays pure (internal peeks must not mark). Accepted gap: the
+				// mark fires when the poll ANSWERS, not when the HTTP response
+				// lands; a drop inside that one-write window would mark a result
+				// the model never saw.
+				if (view && view.state !== "running") roundTrips.markDelivered(wanted);
+				return Promise.resolve(formatPollAnswer(wanted, view));
 			}
 			if (name !== ACTIVATE_SKILL_TOOL_NAME) {
 				// A cached MCP catalog is not authorization. An inactive/hidden tool

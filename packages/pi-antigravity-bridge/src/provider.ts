@@ -433,6 +433,14 @@ export interface PollView {
 	isError?: boolean;
 	reason?: string;
 	images?: Array<{ data: string; mimeType: string }>;
+	/** A terminal result the model already received via a poll. Set only by
+	 *  markDelivered (the real poll path); poll() stays pure so internal
+	 *  peeks (escalatedNames) never mark. */
+	delivered?: boolean;
+	/** The agy conversation this call belongs to. Stamped at turn end so an
+	 *  unpolled result can be re-delivered to the right conversation
+	 *  (first-turn parks never reach the provider's store.set). */
+	conversationId?: string;
 }
 
 /** Escalated bridge calls. Bounded: past the cap, oldest settled entries
@@ -443,8 +451,11 @@ export class EscalationRegistry {
 		// Soft cap: only settled entries evict. Evicting a RUNNING call would
 		// strand its result (settle becomes a no-op, poll reports unknown), so
 		// saturating the cap with in-flight calls grows the map instead.
+		// Delivered entries evict first: an undelivered result still has a
+		// recovery path (redelivery), a delivered one only serves late polls.
 		while (this.#calls.size > MAX_PARK_TOMBSTONES) {
-			const victim = [...this.#calls.entries()].find(([, e]) => e.state !== "running")?.[0];
+			const settled = [...this.#calls.entries()].filter(([, e]) => e.state !== "running");
+			const victim = (settled.find(([, e]) => e.delivered) ?? settled[0])?.[0];
 			if (victim === undefined) break;
 			this.#calls.delete(victim);
 		}
@@ -473,6 +484,63 @@ export class EscalationRegistry {
 		const e = this.#calls.get(callId);
 		return e ? { ...e } : undefined;
 	}
+
+	/** Record that the model received this terminal result (the real poll
+	 *  path calls this when the view is not running). Running entries and
+	 *  unknown ids are a no-op. */
+	markDelivered(callId: string): boolean {
+		const e = this.#calls.get(callId);
+		if (!e || e.state === "running") return false;
+		e.delivered = true;
+		return true;
+	}
+
+	/** Single-use claim of a done-but-undelivered result: returns the view
+	 *  and marks it delivered in one step, so a later pass can never deliver
+	 *  it twice. The entry stays pollable for a late model poll. Failed
+	 *  escalations are excluded: their pending entry is gone, so the
+	 *  tombstone path is their single delivery channel. */
+	claimUndelivered(callId: string): (PollView & { callId: string }) | undefined {
+		const e = this.#calls.get(callId);
+		if (!e || e.state !== "done" || e.delivered) return undefined;
+		e.delivered = true;
+		return { ...e, callId };
+	}
+
+	/** Registry-wide sweep: claim every done-but-undelivered result. A
+	 *  toolResult is consumed by its own pass (resolve deletes the pending
+	 *  entry), so a strand that survives its first pass can only be found
+	 *  here, not in a later pass's results. Failed escalations stay with the
+	 *  tombstone path. */
+	claimAllUndelivered(): Array<PollView & { callId: string }> {
+		const out: Array<PollView & { callId: string }> = [];
+		for (const [callId, e] of this.#calls) {
+			const claimed = e.state === "done" && !e.delivered ? { ...e, callId } : undefined;
+			if (claimed) {
+				e.delivered = true;
+				out.push(claimed);
+			}
+		}
+		return out;
+	}
+
+	/** Release a claim whose delivery failed to start (driver.run threw): the
+	 *  result returns to the undelivered pool for the next recovery pass. */
+	unclaim(callId: string): void {
+		const e = this.#calls.get(callId);
+		if (e && e.state === "done") e.delivered = false;
+	}
+
+	/** Stamp every running escalation with the ended turn's conversation id
+	 *  (extensions fire this from onTurnEnd). First stamp wins: the ended
+	 *  turn is the conversation the call was made in; a later turn-end (the
+	 *  call can outlive several turns while a human answers) must not
+	 *  re-route the delivery. Entries that escalate later stay unstamped. */
+	stampConversation(conversationId: string): void {
+		for (const e of this.#calls.values()) {
+			if (e.state === "running") e.conversationId ??= conversationId;
+		}
+	}
 }
 
 export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
@@ -483,7 +551,7 @@ export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
 				text: [
 					`STILL RUNNING: the pi tool "${e.name}" has not finished yet.`,
 					`Call ${POLL_TOOL_NAME} with callId "${e.callId}" to get the result. Poll again if it still reports running; you may do other work between polls.`,
-					"This is not an error and nothing is lost: if you stop polling, the bridge re-delivers the result in a later turn.",
+					"Do NOT end your turn while this call is unresolved: keep polling until it reports done or failed. Ending the turn strands the result.",
 				].join("\n"),
 			},
 		],
@@ -619,6 +687,36 @@ export class ToolRoundTrips {
 	 *  fast calls settle synchronously and need no handle). */
 	poll(callId: string): PollView | undefined {
 		return this.#escalations.poll(callId);
+	}
+
+	/** Mark a terminal escalated result as received by the model. Only the
+	 *  real poll path (extensions) calls this; poll() stays pure. */
+	markDelivered(callId: string): boolean {
+		return this.#escalations.markDelivered(callId);
+	}
+
+	/** Single-use claim of a settled-but-undelivered escalated result (the
+	 *  model ended its turn instead of polling). */
+	claimUndelivered(callId: string): (PollView & { callId: string }) | undefined {
+		return this.#escalations.claimUndelivered(callId);
+	}
+
+	/** Registry-wide sweep for done-but-undelivered results: a toolResult is
+	 *  consumed by its own pass, so multi-pass strands are only findable
+	 *  here. */
+	claimAllUndelivered(): Array<PollView & { callId: string }> {
+		return this.#escalations.claimAllUndelivered();
+	}
+
+	/** Release a claim whose delivery failed to start. */
+	unclaim(callId: string): void {
+		this.#escalations.unclaim(callId);
+	}
+
+	/** Stamp running escalations with the ended turn's conversation id so an
+	 *  unpolled result can be re-delivered to the right conversation. */
+	stampConversation(conversationId: string): void {
+		this.#escalations.stampConversation(conversationId);
 	}
 
 	/** Wire the approval park (mcp-server handle.approvals). The extension
@@ -902,6 +1000,9 @@ export function collectToolResults(
 }
 
 export interface LateToolResult {
+	/** Escalated results only: the registry callId, so a failed delivery can
+	 *  unclaim it. Tombstone-borne results have none (already consumed). */
+	callId?: string;
 	name: string;
 	reason: string;
 	text: string;
@@ -909,12 +1010,12 @@ export interface LateToolResult {
 }
 
 /** Frame late tool results so agy treats them as the results its bridge calls
- *  never received (the round-trip died while the pi tool was still running,
- *  e.g. agy's ~180s MCP client timeout on tools/call). */
+ *  never received: a park whose round-trip died while the pi tool ran, or an
+ *  escalated result the model never polled. The reason carries the framing. */
 export function buildLateResultPrompt(late: LateToolResult[], userPrompt?: string): string {
 	const blocks = late.map((r) =>
 		[
-			`pi tool "${r.name}": the bridge round-trip expired before this result reached you (${r.reason}).`,
+			`pi tool "${r.name}": ${r.reason}.`,
 			r.isError ? "The tool reported an error:" : "Result:",
 			r.text.trim() || "(no output)",
 		].join("\n"),
@@ -1194,28 +1295,67 @@ async function runTurnDriver(
 		deps.log?.("late-result-deferred", { count: deps.roundTrips.deadIds.length }, "info");
 	}
 
-	let handle: TurnHandle;
+	// Stranded escalated results: done but never delivered — the model ended
+	// its turn instead of polling bridge_poll_result (observed live 2026-10:
+	// the model stopped after the STILL RUNNING ack on an ask_user_question
+	// and the user's answer stranded in the registry). The sweep is
+	// registry-wide: a toolResult is consumed by its own pass, so a strand
+	// that survives its first pass is only findable here. Claims are
+	// single-use; entries stay pollable for a late model poll.
+	let redeliveryConversation: string | undefined;
+	const collectStranded = (): LateToolResult[] =>
+		deps.roundTrips.claimAllUndelivered().map((view) => {
+			redeliveryConversation ??= view.conversationId;
+			deps.log?.("escalated-redelivery", { tool: view.name, callId: view.callId }, "info");
+			return {
+				callId: view.callId,
+				name: view.name,
+				reason: "you never received this result: you ended your turn without calling bridge_poll_result",
+				text: view.text ?? "(no output)",
+				isError: view.isError ?? false,
+			};
+		});
+
+	const entry = entries.find((e) => e.id === model.id) ?? null;
+	const agyModel = entry?.full ?? model.id;
+	const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
+
+	let handle: TurnHandle | undefined;
 	// Name of the carrier agent staged for THIS turn's fresh conversation, if
 	// any. Recorded into stagedAgentByConversation once the outcome binds the
 	// conversation id, so later gate-closed turns pass the same agent.
 	let stagedAgentName: string | undefined;
-	if (isContinuation) {
-		const active = deps.driver.reentry();
-		if (!active) {
-			// Escalated calls have no turn to re-enter BY DESIGN: agy already
-			// got the poll handle and the result lives in the registry. Settle
-			// quietly instead of erroring the turn.
-			if (escalatedNames.length > 0) {
-				appendText(stream, blocks, `[bridge] ${escalatedNames.join(", ")} finished; the result is available via ${POLL_TOOL_NAME}.`);
-				finalize(stream, blocks, "stop");
-				return;
-			}
-			deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
-			finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
-			return;
-		}
+	const active = isContinuation ? deps.driver.reentry() : null;
+	if (active) {
 		handle = active;
 	} else {
+		// Dead turn: claim NOW (single-use). A live turn claims after outcome
+		// instead — claiming here would eat the post-outcome recovery.
+		late.push(...collectStranded());
+		if (isContinuation && late.length === 0) {
+			if (escalatedNames.length === 0) {
+				deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
+				finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
+				return;
+			}
+			// Escalated results, all already delivered through polls: the model
+			// has them in context. Settle quietly instead of erroring.
+			appendText(stream, blocks, `[bridge] ${escalatedNames.join(", ")} finished; the result is available via ${POLL_TOOL_NAME}.`);
+			finalize(stream, blocks, "stop");
+			return;
+		}
+		if (isContinuation && late.length > 0 && redeliveryConversation === undefined && !existing?.conversationId) {
+			// The owning turn ended before binding a conversation (no stamp, no
+			// store record): a context-free late prompt would hit a brand-new
+			// agy conversation that never asked the question. Release the
+			// claims and settle quietly; the result stays pollable and a later
+			// pass with a bound conversation can still sweep it.
+			for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
+			appendText(stream, blocks, `[bridge] ${escalatedNames.join(", ")} finished, but no conversation is bound to re-deliver into; the result stays available via ${POLL_TOOL_NAME}.`);
+			finalize(stream, blocks, "stop");
+			return;
+		}
+		// Fresh pass, or a stranded escalated result being re-delivered.
 		const prompt = extractUserPrompt(context);
 		const images = extractImages(context);
 		// An image-only message (no text) is valid on the ACP engine; only fail
@@ -1226,9 +1366,6 @@ async function runTurnDriver(
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
-		const entry = entries.find((e) => e.id === model.id) ?? null;
-		const agyModel = entry?.full ?? model.id;
-		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 		const watermark = existing?.lastMessageCount ?? 0;
 		// Late turns re-open the conversation with a synthetic prompt; the digest
 		// would re-send context agy already holds, so skip it.
@@ -1293,7 +1430,7 @@ async function runTurnDriver(
 				skipPermissions: config.skipPermissions,
 				timeoutMin: config.turnTimeoutMin,
 				inactivityMin: config.inactivityTimeoutMin,
-				conversationId: existing?.conversationId ?? null,
+				conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
 				prompt: fullPrompt,
 				images: images.length > 0 ? images : undefined,
 				agent,
@@ -1307,6 +1444,10 @@ async function runTurnDriver(
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			// Release stranded claims: the delivery never started, so the next
+			// pass must find them undelivered (tombstone-borne items have no
+			// callId and stay consumed, as before).
+			for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
 			deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
 			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
 			return;
@@ -1324,13 +1465,16 @@ async function runTurnDriver(
 		roster: deps.roster,
 	};
 
-	for (;;) {
-		const activity = await handle.next();
-		if (!activity) break;
-		if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return;
-	}
+	const drainTurn = async (h: TurnHandle): Promise<"parked" | undefined> => {
+		for (;;) {
+			const activity = await h.next();
+			if (!activity) break;
+			if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return "parked";
+		}
+	};
+	if ((await drainTurn(handle)) === "parked") return;
 
-	const outcome = await handle.outcome;
+	let outcome = await handle.outcome;
 	// Issue #2 recovery paths. agy's stream-json prompt path silently drops an
 	// over-cap turn (SUCCESS, empty response, zero usage, NO model step) and a
 	// dropped turn leaves the conversation permanently unresponsive, so both
@@ -1373,6 +1517,43 @@ async function runTurnDriver(
 				: "agy stopped responding on the resumed conversation (no response frame before the deadline; the conversation is dead). The binding was cleared, so the next antigravity turn starts a fresh conversation.",
 		);
 		return;
+	}
+	// Gap closer: the result landed while the turn was still live (reentry
+	// above), the turn ended, and the model never polled. Same strand, same
+	// fix: sweep and deliver as a late run in the same conversation. Single
+	// shot: claims are single-use, so a re-delivered strand cannot reappear
+	// here; a late run that parks hands recovery to the next pi pass.
+	if (isContinuation && outcome.status === "OK" && !outcome.aborted) {
+		const more = collectStranded();
+		if (more.length > 0) {
+			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
+			deps.log?.("escalated-redelivery-turn", { tools: more.map((s) => s.name), conversation: conv }, "info");
+			try {
+				const lateHandle = await deps.driver.run({
+					cwd,
+					model: agyModel,
+					effort,
+					mode: config.mode,
+					skipPermissions: config.skipPermissions,
+					timeoutMin: config.turnTimeoutMin,
+					inactivityMin: config.inactivityTimeoutMin,
+					conversationId: conv,
+					prompt: buildLateResultPrompt(more),
+					agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
+					signal: options?.signal,
+				});
+				if ((await drainTurn(lateHandle)) === "parked") return;
+				outcome = await lateHandle.outcome;
+			} catch (err) {
+				// Release the claims so the next pass can retry the delivery.
+				for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
+				deps.log?.(
+					"turn-error",
+					{ reason: "redelivery-start-failed", error: err instanceof Error ? err.message : String(err) },
+					"error",
+				);
+			}
+		}
 	}
 	if (outcome.conversationId) {
 		// A different id than the stored one means the driver recreated the
