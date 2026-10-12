@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- The `/agy` settings picker now renders on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit instead of the bare pi-tui `SettingsList`: bordered rows, a help panel per setting, type-to-search, and the config file path under the title. Same eleven rows, same stage-then-save-on-close behavior.
+
 ## [1.7.13] - 2026-10-12
 
 ### Changed

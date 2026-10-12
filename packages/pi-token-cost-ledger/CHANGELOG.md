@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- The `/token-cost-ledger` options menu now renders on the shared `@estebanforge/pi-tui-dialogs` framed dialog kit instead of the bare pi-tui `SettingsList`, and "Refresh prices now" is a real action row: Enter runs the refresh live and the menu stays open, replacing the old fake no/yes toggle that applied on close. Number-format cycling is unchanged (stage, apply on close). The settings file path now shows under the title.
+
 ## 1.2.6 — 2026-10-06
 
 ### Added

@@ -39,12 +39,12 @@ import * as path from "node:path";
 import {
 	buildSessionContext,
 	getAgentDir,
-	getSettingsListTheme,
 	keyHint,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum, contentText } from "@earendil-works/pi-ai";
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { Type } from "typebox";
 import {
 	BackgroundRunRegistry,
@@ -570,7 +570,7 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const items: SettingItem[] = [
+			const rows: DialogRow[] = [
 				{
 					id: "defaultModel",
 					label: "Default model",
@@ -599,38 +599,39 @@ export default async function (pi: ExtensionAPI) {
 
 			const pending: Partial<Config> = {};
 
-			await ctx.ui.custom((tui, theme, _kb, done) => {
-				const container = new Container();
-				container.addChild(
-					new Text(theme.fg("accent", theme.bold("AskCodex defaults")), 1, 1),
-				);
-
-				const settingsList = new SettingsList(
-					items,
-					Math.min(items.length + 4, 15),
-					getSettingsListTheme(),
-					(id, newValue) => {
-						if (id === "defaultModel") {
-							pending.defaultModel = newValue;
-						} else if (id === "defaultReasoning") {
-							if (isReasoningEffort(newValue)) pending.defaultReasoning = newValue;
-						} else if (id === "defaultSandbox") {
-							if (isSandboxMode(newValue)) pending.defaultSandbox = newValue;
-						}
-					},
-					() => done(undefined),
-				);
-				container.addChild(settingsList);
-
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => {
-						settingsList.handleInput?.(data);
-						tui.requestRender();
-					},
-				};
-			});
+			await ctx.ui.custom<void>(
+				(host, theme, _kb, done) => {
+					const menu = new DialogMenu(
+						host,
+						theme,
+						{
+							title: "AskCodex defaults",
+							subtitle: `Project file: ${path.join(getAgentDir(), "ask-codex.json")} — changes save when the dialog closes`,
+							rows,
+							footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+							onChange: (id, newValue) => {
+								if (id === "defaultModel") {
+									pending.defaultModel = newValue;
+								} else if (id === "defaultReasoning") {
+									if (isReasoningEffort(newValue)) pending.defaultReasoning = newValue;
+								} else if (id === "defaultSandbox") {
+									if (isSandboxMode(newValue)) pending.defaultSandbox = newValue;
+								}
+							},
+						},
+						() => done(),
+					);
+					return {
+						render: (w: number) => menu.render(w),
+						invalidate: () => menu.invalidate(),
+						handleInput: (data: string) => {
+							menu.handleInput(data);
+							host.requestRender();
+						},
+					};
+				},
+				DIALOG_OPTIONS,
+			);
 
 			if (Object.keys(pending).length === 0) return;
 

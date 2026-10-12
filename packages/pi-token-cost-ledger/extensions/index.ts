@@ -36,12 +36,12 @@
 import {
 	getAgentDir,
 	getSelectListTheme,
-	getSettingsListTheme,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, SelectList, SettingsList, Text, type SelectItem, type SettingItem } from "@earendil-works/pi-tui";
+import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { appendFile, mkdir, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -1231,10 +1231,10 @@ export default function (pi: ExtensionAPI) {
 
 	// ── OPTIONS: /token-cost-ledger — interactive menu (sets the number-style flag) ─
 	// Mirrors pi-glm-tweaks's /glm-tweaks: bare command opens an interactive
-	// SettingsList the user cycles with Enter/Space (no typing required);
-	// `<value>` or `set <value>` is kept as a one-shot shorthand. Outside TUI
-	// (RPC/headless), falls back to the read-only status panel — custom
-	// components are terminal-only.
+	// settings dialog (pi-tui-dialogs kit) the user cycles with Enter/Space (no
+	// typing required); `<value>` or `set <value>` is kept as a one-shot
+	// shorthand. Outside TUI (RPC/headless), falls back to the read-only status
+	// panel — custom components are terminal-only.
 	const NUMBER_STYLES = ["auto", "comma", "dot"] as const;
 	type NumberStyleName = (typeof NUMBER_STYLES)[number];
 	const STYLE_SAMPLES: Record<NumberStyleName, string> = {
@@ -1379,10 +1379,10 @@ export default function (pi: ExtensionAPI) {
 			const effective = numberStyleSetting(pi);
 			const flagVal = flagNumberStyle();
 			const { masked, envOverride } = envOverrideState();
-
 			const { primary } = loadRoots();
+
 			const pending = new Map<string, string>();
-			const items: SettingItem[] = [
+			const rows: DialogRow[] = [
 				{
 					id: "token-cost-ledger-numbers",
 					label: "Number format",
@@ -1391,17 +1391,20 @@ export default function (pi: ExtensionAPI) {
 					values: [...NUMBER_STYLES],
 				},
 				{
-					// Refresh is an ACTION, not a setting. SettingsList has no "fire on
-					// Enter" affordance beyond cycling values, so it's modeled as a
-					// no/yes toggle: cycle to "yes" → staged, applied on close. Net-zero
-					// (cycled back to "no") drops it, matching the number-format row's
-					// back-out semantics. `/token-cost-ledger refresh` is the no-menu
-					// keyword shortcut.
+					// Refresh is an ACTION, not a setting: Enter runs it now and the
+					// menu stays open, replacing the old fake no/yes toggle. The
+					// no-menu keyword shortcut `/token-cost-ledger refresh` remains.
 					id: "refresh-prices",
 					label: "Refresh prices now",
 					description: `Pull latest costs from models.dev. Last: ${refreshLabel(primary)}.`,
-					currentValue: "no",
-					values: ["no", "yes"],
+					currentValue: "run",
+					onEdit: () => {
+						ctx.ui.notify("Refreshing prices from models.dev...", "info");
+						void refreshPrices(primary).then((res) => {
+							if (res.ok) ctx.ui.notify(formatRefreshResult(res), "info");
+							else ctx.ui.notify(`Failed to refresh prices: ${res.error}`, "error");
+						});
+					},
 				},
 			];
 
@@ -1409,57 +1412,44 @@ export default function (pi: ExtensionAPI) {
 				? `pi-token-cost-ledger — options  (env TOKEN_COST_LEDGER_NUMBERS=${envOverride} is overriding the flag; effective=${effective})`
 				: `pi-token-cost-ledger — options  (effective=${effective})`;
 
-			await ctx.ui.custom((tui, theme, _kb, done) => {
-				const container = new Container();
-				container.addChild(new Text(theme.fg("accent", theme.bold(header)), 1, 1));
-
-				const settingsList = new SettingsList(
-					items,
-					Math.min(items.length + 2, 15),
-					getSettingsListTheme(),
-					(id, newValue) => {
-						// Stage the change; persist + reload on close, not here.
-						// (SettingsList already refreshed its own display before
-						// calling us — activateItem mutates item.currentValue.)
-						pending.set(id, newValue);
-					},
-					() => done(undefined),
-				);
-				container.addChild(settingsList);
-
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => {
-						settingsList.handleInput(data);
-						tui.requestRender();
-					},
-				};
-			});
+			await ctx.ui.custom<void>(
+				(host, theme, _kb, done) => {
+					const menu = new DialogMenu(
+						host,
+						theme,
+						{
+							title: header,
+							subtitle: `Settings file: ${join(loadRoots().primary, SETTINGS_FILE)} — format change applies on close`,
+							rows,
+							footer: "↑↓ navigate · Enter cycle/run · Type to search · Esc close",
+							onChange: (id, newValue) => {
+								// Stage the change; persist + reload on close, not here.
+								pending.set(id, newValue);
+							},
+						},
+						() => done(),
+					);
+					return {
+						render: (w: number) => menu.render(w),
+						invalidate: () => menu.invalidate(),
+						handleInput: (data: string) => {
+							menu.handleInput(data);
+							host.requestRender();
+						},
+					};
+				},
+				DIALOG_OPTIONS,
+			);
 
 			// Dialog closed. ctx is still valid here (reload is the only staleness
 			// trigger, and we haven't called it yet).
 			//
-			// Two independent intents may be staged: a number-format change (needs
-			// settings.json + reload) and a refresh (writes prices.json, no reload).
-			// Run refresh first so its notify lands before any reload; apply the
-			// flag change last because reload ends this ctx.
-			const refreshWanted = pending.get("refresh-prices") === "yes";
+			// Only the number-format row stages now (refresh ran live via onEdit).
 			const numValue = pending.get("token-cost-ledger-numbers");
 			const numChanged = numValue !== undefined && numValue !== flagNumberStyle();
-
-			if (refreshWanted) {
-				const res = await refreshPrices(primary);
-				if (!res.ok) {
-					ctx.ui.notify(`Failed to refresh prices: ${res.error}`, "error");
-				} else {
-					ctx.ui.notify(formatRefreshResult(res), "info");
-				}
-			}
-
 			if (!numChanged) return;
 
-			// pending values come from the SettingsList row (NUMBER_STYLES), so any
+			// pending values come from the menu row (NUMBER_STYLES), so any
 			// non-empty value here is a valid style; narrow for the typed helper.
 			if (!isNumberStyle(numValue)) return;
 			saveNumberStyleSetting(numValue);

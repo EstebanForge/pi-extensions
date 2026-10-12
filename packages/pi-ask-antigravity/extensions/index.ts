@@ -37,12 +37,12 @@ import {
 	type AgentToolResult,
 	buildSessionContext,
 	getAgentDir,
-	getSettingsListTheme,
 	keyHint,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
-import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { contentText } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
@@ -781,7 +781,7 @@ export default async function (pi: ExtensionAPI) {
 			const currentResolved =
 				resolveAgyModel(config.defaultModel, discovered, config.defaultThinking)?.model ?? config.defaultModel;
 
-			const items: SettingItem[] = [
+			const rows: DialogRow[] = [
 				{
 					id: "defaultModel",
 					label: "Default model",
@@ -813,40 +813,41 @@ export default async function (pi: ExtensionAPI) {
 
 			const pending: Partial<Config> = {};
 
-			await ctx.ui.custom((tui, theme, _kb, done) => {
-				const container = new Container();
-				container.addChild(
-					new Text(theme.fg("accent", theme.bold("AskAntigravity defaults")), 1, 1),
-				);
-
-				const settingsList = new SettingsList(
-					items,
-					Math.min(items.length + 4, 15),
-					getSettingsListTheme(),
-					(id, newValue) => {
-						if (id === "defaultModel") {
-							// Value is "alias → resolved"; keep the alias part.
-							const alias = newValue.split("→")[0].trim();
-							pending.defaultModel = alias;
-						} else if (id === "defaultThinking") {
-							pending.defaultThinking = newValue as ThinkingTier;
-						} else if (id === "permissions") {
-							pending.skipPermissions = newValue === "auto-approved";
-						}
-					},
-					() => done(undefined),
-				);
-				container.addChild(settingsList);
-
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => {
-						settingsList.handleInput?.(data);
-						tui.requestRender();
-					},
-				};
-			});
+			await ctx.ui.custom<void>(
+				(host, theme, _kb, done) => {
+					const menu = new DialogMenu(
+						host,
+						theme,
+						{
+							title: "AskAntigravity defaults",
+							subtitle: `Project file: ${path.join(getAgentDir(), "ask-antigravity.json")} — changes save when the dialog closes`,
+							rows,
+							footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+							onChange: (id, newValue) => {
+								if (id === "defaultModel") {
+									// Value is "alias → resolved"; keep the alias part.
+									const alias = newValue.split("→")[0].trim();
+									pending.defaultModel = alias;
+								} else if (id === "defaultThinking") {
+									pending.defaultThinking = newValue as ThinkingTier;
+								} else if (id === "permissions") {
+									pending.skipPermissions = newValue === "auto-approved";
+								}
+							},
+						},
+						() => done(),
+					);
+					return {
+						render: (w: number) => menu.render(w),
+						invalidate: () => menu.invalidate(),
+						handleInput: (data: string) => {
+							menu.handleInput(data);
+							host.requestRender();
+						},
+					};
+				},
+				DIALOG_OPTIONS,
+			);
 
 			if (Object.keys(pending).length === 0) return;
 

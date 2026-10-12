@@ -27,7 +27,8 @@
   },
   "type": "module",
   "dependencies": {
-    "@estebanforge/pi-ask-shared": "^0.1.2"
+    "@estebanforge/pi-ask-shared": "^0.1.2",
+    "@estebanforge/pi-tui-dialogs": "^0.1.1"
   },
   "files": [
     "extensions",

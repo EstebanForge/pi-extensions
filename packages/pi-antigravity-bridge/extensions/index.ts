@@ -26,14 +26,9 @@ import {
 	createBashToolDefinition,
 	createEditToolDefinition,
 	createWriteToolDefinition,
-	getSettingsListTheme,
 } from "@earendil-works/pi-coding-agent";
-import {
-	Container,
-	SettingsList,
-	Text,
-	type SettingItem,
-} from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import {
 	entriesFromRaw,
 	FALLBACK_MODELS,
@@ -1806,7 +1801,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 	const config = loadConfig();
 	const pending: PendingConfig = {};
 
-	const items: SettingItem[] = [
+	const rows: DialogRow[] = [
 		{
 			id: "mode",
 			label: "Execution mode",
@@ -1897,53 +1892,55 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		},
 	];
 
-	await ui.custom((tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(
-			new Text(theme.fg("accent", theme.bold("Antigravity provider")), 1, 1),
-		);
-		const settingsList = new SettingsList(
-			items,
-			Math.min(items.length + 4, 15),
-			getSettingsListTheme(),
-			(id, newValue) => {
-				if (id === "mode") {
-					pending.mode = newValue as AgyMode;
-				} else if (id === "readonly") {
-					pending.readOnly = newValue === "on";
-				} else if (id === "permissions") {
-					pending.skipPermissions = newValue === "auto-approved";
-				} else if (id === "model") {
-					pending.defaultModel = newValue;
-				} else if (id === "thinking") {
-					pending.defaultThinking = newValue as ThinkingTier;
-				} else if (id === "ask") {
-					pending.askTool = newValue === "on";
-				} else if (id === "web") {
-					pending.webTools = newValue === "on";
-				} else if (id === "bridge") {
-					pending.bridgeTools = newValue as BridgeTools;
-				} else if (id === "turn-cap") {
-					pending.turnTimeoutMin = Number(newValue);
-				} else if (id === "digest") {
-					pending.digest = newValue === "on";
-				} else if (id === "system-prompt") {
-					pending.systemPrompt = newValue === "on";
-				}
-			},
-			() => done(undefined),
-		);
-		container.addChild(settingsList);
-
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				settingsList.handleInput?.(data);
-				tui.requestRender();
-			},
-		};
-	});
+	await ui.custom<void>(
+		(host, theme, _kb, done) => {
+			const menu = new DialogMenu(
+				host,
+				theme,
+				{
+					title: "Antigravity provider",
+					subtitle: `Config file: ${CONFIG_PATH} — changes save when the dialog closes`,
+					rows,
+					footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+					onChange: (id, newValue) => {
+						if (id === "mode") {
+							pending.mode = newValue as AgyMode;
+						} else if (id === "readonly") {
+							pending.readOnly = newValue === "on";
+						} else if (id === "permissions") {
+							pending.skipPermissions = newValue === "auto-approved";
+						} else if (id === "model") {
+							pending.defaultModel = newValue;
+						} else if (id === "thinking") {
+							pending.defaultThinking = newValue as ThinkingTier;
+						} else if (id === "ask") {
+							pending.askTool = newValue === "on";
+						} else if (id === "web") {
+							pending.webTools = newValue === "on";
+						} else if (id === "bridge") {
+							pending.bridgeTools = newValue as BridgeTools;
+						} else if (id === "turn-cap") {
+							pending.turnTimeoutMin = Number(newValue);
+						} else if (id === "digest") {
+							pending.digest = newValue === "on";
+						} else if (id === "system-prompt") {
+							pending.systemPrompt = newValue === "on";
+						}
+					},
+				},
+				() => done(),
+			);
+			return {
+				render: (w: number) => menu.render(w),
+				invalidate: () => menu.invalidate(),
+				handleInput: (data: string) => {
+					menu.handleInput(data);
+					host.requestRender();
+				},
+			};
+		},
+		DIALOG_OPTIONS,
+	);
 
 	if (Object.keys(pending).length === 0) return;
 
