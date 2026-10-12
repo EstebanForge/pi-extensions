@@ -61,7 +61,9 @@ THINKING LEVEL (params: thinking, effort - SYNONYMS for one knob):
 - Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to agy's low|medium|high; unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
 - An explicit level beats a tier embedded in model ("flash high") and the configured default. Omit both for the configured default.`;
 
-const DEFAULT_TIMEOUT_MIN = 10;
+// Delegations legitimately run long (research, review, analysis); a short
+// default kills the run mid-task and the caller re-pays the whole prompt.
+const DEFAULT_TIMEOUT_MIN = 30;
 const GRACE_AFTER_TIMEOUT_MS = 5000;
 const STATUS_INTERVAL_MS = 1000;
 const STATUS_TAIL_CHARS = 160;

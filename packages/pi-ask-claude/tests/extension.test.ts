@@ -448,7 +448,7 @@ describe("execute() against a fake claude fixture", () => {
 		expect(res.details?.resultIsError).toBe(false);
 	});
 
-	it("appends the time-budget notice to the stdin prompt at the resolved default (10m)", async () => {
+	it("appends the time-budget notice to the stdin prompt at the resolved default (30m)", async () => {
 		process.env.CLAUDE_BIN = writeClaudeFixture("ok");
 		process.env.FIXTURE_MODE = "ok";
 		const promptFile = join(tempRoot, `stdin-${Date.now()}.txt`);
@@ -461,7 +461,7 @@ describe("execute() against a fake claude fixture", () => {
 			const seen = readFileSync(promptFile, "utf8");
 			expect(seen.startsWith("summarize the diff")).toBe(true);
 			expect(seen).toContain("[TIME BUDGET]");
-			expect(seen).toContain("about 10 minutes");
+			expect(seen).toContain("about 30 minutes");
 		} finally {
 			delete process.env.FIXTURE_PROMPTFILE;
 		}

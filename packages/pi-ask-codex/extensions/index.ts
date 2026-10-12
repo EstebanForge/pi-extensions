@@ -78,7 +78,10 @@ import {
 
 // --- Constants -------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_MIN = 10;
+// Feedback, research, review, and analysis delegations legitimately run
+// long; a short default kills the run mid-task and the caller re-pays the
+// whole prompt at a higher timeout. Callers opt down per call.
+const DEFAULT_TIMEOUT_MIN = 30;
 const STATUS_INTERVAL_MS = 1000;
 const DISCOVERY_TIMEOUT_MS = 8_000;
 

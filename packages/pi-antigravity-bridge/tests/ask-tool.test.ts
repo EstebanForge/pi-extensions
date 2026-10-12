@@ -430,7 +430,7 @@ test("execute: prompt carries the time-budget notice before the plan guard, guar
 					const noticeIdx = prompt.indexOf("[TIME BUDGET]");
 					const guardIdx = prompt.indexOf("Do not create, modify, or delete any files");
 					assert.ok(noticeIdx !== -1, "prompt must carry the time-budget notice");
-					assert.match(prompt, /about 10 minutes/);
+					assert.match(prompt, /about 30 minutes/);
 					assert.ok(guardIdx !== -1, "plan guard must stay in the prompt");
 					assert.ok(noticeIdx < guardIdx, "notice must sit before the safety guard");
 					assert.ok(
