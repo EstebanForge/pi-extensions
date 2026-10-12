@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-tui-dialogs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Framed TUI dialog kit for @estebanforge Pi extensions: bordered settings menus with label/value columns, help panel, tabs, type-to-search, and validated input dialogs. Dialog pattern adapted from pi-subagent-manager (MIT). Plain library, no Pi entrypoint: consumers depend on it and Pi installs it transitively.",
   "keywords": [
     "pi",
