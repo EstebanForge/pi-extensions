@@ -388,7 +388,7 @@ pi-tool-display/
 │   ├── user-message-box-renderer.ts # User message border renderer
 │   ├── user-message-box-utils.ts    # ANSI/background normalization helpers
 │   ├── write-display-utils.ts       # Write summary helpers
-│   └── zellij-modal.ts              # Modal UI primitives
+│   └── config-modal.ts              # /tool-display settings dialog on @estebanforge/pi-tui-dialogs
 ├── config/
 │   └── config.example.json          # Starter config template
 └── tests/

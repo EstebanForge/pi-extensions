@@ -1097,43 +1097,6 @@ test("13: debug logger can be created multiple times (simulating reload)", () =>
 // 14. Modal cleanup
 // ---------------------------------------------------------------------------
 
-test("14: modal with dispose() method can be cleaned up on reload", async () => {
-  // ZellijModal.dispose() calls content.invalidate()
-  // The settings modal in config-modal.ts is created inside a closure
-  // that can be closed via the onClose callback.
-  // This test verifies the dispose pattern exists and works.
-
-  // We can't directly test the modal from config-modal.ts since it's
-  // created inside a closure, but we verify that:
-  // 1. The ZellijModal class has a dispose() method
-  // 2. Calling dispose() doesn't throw
-
-  const dummyContent = {
-    render: (_width: number) => ["test"],
-    invalidate: () => {},
-  };
-
-  // Dynamic import for ESM compatibility
-  const { ZellijModal } = await import("../lib/zellij-modal") as {
-    ZellijModal: new (
-      content: { render: (w: number) => string[]; invalidate: () => void },
-      config?: Record<string, unknown>,
-      theme?: unknown,
-    ) => { dispose: () => void; invalidate: () => void };
-  };
-
-  const modal = new ZellijModal(dummyContent, {
-    title: "Test",
-    borderStyle: "square",
-  });
-
-  assert.doesNotThrow(() => modal.dispose(), "modal.dispose() is safe");
-  assert.doesNotThrow(
-    () => modal.invalidate(),
-    "modal.invalidate() is safe after dispose",
-  );
-});
-
 test("14: open settings modal onClose callback can be invoked multiple times", () => {
   // The settings modal in config-modal.ts has an onClose callback
   // that calls done() to dismiss the modal. Multiple close calls

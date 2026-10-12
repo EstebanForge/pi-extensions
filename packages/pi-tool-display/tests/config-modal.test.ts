@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { registerToolDisplayCommand } from "../lib/config-modal";
+import { buildSettingRows, registerToolDisplayCommand } from "../lib/config-modal";
 import {
 	DEFAULT_TOOL_DISPLAY_CONFIG,
 	type ToolDisplayConfig,
@@ -388,4 +388,40 @@ test("handler propagates rejection when ctx.ui.custom rejects", async () => {
 	await assert.rejects(async () => {
 		await handler("", ctx);
 	}, /modal rejected/);
+});
+
+test("buildSettingRows mirrors the live config into row display values", () => {
+	const { controller } = createControllerStub({
+		tidyCards: false,
+		readOutputMode: "preview",
+		previewLines: 20,
+		diffViewMode: "split",
+	});
+
+	const rows = buildSettingRows(controller.getConfig(), controller.getCapabilities());
+	const byId = new Map(rows.map((r) => [r.id, r]));
+
+	assert.equal(byId.get("tidyCards")?.currentValue, "off");
+	assert.equal(byId.get("readOutputMode")?.currentValue, "preview");
+	assert.equal(byId.get("previewLines")?.currentValue, "20");
+	assert.equal(byId.get("diffViewMode")?.currentValue, "split");
+	// Preset detection: the stubbed config matches no preset -> custom.
+	assert.equal(byId.get("preset")?.currentValue, "custom");
+	// Every row documents itself for the kit's help panel.
+	for (const row of rows) {
+		assert.ok(row.description && row.description.length > 20, `row ${row.id} has help text`);
+	}
+});
+
+test("buildSettingRows gates the MCP row on capability and cycles its values", () => {
+	const { controller: withoutMcp } = createControllerStub({}, { hasMcpTooling: false, hasRtkOptimizer: false });
+	const { controller: withMcp } = createControllerStub({ mcpOutputMode: "summary" }, { hasMcpTooling: true, hasRtkOptimizer: false });
+
+	const absent = buildSettingRows(withoutMcp.getConfig(), withoutMcp.getCapabilities()).some((r) => r.id === "mcpOutputMode");
+	const present = buildSettingRows(withMcp.getConfig(), withMcp.getCapabilities()).find((r) => r.id === "mcpOutputMode");
+
+	assert.equal(absent, false, "no MCP row without the capability");
+	assert.ok(present, "MCP row with the capability");
+	assert.equal(present!.currentValue, "summary");
+	assert.deepEqual([...(present!.values ?? [])], ["hidden", "summary", "preview"]);
 });

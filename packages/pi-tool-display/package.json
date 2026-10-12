@@ -66,6 +66,9 @@
       "optional": true
     }
   },
+  "dependencies": {
+    "@estebanforge/pi-tui-dialogs": "^0.1.1"
+  },
   "engines": {
     "node": ">=22.0.0"
   }
