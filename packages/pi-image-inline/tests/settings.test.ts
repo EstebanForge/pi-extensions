@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getSettingsPath, loadStripRead } from "../lib/settings";
+import { getSettingsPath, loadStripRead, saveStripRead } from "../lib/settings";
 
 // Point PI_CODING_AGENT_DIR at a throwaway dir per test; settings.ts reads
 // it on every call, so no module reset is needed.
@@ -51,5 +51,29 @@ describe("loadStripRead", () => {
 	it("resolves the settings file under PI_CODING_AGENT_DIR", () => {
 		const d = useDir();
 		expect(getSettingsPath()).toBe(join(d, "pi-image-inline.json"));
+	});
+});
+
+describe("saveStripRead", () => {
+	it("writes the value and round-trips through loadStripRead", () => {
+		useDir();
+		saveStripRead(true);
+		expect(loadStripRead()).toBe(true);
+		saveStripRead(false);
+		expect(loadStripRead()).toBe(false);
+	});
+
+	it("preserves unknown keys already in the file", () => {
+		const d = useDir();
+		writeFileSync(join(d, "pi-image-inline.json"), JSON.stringify({ futureKey: 7 }));
+		saveStripRead(true);
+		const parsed = JSON.parse(readFileSync(join(d, "pi-image-inline.json"), "utf8"));
+		expect(parsed).toEqual({ futureKey: 7, stripRead: true });
+	});
+
+	it("creates the file when missing", () => {
+		useDir();
+		saveStripRead(true);
+		expect(JSON.parse(readFileSync(getSettingsPath(), "utf8"))).toEqual({ stripRead: true });
 	});
 });

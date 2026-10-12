@@ -33,6 +33,8 @@ Uninstall `pi-image-preview` and `jnsahaj/pi-agent-browser-screenshot` in the sa
 
 ## Config
 
+Run `/image-inline` in the TUI for the settings dialog (vision-lockdown toggle, settings file path on screen). Headless mode prints the current value instead.
+
 Lockdown mode for zero-pixel runs:
 
 ```json

@@ -6,7 +6,7 @@
 // and seeds the flag's default at factory load. Same pattern as
 // pi-agentmemory's flag-settings and pi-token-cost-ledger's settings.json.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -35,4 +35,22 @@ export function loadStripRead(): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Persist the stripRead lockdown switch. Read-modify-write so keys this
+ * extension does not know about survive the update.
+ */
+export function saveStripRead(value: boolean): void {
+	let parsed: Record<string, unknown> = {};
+	try {
+		const path = getSettingsPath();
+		if (existsSync(path)) {
+			parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		}
+	} catch {
+		parsed = {};
+	}
+	parsed.stripRead = value;
+	writeFileSync(getSettingsPath(), `${JSON.stringify(parsed, null, 2)}\n`);
 }

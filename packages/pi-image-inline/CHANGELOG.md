@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `/image-inline` settings command: a bordered pi-tui-dialogs screen for the `stripRead` vision-lockdown toggle, with the settings file path under the title, a help panel explaining what lockdown means, and an automatic reload after saving (extension flags seed at startup). Headless mode prints the current value and file path instead. The JSON file stays the source of truth; the dialog is now the discoverable way to edit it.
+
 ## [1.0.1] - 2026-10-07
 
 ### Added

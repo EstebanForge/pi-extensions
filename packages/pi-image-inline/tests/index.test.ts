@@ -12,11 +12,15 @@ class FakePi {
 	handlers = new Map<string, Handler>();
 	entries: Array<{ type: string; data: unknown }> = [];
 	flags = new Map<string, boolean | string>();
+	commands: Array<{ name: string; options: { description: string } }> = [];
 
 	on(type: string, handler: Handler) {
 		this.handlers.set(type, handler);
 	}
 	registerEntryRenderer() {}
+	registerCommand(name: string, options: { description: string }) {
+		this.commands.push({ name, options });
+	}
 	registerFlag(name: string, options: { default?: boolean }) {
 		this.flags.set(name, options.default ?? false);
 	}

@@ -32,9 +32,11 @@
  */
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { getImageDimensions } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -59,7 +61,7 @@ import {
 	type ImageBlock,
 	type ImageInfo,
 } from "../lib/redact";
-import { loadStripRead } from "../lib/settings";
+import { getSettingsPath, loadStripRead, saveStripRead } from "../lib/settings";
 
 const ENTRY_TYPE = "image-inline";
 const STRIP_READ_FLAG = "image-inline-strip-read";
@@ -220,6 +222,74 @@ export default function (pi: ExtensionAPI) {
 			if (!isFreshCapture(mtimeMs, startedAt)) continue;
 			pi.appendEntry(ENTRY_TYPE, { path: candidate, mtimeMs });
 		}
+	}
+
+	pi.registerCommand("image-inline", {
+		description: "Configure image vision lockdown (stripRead)",
+		handler: (args, ctx) => openSettingsModal(args, ctx),
+	});
+
+	async function openSettingsModal(_args: string, ctx: ExtensionCommandContext): Promise<void> {
+		const current = loadStripRead();
+
+		if (ctx.mode !== "tui") {
+			ctx.ui.notify(
+				`stripRead (vision lockdown): ${current ? "on" : "off"}. Persisted at ${getSettingsPath()}; per-session override: --image-inline-strip-read`,
+				"info",
+			);
+			return;
+		}
+
+		const rows: DialogRow[] = [
+			{
+				id: STRIP_READ_FLAG,
+				label: "Strip read (vision lockdown)",
+				currentValue: current ? "on" : "off",
+				values: ["on", "off"],
+				description:
+					"When on, read results are stripped of image pixels too, so the model never sees any image from any tool. Screenshots still render for you in the transcript, and the placeholder tells the model to ask you instead of retrying. When off (default), images the model explicitly reads pass through for its vision. The change is saved to the settings file and a reload follows, because extension flags are seeded at startup.",
+			},
+		];
+
+		const pending = new Map<string, boolean>();
+
+		await ctx.ui.custom<void>(
+			(host, theme, _kb, done) => {
+				const menu = new DialogMenu(
+					host,
+					theme,
+					{
+						title: "image-inline settings",
+						subtitle: `Settings file: ${getSettingsPath()} — saved on close`,
+						rows,
+						footer: "↑↓ navigate · Enter/Space cycle · Esc close",
+						onChange: (id, value) => {
+							pending.set(id, value === "on");
+						},
+					},
+					() => done(),
+				);
+				return {
+					render: (w: number) => menu.render(w),
+					invalidate: () => menu.invalidate(),
+					handleInput: (data: string) => {
+						menu.handleInput(data);
+						host.requestRender();
+					},
+				};
+			},
+			DIALOG_OPTIONS,
+		);
+
+		// Persist genuine deltas only; net-zero flips never touch the file.
+		// Flags seed at factory load, so apply the same notify-then-reload
+		// pattern as pi-agentmemory: notify first, reload last.
+		if (pending.size === 0) return;
+		const next = pending.get(STRIP_READ_FLAG);
+		if (next === undefined || next === loadStripRead()) return;
+		saveStripRead(next);
+		ctx.ui.notify(`Saved stripRead=${next ? "on" : "off"}. Reloading...`, "info");
+		await ctx.reload();
 	}
 }
 
