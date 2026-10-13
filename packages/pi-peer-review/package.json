@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-peer-review",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Adversarial peer review for Pi: /peer-review diff-reviews every change since the last check under an adversarial frame (task, executor's claim, real diffs, claim audit) and passes BLOCKER/RISK findings to the model as untrusted claims. Also ships the failure-loop unblock gate (/unblock, /advice) and a pre-publish review boundary. No model-facing tool: the triggers are deterministic, so the session cannot talk itself out of them.",
   "keywords": [
     "pi-package",
