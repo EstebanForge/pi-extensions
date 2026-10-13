@@ -17,3 +17,11 @@ export {
 	type DialogTab,
 } from "./menu.js";
 export { dialogInput, InputView, type DialogInputOptions } from "./input.js";
+export {
+	assertChoiceOptions,
+	ChoiceView,
+	dialogChoice,
+	MAX_CHOICE_OPTIONS,
+	type ChoiceDialogOptions,
+	type ChoiceOption,
+} from "./choice.js";

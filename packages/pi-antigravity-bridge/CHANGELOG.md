@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **The engine picker rides the shared dialog kit.** `showEnginePicker` now renders through `@estebanforge/pi-tui-dialogs`' new `dialogChoice` primitive (extracted from this picker) instead of a hand-rolled SelectList overlay: same title, intro, options, preselect, and esc-means-decide-later semantics, now drawn in the kit's framed style. Esc resolves `undefined` instead of `null`; both call sites are updated.
+
 - **New installs default to the ACP engine; stream-json is the fallback.** `config.engine` unset (no file key, no `AGY_ENGINE`) now resolves to `acp` (`DEFAULT_ENGINE` in config.ts), and stale/garbage stored values fall back to that same default instead of stream-json. The first-run picker preselects acp and explains the trade in that order; the existing startup self-heal covers the rest (binary install + sign-in chain on engine acp). Both engines stay fully supported and every existing config with a saved engine is untouched — only genuinely unspecified engine state changes hands.
 
 ### Added

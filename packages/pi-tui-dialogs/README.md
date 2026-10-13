@@ -20,12 +20,18 @@ Dialog pattern adapted from
 - `dialogInput` — framed single-line input with placeholder, help lines, and
   optional `validate`: return an error string to keep the dialog open with the
   message inline, return `undefined` to accept.
+- `dialogChoice` — framed single-choice modal: one decision statement (wraps),
+  a closed option list of 1 to `MAX_CHOICE_OPTIONS` (10) options with unique
+  values and an optional preselect. Enter resolves the chosen option's value;
+  esc resolves `undefined` (the escape hatch). Caller-contract violations (0
+  or >10 options, duplicate values, unknown preselect) throw before any
+  overlay opens.
 - `canOpenDialog` — headless guard for non-TUI modes.
 
 ## Usage
 
 ```ts
-import { canOpenDialog, dialogInput, dialogMenu, DialogMenu } from "@estebanforge/pi-tui-dialogs";
+import { canOpenDialog, dialogChoice, dialogInput, dialogMenu, DialogMenu } from "@estebanforge/pi-tui-dialogs";
 
 await ctx.ui.custom(
 	(host, theme, _keys, done) =>
@@ -45,6 +51,20 @@ await ctx.ui.custom(
 		),
 	// DIALOG_OPTIONS centers the dialog near fullscreen
 );
+```
+
+A closed choice reads the same way:
+
+```ts
+const engine = await dialogChoice(ctx, "Choose your engine", {
+	description: "Which engine runs your turns? Switch anytime with /engine.",
+	options: [
+		{ value: "fast", label: "Fast", description: "default · lighter" },
+		{ value: "deep", label: "Deep", description: "downloads a big binary" },
+	],
+	selected: "fast",
+});
+// engine === undefined means esc: decide later, persist nothing.
 ```
 
 Plain library, no Pi entrypoint: depend on it and Pi installs it transitively.

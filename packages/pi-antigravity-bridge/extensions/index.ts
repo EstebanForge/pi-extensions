@@ -1997,7 +1997,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 async function runEngineModal(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const current = loadConfig().engine;
 	const picked = await showEnginePicker(ui);
-	if (picked === null) {
+	if (picked === undefined) {
 		ui.notify(`engine unchanged: ${current}.`, "info");
 		return;
 	}

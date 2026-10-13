@@ -7,26 +7,18 @@
 // Every start with the stream-json engine active also re-checks that the
 // `agy` binary exists and warns until it does (re-auth is out of scope).
 //
-// UI: tui.md "Pattern 1" - SelectList framed by DynamicBorder inside pi's
-// native overlay (the window feel pi-rtk builds its modal on).
+// UI: the shared framed choice modal from @estebanforge/pi-tui-dialogs
+// (dialogChoice): one decision statement, a closed option list, esc cancels.
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import {
-	Container,
-	type SelectItem,
-	SelectList,
-	Spacer,
-	Text,
-} from "@earendil-works/pi-tui";
+import { dialogChoice, type ChoiceOption, type DialogContext, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import fs from "node:fs";
 import path from "node:path";
-import type { DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { DEFAULT_ENGINE, type Engine } from "./config.js";
 
 /** Picker order is the default answer order: acp (the default engine)
  *  preselected first, stream-json as the fallback. */
-export const ENGINE_PICKER_ITEMS: SelectItem[] = [
+export const ENGINE_PICKER_ITEMS: ChoiceOption[] = [
 	{
 		value: "acp",
 		label: "ACP server (official Google)",
@@ -40,7 +32,7 @@ export const ENGINE_PICKER_ITEMS: SelectItem[] = [
 ];
 
 /** Intro paragraph above the list. Text wraps, so explanations stay here and
- *  SelectItem descriptions stay one-liners (SelectList truncates long lines). */
+ *  option descriptions stay one-liners (the choice list truncates long lines). */
 export const ENGINE_PICKER_INTRO = [
 	"Pick the engine that runs your Antigravity turns. Switch anytime with /agy engine (restart applies it).",
 	"",
@@ -127,48 +119,23 @@ export function agyMissingMessage(): string {
 	return "The `agy` CLI is not installed. Install it from https://antigravity.google/product/antigravity-cli and log in on it to use Antigravity models.";
 }
 
-/** Render the picker overlay. Resolves with the chosen engine, or null when
- *  the user pressed esc (decide later - nothing is persisted). */
-export async function showEnginePicker(ctx: ExtensionUIContext): Promise<Engine | null> {
-	return ctx.custom<Engine | null>(
-		(tui, theme, _keybindings, done) => {
-			const container = new Container();
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-			container.addChild(
-				new Text(theme.fg("accent", theme.bold("Antigravity Bridge: choose your engine")), 1, 0),
-			);
-			container.addChild(new Text(theme.fg("muted", ENGINE_PICKER_INTRO), 1, 0));
-			container.addChild(new Spacer(1));
+/** The kit's DialogContext wants the whole extension context, but both picker
+ *  call sites hold only the ui object and are TUI-gated (ctx.mode === "tui")
+ *  before they run. Wrap instead of threading two different ctx shapes. The
+ *  cast is the pi-custom-options vs unknown-options signature gap; custom and
+ *  notify exist at runtime on ExtensionUIContext. */
+function asDialogContext(ui: ExtensionUIContext): DialogContext {
+	return { hasUI: true, mode: "tui", ui: ui as unknown as DialogContext["ui"] };
+}
 
-			const list = new SelectList(ENGINE_PICKER_ITEMS, ENGINE_PICKER_ITEMS.length, {
-				selectedPrefix: (t: string) => theme.fg("accent", t),
-				selectedText: (t: string) => theme.fg("accent", t),
-				description: (t: string) => theme.fg("muted", t),
-				scrollInfo: (t: string) => theme.fg("dim", t),
-				noMatch: (t: string) => theme.fg("warning", t),
-			});
-			list.onSelect = (item) => done(toEngine(item.value));
-			list.onCancel = () => done(null);
-			container.addChild(list);
-
-			container.addChild(new Spacer(1));
-			container.addChild(
-				new Text(theme.fg("dim", "↑↓ navigate · enter select · esc decide later"), 1, 0),
-			);
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-			return {
-				render: (width: number) => container.render(width),
-				invalidate: () => container.invalidate(),
-				handleInput: (data: string) => {
-					list.handleInput(data);
-					tui.requestRender();
-				},
-			};
-		},
-		{
-			overlay: true,
-			overlayOptions: { anchor: "center" as const, width: 80, maxHeight: "85%" as const, margin: 1 },
-		},
-	);
+/** Render the choice modal via the shared dialog kit. Resolves with the
+ *  chosen engine, or undefined when the user pressed esc (decide later -
+ *  nothing is persisted). */
+export async function showEnginePicker(ctx: ExtensionUIContext): Promise<Engine | undefined> {
+	const picked = await dialogChoice(asDialogContext(ctx), "Antigravity Bridge: choose your engine", {
+		description: ENGINE_PICKER_INTRO,
+		options: ENGINE_PICKER_ITEMS,
+		footer: "↑↓ navigate · enter select · esc decide later",
+	});
+	return picked === undefined ? undefined : toEngine(picked);
 }
