@@ -2,9 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## 1.8.1 — 2026-10-13
-
 ## [Unreleased]
+
+## [1.8.2] - 2026-10-13
+
+### Fixed
+
+- **Released the dependency floor the 1.8.1 code already required.** 1.8.1 imports `dialogChoice` from `@estebanforge/pi-tui-dialogs` but still declared `^0.1.1` — legal semver, yet that version predates the export, so any consumer whose lockfile still held 0.1.1 loaded the new engine picker against the old library and `/agy engine` and the first-run picker died with `(0, _piTuiDialogs.dialogChoice) is not a function`. The floor is now `^0.1.2` (the first version carrying `dialogChoice`, already on npm), so updating the bridge lifts the library everywhere and a stale lock fails at install time instead of at runtime.
+
+## [1.8.1] - 2026-10-13
 
 ### Changed
 
