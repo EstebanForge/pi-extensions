@@ -8,7 +8,13 @@ All notable changes to this project will be documented in this file.
 
 - **The engine picker rides the shared dialog kit.** `showEnginePicker` now renders through `@estebanforge/pi-tui-dialogs`' new `dialogChoice` primitive (extracted from this picker) instead of a hand-rolled SelectList overlay: same title, intro, options, preselect, and esc-means-decide-later semantics, now drawn in the kit's framed style. Esc resolves `undefined` instead of `null`; both call sites are updated.
 
-- **New installs default to the ACP engine; stream-json is the fallback.** `config.engine` unset (no file key, no `AGY_ENGINE`) now resolves to `acp` (`DEFAULT_ENGINE` in config.ts), and stale/garbage stored values fall back to that same default instead of stream-json. The first-run picker preselects acp and explains the trade in that order; the existing startup self-heal covers the rest (binary install + sign-in chain on engine acp). Both engines stay fully supported and every existing config with a saved engine is untouched — only genuinely unspecified engine state changes hands.
+### Fixed
+
+- **The choice modal windows its option list.** `dialogChoice` computed its SelectList window at construction and handed the frame the full list, so on short terminals or with a long description the frame clipped trailing options while the selection could still move into the invisible region. The list viewport now follows the frame height per render (the settings menu's rule), and the tests pin a 10-option dialog on a 12-row terminal.
+
+- **New installs default to the ACP engine; stream-json is the fallback.** `config.engine` unset (no file key, no `AGY_ENGINE`) now resolves to `acp` (`DEFAULT_ENGINE` in config.ts), and stale/garbage stored values fall back to that same default instead of stream-json. One carve-out for continuity: an existing config file that predates the engine key (no `engine` field at all) keeps `stream-json` — the acp default is for new installs, and an existing install must not silently start the ~1.5 GB binary download. The first-run picker preselects acp and explains the trade in that order; the existing startup self-heal covers the rest (binary install + sign-in chain on engine acp). Both engines stay fully supported and every existing config with a saved engine is untouched.
+
+- **The `/agy` settings picker refuses plan against the on-disk engine too.** The plan-mode guard checked only the session-latched engine; since the Switch engine row can change the on-disk engine mid-session without a restart, it now blocks on either (latched or saved) so plan + ACP can never land on disk through the settings surface.
 
 ### Added
 

@@ -101,11 +101,21 @@ export class ChoiceView {
 
 	render(width: number): string[] {
 		const inner = Math.max(1, width - 4);
+		const height = dialogHeight(this.host);
 		const descriptionLines = this.options.description
 			? wrapTextWithAnsi(dialogText(this.options.description), inner).map((line) =>
 					this.theme.fg("muted", ` ${line}`),
 				)
 			: [];
+		// Window the list to what the frame can actually show (DialogMenu's
+		// viewport rule). frameDialog clips the body to height - 4; without
+		// this the SelectList would render all options and let the selection
+		// move into clipped, invisible lines on short terminals or with long
+		// descriptions. maxVisible is compile-time private on SelectList but a
+		// plain field at runtime; re-assigning it per render is the intended
+		// windowing knob (the constructor value only sized the initial view).
+		const listBudget = Math.max(1, height - 4 - descriptionLines.length - 2);
+		(this.list as unknown as { maxVisible: number }).maxVisible = listBudget;
 		return frameDialog(
 			this.theme,
 			width,
@@ -123,8 +133,9 @@ export class ChoiceView {
 }
 
 /** Run one framed choice overlay. Resolves with the chosen option value, or
- *  undefined when cancelled (esc). */
-export function dialogChoice(
+ *  undefined when cancelled (esc). Contract violations reject the promise
+ *  before the overlay opens. */
+export async function dialogChoice(
 	ctx: DialogContext,
 	title: string,
 	options: ChoiceDialogOptions,

@@ -15,6 +15,7 @@ import {
 	isAgyInstalled,
 	savedEngineMessage,
 	shouldOfferEnginePicker,
+	showEnginePicker,
 	toEngine,
 } from "../src/engine-picker.js";
 
@@ -73,6 +74,39 @@ test("picker: saved-engine toast names the download-now and sign-in promise", ()
 	assert.match(acp, /downloads now/);
 	assert.match(acp, /sign-in opens when it lands/);
 	assert.match(acp, /Restart applies the engine/);
+});
+
+test("picker: showEnginePicker resolves the picked engine, undefined on esc", async () => {
+	// Captured ui.custom fake: hand the view the keys SelectList answers to.
+	// ExtensionUIContext is structural here; only custom() is exercised.
+	const capture = (): { ui: unknown; view: () => { handleInput(data: string): void } } => {
+		let captured: { handleInput(data: string): void } | undefined;
+		const ui = {
+			custom: (
+				factory: (host: unknown, theme: unknown, keys: unknown, done: (v: unknown) => void) => unknown,
+			) =>
+				new Promise<unknown>((resolve) => {
+					const done = (value: unknown) => resolve(value);
+					const host = { requestRender() {}, terminal: { rows: 24 } };
+					captured = factory(host, { fg: (_c: string, t: string) => t }, undefined, done) as {
+						handleInput(data: string): void;
+					};
+				}),
+		};
+		return { ui, view: () => captured! };
+	};
+
+	const enter = capture();
+	const enterPick = showEnginePicker(enter.ui as never);
+	await Promise.resolve();
+	enter.view().handleInput("\r");
+	assert.equal(await enterPick, "acp"); // first item, the default engine
+
+	const esc = capture();
+	const escPick = showEnginePicker(esc.ui as never);
+	await Promise.resolve();
+	esc.view().handleInput("\x1b");
+	assert.equal(await escPick, undefined);
 });
 
 test("picker: agy binary detection covers PATH and explicit paths", () => {

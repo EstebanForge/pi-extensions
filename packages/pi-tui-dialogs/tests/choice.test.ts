@@ -102,6 +102,50 @@ describe("dialogChoice", () => {
 		expect(text).toContain("enter select");
 		expect(text).toContain("esc cancel");
 	});
+
+	it("rejects the promise on an invalid contract instead of throwing sync", async () => {
+		const { ctx } = captureCtx();
+		await expect(dialogChoice(ctx, "Pick one", { options: [] })).rejects.toThrow(RangeError);
+	});
+
+	it("windows the list on short terminals so the selection never leaves the frame", async () => {
+		// rows=12 -> dialogHeight 10 -> frame budget 6 lines; ""+1 desc line+"")
+		// overhead leaves 3 list rows. All 10 options must stay navigable
+		// (SelectList scrolls its window) and the frame must stay 10 lines.
+		const captured: Captured[] = [];
+		const ctx: DialogContext = {
+			hasUI: true,
+			mode: "tui",
+			ui: {
+				notify() {},
+				custom<T>(factory: (host: never, theme: Theme, keys: never, done: (v: T) => void) => unknown): Promise<T> {
+					return new Promise<T>((resolve) => {
+						const done = (value: T) => resolve(value);
+						const host = { requestRender() {}, terminal: { rows: 12 } };
+						const view = factory(host as never, theme, undefined as never, done as never) as Captured["view"];
+						captured.push({ host, done: done as (value: string | undefined) => void, view });
+					});
+				},
+			},
+		};
+		const ten = Array.from({ length: MAX_CHOICE_OPTIONS }, (_, i) => ({
+			value: `v${i}`,
+			label: `Option ${i}`,
+			description: `hint ${i}`,
+		}));
+		const promise = dialogChoice(ctx, "Pick one", { options: ten, description: "Pick one of ten." });
+		await Promise.resolve();
+		const view = captured[0]!.view;
+		const first = stripAnsi(view.render(60).join("\n"));
+		expect(first).toContain("Option 0");
+		expect(first).not.toContain("Option 9");
+		for (let i = 0; i < 4; i++) view.handleInput("\x1b[B");
+		const moved = stripAnsi(view.render(60).join("\n"));
+		expect(moved).toContain("Option 4");
+		expect(moved.split("\n")).toHaveLength(10); // frame stays the dialog height
+		view.handleInput("\r");
+		await expect(promise).resolves.toBe("v4");
+	});
 });
 
 describe("ChoiceView validation", () => {

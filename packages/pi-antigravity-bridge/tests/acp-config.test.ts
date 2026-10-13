@@ -56,6 +56,20 @@ test("stale/garbage engine values fall back to the acp default", () => {
 	}
 });
 
+test("a legacy config file without an engine key keeps stream-json", () => {
+	const p = tmpConfig();
+	try {
+		// saveConfig always writes the engine key whole; a file missing it
+		// predates the key, i.e. an existing install. The acp default is for
+		// new installs only - an existing install must not silently start
+		// the ~1.5 GB acp binary download.
+		fs.writeFileSync(p, JSON.stringify({ mode: "accept-edits" }));
+		assert.equal(loadConfig(p).engine, "stream-json");
+	} finally {
+		rm(p);
+	}
+});
+
 test("AGY_ENGINE env overrides the file", () => {
 	const p = tmpConfig();
 	const prev = process.env.AGY_ENGINE;

@@ -258,7 +258,13 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	// documented precedence. Check env first.
 	// Engine: narrow to the known set; anything else (incl. the pre-1.3.2
 	// "sqlite" value) falls back to the default engine, same as an absent key.
-	const engineRaw = String(process.env.AGY_ENGINE ?? file.engine ?? DEFAULTS.engine).toLowerCase();
+	// One absence exception: a config file WITHOUT an engine key belongs to an
+	// existing install (saveConfig always writes the key whole), and the acp
+	// default is for new installs only - an existing install keeps the legacy
+	// stream-json engine instead of silently starting the ~1.5 GB acp download.
+	const freshInstall = !fs.existsSync(configPath);
+	const engineFallback = freshInstall || file.engine !== undefined ? DEFAULT_ENGINE : "stream-json";
+	const engineRaw = String(process.env.AGY_ENGINE ?? file.engine ?? engineFallback).toLowerCase();
 	const engine: Engine = engineRaw === "acp" || engineRaw === "stream-json" ? engineRaw : DEFAULT_ENGINE;
 
 	const mode: AgyMode =

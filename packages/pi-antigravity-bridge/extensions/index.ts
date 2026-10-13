@@ -1948,11 +1948,12 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 	}
 
 	// The picker cannot switch engines (command-only: /agy engine), but the
-	// mode row can still produce plan while the latched engine is acp. Plan
-	// cannot be enforced on provider turns on either engine (#1181 + RC01);
-	// refuse the combination.
+	// mode row can still produce plan while the engine is acp - either the
+	// session-latched engine or the on-disk one, which the Switch engine row
+	// can change mid-session without a restart. Plan cannot be enforced on
+	// provider turns on either engine (#1181 + RC01); refuse the combination.
 	const nextMode = pending.mode ?? config.mode;
-	if (nextMode === "plan" && ctx.engine === "acp") {
+	if (nextMode === "plan" && (ctx.engine === "acp" || config.engine === "acp")) {
 		ui.notify(
 			"plan cannot be enforced on provider turns on either engine (google-antigravity/antigravity-cli#1181; ACP additionally has no plan mode, RC01). /agy mode accept-edits.",
 			"warning",
