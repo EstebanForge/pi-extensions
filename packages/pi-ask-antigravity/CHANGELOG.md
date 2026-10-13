@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- The generated reviewer agent.md frontmatter is now pinned by a test that parses it with a real YAML parser. The plan-review tool shares the failure mode fixed in pi-antigravity-bridge 1.8.3 (agy silently drops an agent whose frontmatter does not parse); the guard keeps a future wording edit from reintroducing it here.
+
 ## [1.3.0] - 2026-10-12
 
 ### Changed

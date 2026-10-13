@@ -15,6 +15,7 @@ import factory, {
 	reviewerAgentMd,
 	stageReviewerAgent,
 } from "../extensions/index.js";
+import { parseAgentFrontmatter } from "./helpers/frontmatter.js";
 
 // The REAL `agy models` stdout shape (verified live 2026-10, trimmed to two
 // flash families):
@@ -276,6 +277,16 @@ describe("plan-mode reviewer agent (damper, not enforcement)", () => {
 		assert.doesNotMatch(md, /write_file/);
 		assert.match(md, /- view_file/);
 		assert.match(md, /- run_command/);
+	});
+
+	test("reviewerAgentMd: frontmatter parses as YAML (issue #5 class)", () => {
+		// Same regression class as the bridge's G10 carrier: agy silently drops
+		// an agent whose frontmatter does not parse.
+		const fm = parseAgentFrontmatter(reviewerAgentMd("pi-bridge-ask-x"));
+		assert.equal(fm.name, "pi-bridge-ask-x");
+		assert.equal(fm.description, "Temporary Pi plan-mode reviewer");
+		assert.equal(fm.mainAgent, true);
+		assert.equal(fm.model, "inherit");
 	});
 
 	test("stageReviewerAgent: creates a unique pid-marked agent dir under root", () => {
