@@ -57,9 +57,9 @@ export interface AcpAuthResult {
  *  credentials answers session/new; a hollow accept starts (or wants) a
  *  browser flow and the request times out or errors. Closes the probe
  *  session; the caller kills the connection either way. */
-async function probeUsableCredentials(conn: AcpConnection): Promise<boolean> {
+async function probeUsableCredentials(conn: AcpConnection, cwd?: string): Promise<boolean> {
 	try {
-		const s = await conn.newSession(process.cwd());
+		const s = await conn.newSession(cwd ?? process.cwd());
 		await conn.closeSession(s.sessionId).catch(() => {});
 		return true;
 	} catch {
@@ -92,7 +92,7 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 				// authenticate replied but no token file: either the server
 				// authenticated from artifacts outside antigravity-acp, or the
 				// reply is hollow. A live session/new separates the two.
-				if (!(await probeUsableCredentials(conn))) {
+				if (!(await probeUsableCredentials(conn, opts.cwd))) {
 					return {
 						ok: false,
 						error: `the server accepted the sign-in but holds no usable credentials (session probe failed; token file absent in ${opts.tokenDir ?? "~/.gemini/antigravity-acp"}). Finish the Google sign-in if a browser opened, then retry /agy auth.`,

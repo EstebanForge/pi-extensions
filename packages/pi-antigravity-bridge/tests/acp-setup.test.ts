@@ -283,4 +283,15 @@ describe("acp/setup inspectAcpSetup", () => {
 		assert.equal(state.source, null);
 		assert.equal(state.auth, null);
 	});
+
+	test("a verified marker reads as healthy when no token file exists", () => {
+		// Servers that authenticate from artifacts outside antigravity-acp never
+		// write acp_token.json; doctor must show that state as verified, not bare.
+		const gdir = tmpDir();
+		writeAuthType("oauth-personal", gdir);
+		const verifiedFile = path.join(tmpDir(), "verified.json");
+		writeAcpAuthVerified(verifiedFile);
+		const state = inspectAcpSetup({ installRoot: tmpDir(), geminiDir: gdir, authVerifiedFile: verifiedFile, env: {} });
+		assert.equal(state.auth, "oauth-personal (verified, no token file)");
+	});
 });
