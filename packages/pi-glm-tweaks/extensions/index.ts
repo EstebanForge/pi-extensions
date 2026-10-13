@@ -823,9 +823,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		// Reset per-loop state at the start of each user turn. The other
-		// hooks read this to drive their per-turn behavior.
-		loop.shortPrompt = event.prompt.length < SHORT_PROMPT_THRESHOLD;
+		// Reset per-loop state at the start of each run. User runs derive it
+		// from the prompt; wake runs (custom triggerTurn events, Pi 1.2.0)
+		// carry no user prompt, so they stay on the normal-effort path.
+		loop.shortPrompt =
+			event.messageType === "user" && event.prompt.length < SHORT_PROMPT_THRESHOLD;
 
 		if (specFor(ctx.model) === undefined) return {};
 		if (pi.getFlag("glm-budget-nudge") !== true) return {};

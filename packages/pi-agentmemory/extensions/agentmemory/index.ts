@@ -832,7 +832,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
   // Hook: before_agent_start (start search, return immediately)
   pi.on("before_agent_start", async (event, ctx) => {
     currentProject = event.systemPromptOptions.cwd || process.cwd();
-    lastPrompt = event.prompt?.trim() || "";
+    // Only user runs carry a prompt; wake runs (custom triggerTurn events,
+    // Pi 1.2.0) must not recall against the previous turn's prompt.
+    lastPrompt = event.messageType === "user" ? event.prompt.trim() : "";
     pendingSearch = null;
 
     if (lastPrompt) {

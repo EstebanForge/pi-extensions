@@ -445,6 +445,73 @@ describe("glm-api-route setting", () => {
 		expect(out.thinking).toEqual({ type: "enabled", reasoning_effort: "low" });
 	});
 
+	it("wake runs (custom before_agent_start) keep normal thinking effort", async () => {
+		// Pi 1.2.0 fires before_agent_start for runs started by
+		// pi.sendMessage({ triggerTurn: true }) — the ask-* wake path. Those
+		// events carry the starting custom message, not a user prompt; reading
+		// event.prompt there crashed every consult-wake turn.
+		withRouteSetting("anthropic");
+		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
+		const pi2 = {
+			...pi,
+			getThinkingLevel: () => "max",
+			getFlag: (name: string) => (name === "glm-skip-short-thinking" ? true : undefined),
+		} as unknown as Parameters<typeof factory>[0];
+		await factory(pi2);
+		(ctx as { model: Record<string, string> }).model = { provider: "zai", id: "glm-5.3", api: "anthropic-messages" };
+
+		const wakeStart = {
+			type: "before_agent_start",
+			messageType: "custom",
+			systemPrompt: "",
+			systemPromptOptions: { cwd: "/tmp" },
+			message: { customType: "pi-ask-shared/wake", content: "consult finished" },
+		};
+		expect(() => handlers.before_agent_start(wakeStart, ctx)).not.toThrow();
+
+		const evt = { payload: { thinking: { type: "enabled", budget_tokens: 8192 } } };
+		const out = handlers.before_provider_request(evt, ctx) as Record<string, any>;
+		// No user prompt was observed, so the short-prompt skip must not fire.
+		expect(out.thinking).toEqual({ type: "enabled", reasoning_effort: "max" });
+	});
+
+	it("user turns still drive the short-prompt skip from prompt length", async () => {
+		withRouteSetting("anthropic");
+		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.3" }]);
+		const pi2 = {
+			...pi,
+			getThinkingLevel: () => "max",
+			getFlag: (name: string) => (name === "glm-skip-short-thinking" ? true : undefined),
+		} as unknown as Parameters<typeof factory>[0];
+		await factory(pi2);
+		(ctx as { model: Record<string, string> }).model = { provider: "zai", id: "glm-5.3", api: "anthropic-messages" };
+
+		const start = (prompt: string) => ({
+			type: "before_agent_start",
+			messageType: "user",
+			systemPrompt: "",
+			systemPromptOptions: { cwd: "/tmp" },
+			prompt,
+		});
+
+		// Boundary: exactly SHORT_PROMPT_THRESHOLD chars counts as long; the
+		// configured level passes through untouched.
+		handlers.before_agent_start(start("x".repeat(80)), ctx);
+		let out = handlers.before_provider_request(
+			{ payload: { thinking: { type: "enabled" } } },
+			ctx,
+		) as Record<string, any>;
+		expect(out.thinking).toEqual({ type: "enabled", reasoning_effort: "max" });
+
+		// Short prompt: skip fires, lightest documented effort for 5.3 (low).
+		handlers.before_agent_start(start("hi"), ctx);
+		out = handlers.before_provider_request(
+			{ payload: { thinking: { type: "enabled" } } },
+			ctx,
+		) as Record<string, any>;
+		expect(out.thinking).toEqual({ type: "enabled", reasoning_effort: "low" });
+	});
+
 	it("anthropic route falls back to the lightest DOCUMENTED effort per spec (glm-5.2 off → high, not low)", async () => {
 		// Peer-review finding (v1.5.0): glm-5.2's map has no "off" key, so an
 		// unmapped level hit the hardcoded "low" fallback — an effort glm-5.2

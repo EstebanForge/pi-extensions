@@ -12,7 +12,12 @@ type Captured = {
 	view: { render(width: number): string[]; handleInput(data: string): void };
 };
 
-const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+// pi-tui 1.2 moved its cursor/fake-cursor markers to APC sequences
+// (ESC _ pi:c BEL etc.); strip those alongside CSI or text reads split.
+const stripAnsi = (text: string) =>
+	text
+		.replace(/\x1b\[[0-9;:?]*[a-zA-Z]/g, "")
+		.replace(/\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 
 /** Stand-in for ctx.ui.custom: captures the factory result and its done callback. */
 function captureCtx(): { ctx: DialogContext; captured: Captured[] } {

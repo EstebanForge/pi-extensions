@@ -15,7 +15,12 @@ const theme = {
 } as unknown as Theme;
 
 const plain = (lines: string[]) => lines.join("\n");
-const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+// pi-tui 1.2 moved its cursor/fake-cursor markers to APC sequences
+// (ESC _ pi:c BEL etc.); strip those alongside CSI or text reads split.
+const stripAnsi = (text: string) =>
+	text
+		.replace(/\x1b\[[0-9;:?]*[a-zA-Z]/g, "")
+		.replace(/\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 
 describe("frame", () => {
 	it("pads the body to a stable height and clips overflow", () => {

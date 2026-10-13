@@ -125,7 +125,7 @@ describe("status bar resilience", () => {
       jsonResponse(200, { status: "ok" }), // /livez
     ]);
     const res = await handlers.before_agent_start(
-      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
@@ -142,7 +142,7 @@ describe("status bar resilience", () => {
     await factory(pi);
     stubFetchQueue([jsonResponse(200, { status: "critical" })]);
     await handlers.before_agent_start(
-      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
@@ -159,7 +159,7 @@ describe("status bar resilience", () => {
       jsonResponse(200, { status: "ok" }), // /livez
     ]);
     await handlers.before_agent_start(
-      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
@@ -174,7 +174,7 @@ describe("status bar resilience", () => {
       new Error("ECONNREFUSED"), // /livez
     ]);
     await handlers.before_agent_start(
-      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
@@ -186,7 +186,7 @@ describe("status bar resilience", () => {
     await factory(pi);
     const fetchMock = stubFetchQueue([jsonResponse(401)]); // /health only
     await handlers.before_agent_start(
-      { systemPromptOptions: { cwd: "/tmp" }, prompt: "", systemPrompt: "" },
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
@@ -206,6 +206,7 @@ describe("status bar resilience", () => {
     await handlers.before_agent_start(
       {
         systemPromptOptions: { cwd: "/tmp" },
+        messageType: "user",
         prompt: "remember this",
         systemPrompt: "",
       },
@@ -281,8 +282,42 @@ describe("observation retry queue", () => {
   });
   const START = (prompt: string) => ({
     systemPromptOptions: { cwd: "/tmp" },
+    messageType: "user",
     prompt,
     systemPrompt: "",
+  });
+  // Pi 1.2.0: runs started by pi.sendMessage({ triggerTurn: true }) (the
+  // ask-* wake path) fire before_agent_start with a "custom" event that
+  // carries the starting message instead of a user prompt.
+  const WAKE = () => ({
+    systemPromptOptions: { cwd: "/tmp" },
+    systemPrompt: "",
+    messageType: "custom",
+    message: { customType: "pi-ask-shared/wake", content: "consult finished" },
+  });
+  const searchCalls = (fetchMock: any) =>
+    fetchMock.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).endsWith("/agentmemory/search"),
+    ).length;
+
+  it("wake run (custom before_agent_start) never triggers recall search", async () => {
+    const { pi, handlers, setStatus } = makeFakePi();
+    await factory(pi);
+    const fetchMock = stubFetchQueue([
+      jsonResponse(503), // user turn: search "stale query"
+      jsonResponse(503), // user turn: refresh /health
+      new Error("ECONNREFUSED"), // user turn: refresh /livez -> off
+      jsonResponse(503), // wake run: refresh /health
+      new Error("ECONNREFUSED"), // wake run: refresh /livez -> off
+    ]);
+    // Sequence user turn -> wake run: the wake must RESET lastPrompt, not
+    // recall against the previous turn's prompt (a second /search here is
+    // the exact regression). Bar + guidance must still ride the wake run.
+    await handlers.before_agent_start(START("stale query"), ctxOf(setStatus));
+    const res = await handlers.before_agent_start(WAKE(), ctxOf(setStatus));
+    await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
+    expect(searchCalls(fetchMock)).toBe(1);
+    expect(res.systemPrompt).toContain("still try the memory tools");
   });
 
   it("observation posted during an outage is queued and flushed on recovery", async () => {

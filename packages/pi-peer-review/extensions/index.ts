@@ -60,11 +60,12 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 		void reviewEngine.baseline();
 	});
 
-	// One agent run == one turn for streak decay and staleness stamping. The
-	// prompt is review material ("task since the pointer").
+	// One agent run == one turn for streak decay and staleness stamping. User
+	// prompts are review material ("task since the pointer"); wake runs (custom
+	// triggerTurn events, Pi 1.2.0) carry no prompt but still count as turns.
 	pi.on("before_agent_start", (event) => {
 		controller?.onTurnStart();
-		reviewEngine?.notePrompt(event.prompt);
+		if (event.messageType === "user") reviewEngine?.notePrompt(event.prompt);
 		agentBusy = true;
 	});
 
