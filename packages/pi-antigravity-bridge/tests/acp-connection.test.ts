@@ -6,8 +6,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "vitest";
-import { AcpConnection } from "../src/acp/connection.js";
+import { test, describe } from "vitest";
+import { AcpConnection, setAuthInvalidatedHook, translateError } from "../src/acp/connection.js";
+import { JsonRpcResponseError } from "../src/acp/jsonrpc.js";
 
 test("acp connection: stderr tail and exit info are redacted", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-conn-"));
@@ -94,3 +95,38 @@ test("acp connection: a stdout frame flood kills the connection instead of growi
 	assert.ok(exits.length > 0, "exit fired");
 	fs.rmSync(dir, { recursive: true, force: true });
 }, 30_000);
+
+describe("acp connection auth-invalidated hook", () => {
+	test("a -32000 family error fires the hook exactly once", () => {
+		let fired = 0;
+		setAuthInvalidatedHook(() => {
+			fired += 1;
+		});
+		try {
+			const translated = translateError("session/prompt", new JsonRpcResponseError({ code: -32000, message: "Authentication required" }));
+			assert.equal(translated.name, "AcpAuthError");
+			assert.equal(fired, 1);
+		} finally {
+			setAuthInvalidatedHook(null);
+		}
+	});
+
+	test("protocol errors and plain errors never fire the hook", () => {
+		let fired = 0;
+		setAuthInvalidatedHook(() => {
+			fired += 1;
+		});
+		try {
+			translateError("session/cancel", new JsonRpcResponseError({ code: -32601, message: "Method not found" }));
+			translateError("session/prompt", new Error("boom"));
+			assert.equal(fired, 0);
+		} finally {
+			setAuthInvalidatedHook(null);
+		}
+	});
+
+	test("no hook registered is a no-op", () => {
+		const translated = translateError("session/new", new JsonRpcResponseError({ code: -32000, message: "nope" }));
+		assert.equal(translated.name, "AcpAuthError");
+	});
+});

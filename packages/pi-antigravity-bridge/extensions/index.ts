@@ -58,8 +58,9 @@ import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGr
 import { StreamDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
+import { setAuthInvalidatedHook } from "../src/acp/connection.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
-import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
+import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
@@ -97,6 +98,11 @@ import { bridgedPiTools } from "../src/bridge-catalog.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
+
+// The server disowning our verified marker (-32000 anywhere: turn, session
+// new/load, cancel) must drop it, or ensureAcpReady keeps reporting a login
+// that no longer exists. Wire once at load; the hook is a no-op until set.
+setAuthInvalidatedHook(() => clearAcpAuthVerified());
 
 // Last UI seen (session_start / /agy commands). The ACP login URL arrives
 // via the driver log sink, which has no command context; the stash lets that
@@ -605,8 +611,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				log: acpLog,
 			});
 			fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
-			if (r.ok) ctx.ui.notify("Signed in. The ACP engine is ready; restart applies it.", "info");
-			else ctx.ui.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
+			if (r.ok) {
+				ctx.ui.notify(
+					r.note ? `Signed in (${r.note}). The ACP engine is ready; restart applies it.` : "Signed in. The ACP engine is ready; restart applies it.",
+					"info",
+				);
+			} else ctx.ui.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
 		} catch (err) {
 			ctx.ui.setStatus("agy-acp", undefined);
 			fileLog.log("acp-setup", { error: String(err) }, "warn");
@@ -1282,7 +1292,10 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				});
 				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
 				if (r.ok) {
-					ui?.notify("Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).", "info");
+					ui?.notify(
+						r.note ? `Signed in (${r.note}). The ACP engine is ready; takes effect on the next pi start (or /reload).` : "Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).",
+						"info",
+					);
 				} else {
 					ui?.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
 				}

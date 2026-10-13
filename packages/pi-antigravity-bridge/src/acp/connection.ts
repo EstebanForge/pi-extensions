@@ -50,6 +50,16 @@ export class AcpAuthError extends Error {
 	}
 }
 
+/** Fired exactly when the SERVER reports an auth failure (-32000 family).
+ *  The extension entry wires this to clearAcpAuthVerified(): a verified
+ *  marker must never outlive the server disagreeing with it. Kept as a hook
+ *  so the low-level connection stays decoupled from bridge file paths. */
+let authInvalidatedHook: (() => void) | null = null;
+
+export function setAuthInvalidatedHook(fn: (() => void) | null): void {
+	authInvalidatedHook = fn;
+}
+
 export interface AcpConnectionOptions {
 	/** Process working directory for the spawned server. */
 	cwd: string;
@@ -613,6 +623,7 @@ export function translateError(method: string, err: unknown): Error {
 	if (err instanceof AcpAuthError) return err;
 	if (err instanceof JsonRpcResponseError) {
 		if (err.code === -32000) {
+			authInvalidatedHook?.();
 			const detail = typeof err.data === "object" && err.data !== null ? (err.data as { message?: unknown }).message : undefined;
 			const detailText = typeof detail === "string" ? `: ${detail}` : `: ${err.message}`;
 			return new AcpAuthError(`ACP authentication required for ${method}${detailText}. Run /agy auth to sign in; /agy auth-manual has manual steps.`);

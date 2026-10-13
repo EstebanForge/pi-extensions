@@ -14,6 +14,7 @@ import {
 	MANUAL_SETUP,
 	platformKey,
 	readAuthState,
+	writeAcpAuthVerified,
 	writeAuthType,
 } from "../src/acp/setup.js";
 
@@ -136,6 +137,8 @@ describe("acp/setup ensureAcpReady", () => {
 		const status = await ensureAcpReady({
 			installRoot: root,
 			geminiDir: gdir,
+			// Hermetic: never let a developer-machine marker flip the assertion.
+			authVerifiedFile: path.join(tmpDir(), "none.json"),
 			env: { GEMINI_API_KEY: "k" },
 			fetchImpl: fakeFetch(REGISTRY),
 			unpack: fakeUnpack,
@@ -171,6 +174,8 @@ describe("acp/setup ensureAcpReady", () => {
 		const status = await ensureAcpReady({
 			installRoot: root,
 			geminiDir: gdir,
+			// Hermetic: never let a developer-machine marker flip the assertion.
+			authVerifiedFile: path.join(tmpDir(), "none.json"),
 			env: { GEMINI_API_KEY: "k" },
 			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
 		});
@@ -208,6 +213,32 @@ describe("acp/setup ensureAcpReady", () => {
 		if (!status.ok) return;
 		assert.equal(status.auth, "oauth-personal");
 		assert.deepEqual(status.actions, []);
+		assert.equal(status.needsLogin, false);
+	});
+
+	test("a verified sign-in marker suppresses login-pending without a token file", async () => {
+		// 1.1.1 servers can hold credentials the bridge cannot see (legacy
+		// ~/.gemini artifacts): after a verified sign-in the nag must stop even
+		// though acp_token.json never appears.
+		const root = tmpDir();
+		const gdir = tmpDir();
+		writeAuthType("oauth-personal", gdir);
+		const verifiedFile = path.join(tmpDir(), "verified.json");
+		writeAcpAuthVerified(verifiedFile);
+		fs.mkdirSync(path.join(root, "current"), { recursive: true });
+		const bin = path.join(root, "current", "agy_acp_server.par");
+		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.chmodSync(bin, 0o755);
+
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			authVerifiedFile: verifiedFile,
+			env: {},
+			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
 		assert.equal(status.needsLogin, false);
 	});
 

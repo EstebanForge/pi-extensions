@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **ACP sign-in no longer fails on servers that authenticate without writing `acp_token.json`.** Server 1.1.1 can answer `authenticate` OK from legacy `~/.gemini` credential artifacts (observed on darwin/arm64: instant OK, no browser, no token file, working turns) — but `/agy auth` treated the absent token file as a distinct failure and the session-start self-heal nagged login-pending forever on a fully working setup. The token file is a server-internal detail, not a contract. `/agy auth` now verifies the token-absent branch with a live `session/new` probe on the same connection: probe success is a real sign-in (result carries a note, the success toast says so), probe failure is an honest "no usable credentials" error that covers the lazily started browser flow. Both verified paths record a bridge-side marker (`~/.pi/agent/antigravity-bridge/acp-auth-verified.json`, a boolean plus timestamp, never a credential); `ensureAcpReady` treats the marker as login-done, `/agy doctor` shows `oauth-personal (verified, no token file)`, and any server-side `-32000` clears the marker so a stale one never masks a real logout.
+
 ## [1.8.0] - 2026-10-12
 
 ### Changed

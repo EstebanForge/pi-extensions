@@ -29,6 +29,10 @@ export interface SetupOptions {
 	installRoot?: string;
 	/** Server settings dir. Default ~/.gemini/antigravity-acp. */
 	geminiDir?: string;
+	/** Bridge-side verified-sign-in marker file. Default
+	 *  ~/.pi/agent/antigravity-bridge/acp-auth-verified.json (tests point this
+	 *  at a fixture to stay hermetic). */
+	authVerifiedFile?: string;
 	/** acp.bin from config (second resolution priority after AGY_ACP_BIN). */
 	configBin?: string;
 	/** Environment. Default process.env (test injection). */
@@ -244,6 +248,41 @@ export function hasAcpToken(dir?: string): boolean {
 	return tokenPresent(dir ?? path.join(os.homedir(), ".gemini", "antigravity-acp"));
 }
 
+/** Bridge-side record that the ACP server proved its own credentials in a
+ *  verified sign-in (runAcpAuth). Needed because servers may authenticate
+ *  from artifacts this module cannot see: 1.1.1 honors legacy ~/.gemini
+ *  credential files (e.g. jetski-standalone-oauth-token) and never writes
+ *  acp_token.json, so the file check alone would nag login-pending forever
+ *  on a working setup. Cleared the moment the server reports an auth error
+ *  (-32000), so a stale marker never masks a real logout. Never holds a
+ *  credential value: a boolean and a timestamp. */
+export function defaultAcpAuthVerifiedPath(): string {
+	return path.join(os.homedir(), ".pi", "agent", "antigravity-bridge", "acp-auth-verified.json");
+}
+
+export function readAcpAuthVerified(file: string = defaultAcpAuthVerifiedPath()): boolean {
+	try {
+		const raw = JSON.parse(fs.readFileSync(file, "utf8")) as { verified?: unknown };
+		return raw.verified === true;
+	} catch {
+		return false;
+	}
+}
+
+export function writeAcpAuthVerified(file: string = defaultAcpAuthVerifiedPath()): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(file, `${JSON.stringify({ verified: true, at: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+}
+
+export function clearAcpAuthVerified(file: string = defaultAcpAuthVerifiedPath()): void {
+	try {
+		fs.rmSync(file, { force: true });
+	} catch {
+		/* best effort: a leftover marker only over-reports readiness, and the
+		   next auth error clears it again. */
+	}
+}
+
 /** Auth state WITHOUT reading any credential value: settings.json carries
  *  only auth.type (+ non-secret gcp placement), acp_token.json is stat()ed. */
 export function readAuthState(dir?: string): AuthState {
@@ -302,8 +341,14 @@ export function resolveInstalledBinary(opts: SetupOptions = {}): BinaryResolutio
 /** Read-only setup state (for /agy doctor): no installs, no writes. */
 export function inspectAcpSetup(opts: SetupOptions = {}): { bin: string | null; source: string | null; auth: string | null } {
 	const binary = resolveInstalledBinary(opts);
-	const auth = readAuthState(defaultGeminiDir(opts));
-	return { bin: binary.bin, source: binary.source, auth: auth.configured ? (auth.type ?? "token") : null };
+	const gdir = defaultGeminiDir(opts);
+	const auth = readAuthState(gdir);
+	if (!auth.configured) return { bin: binary.bin, source: binary.source, auth: null };
+	const type = auth.type ?? "token";
+	// Surface the verified-marker state so a setup that authenticates without
+	// a token file (1.1.1 legacy artifacts) reads as healthy in doctor.
+	const verified = type !== "gemini-api-key" && !tokenPresent(gdir) && readAcpAuthVerified(opts.authVerifiedFile);
+	return { bin: binary.bin, source: binary.source, auth: verified ? `${type} (verified, no token file)` : type };
 }
 
 /** Orchestrate everything the ACP engine needs, in order: binary (install
@@ -358,10 +403,12 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 	}
 	// settings.json alone proves nothing: setup writes it before the login,
 	// the token file only appears after the browser round-trip. oauth-personal
-	// without a token = login still pending, and every caller (switch toast,
-	// session_start self-heal) must keep saying so until the token exists.
-	// gemini-api-key has no browser login; a present token file means done.
-	const needsLogin = auth.type !== "gemini-api-key" && !tokenPresent(gdir);
+	// without a token is login-pending UNLESS a verified sign-in recorded that
+	// this server authenticates from artifacts the bridge cannot see (1.1.1
+	// legacy ~/.gemini credentials; marker written by runAcpAuth, cleared on
+	// any -32000). gemini-api-key has no browser login; a present token file
+	// means done.
+	const needsLogin = auth.type !== "gemini-api-key" && !tokenPresent(gdir) && !readAcpAuthVerified(opts.authVerifiedFile);
 	return {
 		ok: true,
 		bin: binary.bin!,

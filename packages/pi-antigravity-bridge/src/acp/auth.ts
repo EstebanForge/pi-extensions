@@ -1,5 +1,5 @@
 import { AcpConnection } from "./connection.js";
-import { hasAcpToken } from "./setup.js";
+import { hasAcpToken, writeAcpAuthVerified } from "./setup.js";
 
 // Explicit sign-in (/agy auth): spawn a short-lived server, send
 // `authenticate` (the RPC that fires the loopback listener + browser OAuth
@@ -9,6 +9,13 @@ import { hasAcpToken } from "./setup.js";
 // blocks until the browser round-trip completes; the observed window is
 // minutes-scale (one flow timed out at ~8.5 minutes), so the timeout is
 // generous.
+//
+// Token-absent after an OK reply is NOT always a failure: server 1.1.1 can
+// authenticate from legacy ~/.gemini credential artifacts and never writes
+// acp_token.json (observed on darwin/arm64 2026-10-13). A live session/new
+// probe separates that from a hollow accept: probe success = signed in
+// (recorded in the bridge-side verified marker), probe failure = the server
+// holds no usable credentials.
 
 export const AUTH_TIMEOUT_MS = 10 * 60_000;
 
@@ -25,16 +32,39 @@ export interface AcpAuthOptions {
 	 *  authenticate replies, but write-after-reply is unverified; after a
 	 *  successful reply the run polls for the token up to this long before
 	 *  SIGTERM, so a laggard write is never killed mid-flight. A token that
-	 *  never appears is a distinct failure, not silent success. */
+	 *  never appears is verified through a live session probe instead of
+	 *  failing outright. */
 	tokenGraceMs?: number;
+	/** Bridge-side verified-sign-in marker. Written on every verified
+	 *  success (token file or live session probe). Default is the real
+	 *  bridge path; tests point this at a fixture. */
+	authVerifiedFile?: string;
 	timeoutMs?: number;
 	log?: (msg: string, data?: unknown) => void;
 }
 
 export interface AcpAuthResult {
 	ok: boolean;
+	/** Present when verified through the session probe: the server
+	 *  authenticated from existing credentials without writing a local
+	 *  token file. Absent on the normal token-file path and on failure. */
+	note?: string;
 	/** Failure reason (spawn, timeout, -32000 family, concurrent run). Absent when ok. */
 	error?: string;
+}
+
+/** Live credential probe for the token-absent branch: a server with usable
+ *  credentials answers session/new; a hollow accept starts (or wants) a
+ *  browser flow and the request times out or errors. Closes the probe
+ *  session; the caller kills the connection either way. */
+async function probeUsableCredentials(conn: AcpConnection): Promise<boolean> {
+	try {
+		const s = await conn.newSession(process.cwd());
+		await conn.closeSession(s.sessionId).catch(() => {});
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 let authInFlight: Promise<AcpAuthResult> | null = null;
@@ -59,11 +89,19 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 			const deadline = Date.now() + grace;
 			while (!hasAcpToken(opts.tokenDir) && Date.now() < deadline) await sleep(200);
 			if (!hasAcpToken(opts.tokenDir)) {
-				return {
-					ok: false,
-					error: `the server accepted the sign-in, but no token file appeared in ${opts.tokenDir ?? "~/.gemini/antigravity-acp"} within ${Math.round(grace / 1000)}s`,
-				};
+				// authenticate replied but no token file: either the server
+				// authenticated from artifacts outside antigravity-acp, or the
+				// reply is hollow. A live session/new separates the two.
+				if (!(await probeUsableCredentials(conn))) {
+					return {
+						ok: false,
+						error: `the server accepted the sign-in but holds no usable credentials (session probe failed; token file absent in ${opts.tokenDir ?? "~/.gemini/antigravity-acp"}). Finish the Google sign-in if a browser opened, then retry /agy auth.`,
+					};
+				}
+				writeAcpAuthVerified(opts.authVerifiedFile);
+				return { ok: true, note: "the server authenticated from existing credentials; no browser sign-in was needed" };
 			}
+			writeAcpAuthVerified(opts.authVerifiedFile);
 			return { ok: true };
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };
