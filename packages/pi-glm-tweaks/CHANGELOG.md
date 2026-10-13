@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 1.8.1 — 2026-10-13
+
+### Fixed
+- **Wake runs no longer crash the turn-start hook.** Pi 1.2.0 fires `before_agent_start` for runs started by `pi.sendMessage({ triggerTurn: true })` (the ask-* wake path) with a "custom" event that carries no `prompt`; reading `event.prompt.length` threw a TypeError on every consult-wake turn. `shortPrompt` now derives from user prompts only and stays false for wake runs, keeping them on the normal thinking-effort path.
+
 ## 1.8.0 — 2026-10-12
 
 ### Changed

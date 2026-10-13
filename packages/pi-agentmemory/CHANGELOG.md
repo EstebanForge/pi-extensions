@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 1.1.1 (2026-10-13)
+
+### Fixed
+- **Recall is pinned to user prompts.** Pi 1.2.0 fires `before_agent_start` for runs started by `pi.sendMessage({ triggerTurn: true })` (the ask-* wake path) with a "custom" event that carries no `prompt`. Runtime behavior is unchanged — the old optional chain already read a missing `prompt` as an empty one — but the guard exists because custom events no longer have the field at all: the user-run-only intent is now explicit instead of incidental, and a wake run after a user turn provably resets the recall prompt instead of reusing it. Test events updated to the 1.2.0 event shape (`messageType: "user"`).
+
 ## 1.1.0 (2026-10-12)
 
 ### Changed

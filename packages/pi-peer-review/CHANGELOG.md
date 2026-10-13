@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-13
+
+### Fixed
+- **Wake runs no longer crash the turn-start hook.** Pi 1.2.0 fires `before_agent_start` for runs started by `pi.sendMessage({ triggerTurn: true })` (the ask-* wake path) with a "custom" event that carries no `prompt`; feeding it to `notePrompt` threw a TypeError. Wake runs still count as turns for streak decay and staleness stamping; only user prompts land in the review material.
+
 ## [1.1.0] - 2026-10-12
 
 ### Changed
