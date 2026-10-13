@@ -44,7 +44,9 @@ export function syspromptAgentMd(name: string, body: string): string {
 	return [
 		"---",
 		`name: ${name}`,
-		"description: Pi bridge system-prompt carrier: pi operating instructions plus project AGENTS.md context",
+		// Quoted value: it contains ': ', invalid inside an unquoted plain
+		// scalar — agy then silently drops the agent (issue #5).
+		"description: \"Pi bridge system-prompt carrier: pi operating instructions plus project AGENTS.md context\"",
 		"mainAgent: true",
 		"model: inherit",
 		"---",

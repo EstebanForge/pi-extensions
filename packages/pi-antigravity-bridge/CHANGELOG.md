@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The G10 carrier agent no longer dies on invalid YAML frontmatter (issue #5).** `syspromptAgentMd()` wrote the `description` value as an unquoted plain scalar containing a second `: `, which is invalid YAML. agy silently skips an agent whose frontmatter does not parse, so every stream-json turn with the staged carrier (default `systemPrompt: true`, no user-set `config.agent`) failed with `unknown agent "pi-bridge-sys-…"`; the bug has been present since 1.7.8. The value is now quoted, and all three agent.md generators (sysprompt carrier, web delegate, ask-tool reviewer) are pinned by tests that parse the generated frontmatter with a real YAML parser, so a future wording edit cannot reintroduce the silent drop. Leftover broken `pi-bridge-sys-*` dirs need no manual cleanup: the stale-agent sweep prunes them on next staging.
+
 ## [1.8.2] - 2026-10-13
 
 ### Fixed

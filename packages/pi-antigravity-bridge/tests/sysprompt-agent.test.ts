@@ -11,6 +11,7 @@ import {
 	stageSyspromptAgent,
 	syspromptAgentMd,
 } from "../src/sysprompt-agent.js";
+import { parseAgentFrontmatter } from "./helpers/frontmatter.js";
 
 function tmpAgentsRoot(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "agy-sys-agents-"));
@@ -29,6 +30,20 @@ test("agent.md keeps agy defaults: no tool/mcp/component overrides", () => {
 	assert.equal(md.includes("inheritMcp"), false);
 	assert.equal(md.includes("tools:"), false);
 	assert.ok(md.endsWith("BODY\n"));
+});
+
+test("frontmatter parses as YAML (agy drops unparsable agents, issue #5)", () => {
+	// The description carries a second ': ': as an unquoted plain scalar that
+	// is invalid YAML, agy silently skips the agent at discovery and every
+	// --agent turn fails with "unknown agent". Pin the quoted form.
+	const fm = parseAgentFrontmatter(syspromptAgentMd("pi-bridge-sys-x", "BODY"));
+	assert.equal(fm.name, "pi-bridge-sys-x");
+	assert.equal(
+		fm.description,
+		"Pi bridge system-prompt carrier: pi operating instructions plus project AGENTS.md context",
+	);
+	assert.equal(fm.mainAgent, true);
+	assert.equal(fm.model, "inherit");
 });
 
 test("stageSyspromptAgent writes agent.md + pid marker and returns the name", () => {

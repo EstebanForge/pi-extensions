@@ -114,6 +114,11 @@ export interface WebRunOptions {
 	log?: (event: string, data?: unknown, level?: "info" | "warn" | "error") => void;
 }
 
+/** agent.md for the one-shot web delegate: search-only, no inheritance. */
+export function webAgentMd(name: string): string {
+	return `---\nname: ${name}\ndescription: Temporary Pi web delegate\nmainAgent: true\nsubagent: false\nmodel: inherit\nexcludeDefaultComponents: true\ninheritCustomizations: false\ninheritMcp: false\ncommandExecutionPolicy: auto\ntools:\n  - search_web\n  - read_url_content\nskills: []\nrules: []\nagents: []\nmcpServers: []\n---\n\nAnswer the user's query using search_web (and read_url_content when a page must be opened). Cite sources. Use no other tools.\n`;
+}
+
 /** One gated one-shot web run. Creates a unique restricted agent, streams the
  *  NDJSON frames, refuses answers with no observed allowed-tool step, and
  *  always removes the agent dir. */
@@ -128,11 +133,9 @@ export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 	// commandExecutionPolicy stays at the live-validated "auto": the template's
 	// tools list has no command tool and plan mode blocks edits; an unvalidated
 	// stricter enum risks agent discovery failing outright.
-	writeFileSync(
-		path.join(agentDir, "agent.md"),
-		`---\nname: ${agentName}\ndescription: Temporary Pi web delegate\nmainAgent: true\nsubagent: false\nmodel: inherit\nexcludeDefaultComponents: true\ninheritCustomizations: false\ninheritMcp: false\ncommandExecutionPolicy: auto\ntools:\n  - search_web\n  - read_url_content\nskills: []\nrules: []\nagents: []\nmcpServers: []\n---\n\nAnswer the user's query using search_web (and read_url_content when a page must be opened). Cite sources. Use no other tools.\n`,
-		{ mode: 0o600 },
-	);
+	writeFileSync(path.join(agentDir, "agent.md"), webAgentMd(agentName), {
+		mode: 0o600,
+	});
 	writeFileSync(path.join(agentDir, ".pid"), `${process.pid}\n`, { mode: 0o600 });
 
 	const bin = opts.bin ?? process.env.AGY_BIN ?? "agy";

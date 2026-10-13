@@ -15,6 +15,7 @@ import { test, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildFinalPrompt, resolveAgyModel } from "@estebanforge/pi-ask-shared";
 import { reviewerAgentMd, stageReviewerAgent, toolModelsFromRaw } from "../src/ask-tool.js";
+import { parseAgentFrontmatter } from "./helpers/frontmatter.js";
 import { toAgyEffort } from "../src/models.js";
 
 vi.mock("../src/mcp-registration.js", () => ({
@@ -247,6 +248,15 @@ test("buildFinalPrompt: agent-damper plan run forbids file mutation and steers a
 
 test("buildFinalPrompt: agent-damper accept-edits run is unchanged", () => {
 	assert.equal(buildFinalPrompt("do the edit", "accept-edits", false, true), "do the edit");
+});
+
+test("reviewerAgentMd: frontmatter parses as YAML (issue #5 class)", () => {
+	// Same regression class as the G10 carrier: agy silently drops an agent
+	// whose frontmatter does not parse.
+	const fm = parseAgentFrontmatter(reviewerAgentMd("pi-bridge-ask-x"));
+	assert.equal(fm.name, "pi-bridge-ask-x");
+	assert.equal(fm.description, "Temporary Pi plan-mode reviewer");
+	assert.equal(fm.mainAgent, true);
 });
 
 test("reviewerAgentMd: toolset must never contain a file-editing tool", () => {
