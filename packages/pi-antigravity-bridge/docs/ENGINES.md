@@ -1,9 +1,9 @@
 # Engines
 
-Turns run through one of two engines behind the same provider surface (`config.engine`, default `stream-json`). The choice of engine is left to the user: a first-run picker explains the trade-offs and asks once, and `/agy engine` (no arguments, TUI) reopens the same modal anytime. Direct switches work too: `/agy engine acp|stream-json`.
+Turns run through one of two engines behind the same provider surface (`config.engine`, default `acp`). The choice of engine is left to the user: a first-run picker explains the trade-offs and asks once (acp preselected), and `/agy engine` (no arguments, TUI) reopens the same modal anytime. Direct switches work too: `/agy engine acp|stream-json`.
 
-- **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
-- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
+- **acp** (default): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
+- **stream-json** (fallback): the persistent `agy` CLI process. Live token usage; conversation resume via `--conversation`.
 
 ## First run
 

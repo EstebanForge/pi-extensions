@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **New installs default to the ACP engine; stream-json is the fallback.** `config.engine` unset (no file key, no `AGY_ENGINE`) now resolves to `acp` (`DEFAULT_ENGINE` in config.ts), and stale/garbage stored values fall back to that same default instead of stream-json. The first-run picker preselects acp and explains the trade in that order; the existing startup self-heal covers the rest (binary install + sign-in chain on engine acp). Both engines stay fully supported and every existing config with a saved engine is untouched — only genuinely unspecified engine state changes hands.
+
 ### Added
 
 - **The `/agy` settings picker has a Switch engine row again** (first row, showing the active engine as its value). It is deliberately not a cycle row: Enter on it closes settings and opens the same picker modal `/agy engine` uses — explanations, plan-blocks-acp guard, and the acp pick's self-service setup + sign-in chain all come from the one shared path. Esc in the picker changes nothing.

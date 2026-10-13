@@ -38,9 +38,16 @@ export function logsDir(): string {
 	);
 }
 
-/** Which turn engine drives turns. "stream-json" is the tested default;
- *  "acp" is the official-server engine, opt-in (plan §9.5). */
+/** Which turn engine drives turns. "acp" (the official server) is the
+ *  default for new installs; "stream-json" (the `agy` CLI) remains a fully
+ *  supported fallback. */
 export type Engine = "stream-json" | "acp";
+
+/** The engine a fresh install runs when nothing is configured (no file key,
+ *  no AGY_ENGINE): the official ACP server. Unknown/stale stored values also
+ *  fall back here; the first startup's acp self-heal installs the binary and
+ *  chains the sign-in. */
+export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
 export type BridgeTools = "none" | "mcp" | "all";
@@ -187,7 +194,7 @@ export interface AgyConfig {
 }
 
 const DEFAULTS: AgyConfig = {
-	engine: "stream-json",
+	engine: DEFAULT_ENGINE,
 	mode: "accept-edits",
 	readOnly: false,
 	skipPermissions: true,
@@ -250,9 +257,9 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	// explicit AGY_MODE=accept-edits when the file says plan, violating the
 	// documented precedence. Check env first.
 	// Engine: narrow to the known set; anything else (incl. the pre-1.3.2
-	// "sqlite" value) falls back to the tested default.
+	// "sqlite" value) falls back to the default engine, same as an absent key.
 	const engineRaw = String(process.env.AGY_ENGINE ?? file.engine ?? DEFAULTS.engine).toLowerCase();
-	const engine: Engine = engineRaw === "acp" ? "acp" : "stream-json";
+	const engine: Engine = engineRaw === "acp" || engineRaw === "stream-json" ? engineRaw : DEFAULT_ENGINE;
 
 	const mode: AgyMode =
 		process.env.AGY_MODE !== undefined

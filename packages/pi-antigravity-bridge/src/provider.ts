@@ -345,8 +345,9 @@ export interface StreamSimpleDeps {
 	 *  driver and bridge calls park as toolUse round-trips. Required with
 	 *  roundTrips. */
 	driver?: TurnDriver;
-	/** Official-server ACP engine. Opt-in via config.engine = "acp"; when
-	 *  absent the config switch falls back to the stream driver. */
+	/** Official-server ACP engine (the default engine). Selected via
+	 *  config.engine = "acp"; when absent the config switch falls back to
+	 *  the stream driver. */
 	acpDriver?: TurnDriver;
 	roundTrips?: ToolRoundTrips;
 	/** Replay store for the display-only antigravity wrapper tool. Required

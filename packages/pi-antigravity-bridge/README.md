@@ -1,6 +1,6 @@
 # pi-antigravity-bridge
 
-A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi), built on Google's official Antigravity binaries: the `agy` CLI by default, or **Google's official ACP server** (opt-in). It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
+A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi), built on Google's official Antigravity binaries: **Google's official ACP server** by default (new installs), with the `agy` CLI engine kept as the fallback. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
 
 If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-extensions/tree/main/packages/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
@@ -13,12 +13,12 @@ Multi-turn works. The provider binds a pi session to an agy conversation id (per
 
 ### Two engines
 
-Turns run through one of two engines behind the same provider surface (`config.engine`, default `stream-json`):
+Turns run through one of two engines behind the same provider surface (`config.engine`, default `acp`):
 
-- **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
-- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
+- **acp** (default): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
+- **stream-json** (fallback): the persistent `agy` CLI process. Live token usage; conversation resume via `--conversation`.
 
-The choice of engine is left to the user, with the trade-offs explained in the tool: a first-run picker modal asks once on a fresh install (stream-json preselected; `esc` defers, and the modal reappears next start), and `/agy engine` with no arguments reopens it anytime. An `acp` pick downloads the ~1.5 GB server binary and starts the Google sign-in immediately; a restart applies the engine. With stream-json active and the `agy` binary missing, pi warns on every start until the binary is found.
+The choice of engine is left to the user, with the trade-offs explained in the tool: a first-run picker modal asks once on a fresh install (acp preselected; `esc` defers, and the modal reappears next start), and `/agy engine` with no arguments reopens it anytime. An `acp` pick downloads the ~1.5 GB server binary and starts the Google sign-in immediately; a restart applies the engine. Fresh installs default to acp and the startup self-heal installs the binary + chains the sign-in; with stream-json active and the `agy` binary missing, pi warns on every start until the binary is found.
 
 Full capability comparison, switching, and setup/auth details: [docs/ENGINES.md](docs/ENGINES.md).
 
@@ -147,7 +147,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy tools [hide|show <name>|reset]   session-only bridge-catalog hides (multi-word names OK; reset restores the full set; bare lists exposed + hidden; never touches saved config)
 /agy web on|off            register the agy_web_search + agy_read_url pi tools for ANY provider's model (default off; applies on the next pi start or /reload; every call spawns agy and spends Antigravity quota)
 /agy acp-bin <path|auto>  point the ACP engine at a specific server binary (auto = setup installs, or AGY_ACP_BIN; applies on the next ACP turn)
-/agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp is beta and runs self-service setup: binary install + auth bootstrap). No arguments opens the engine picker modal (TUI)
+/agy engine acp|stream-json   switch the turn engine (restart to apply; default acp, stream-json is the fallback; acp runs self-service setup: binary install + auth bootstrap). No arguments opens the engine picker modal (TUI)
 /agy auth-manual             manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
 /agy clear                drop all session bindings (force fresh conversations)
 ```

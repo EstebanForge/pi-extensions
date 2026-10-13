@@ -22,19 +22,20 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import type { DialogRow } from "@estebanforge/pi-tui-dialogs";
-import type { Engine } from "./config.js";
+import { DEFAULT_ENGINE, type Engine } from "./config.js";
 
-/** Picker order is the default answer order: stream-json first. */
+/** Picker order is the default answer order: acp (the default engine)
+ *  preselected first, stream-json as the fallback. */
 export const ENGINE_PICKER_ITEMS: SelectItem[] = [
-	{
-		value: "stream-json",
-		label: "Stream-JSON CLI",
-		description: "default, recommended",
-	},
 	{
 		value: "acp",
 		label: "ACP server (official Google)",
-		description: "second sign-in, ~1.5 GB binary download",
+		description: "default · official Google server",
+	},
+	{
+		value: "stream-json",
+		label: "Stream-JSON CLI",
+		description: "the `agy` CLI, fallback",
 	},
 ];
 
@@ -43,8 +44,8 @@ export const ENGINE_PICKER_ITEMS: SelectItem[] = [
 export const ENGINE_PICKER_INTRO = [
 	"Pick the engine that runs your Antigravity turns. Switch anytime with /agy engine (restart applies it).",
 	"",
-	"stream-json: the `agy` CLI you already installed and authenticated. Persistent process, streamed output. Tested default.",
-	"ACP: Google's official server (agy_acp_server.par). Needs a second Google sign-in and a ~1.5 GB server binary downloaded from Google (automatic, one-time, unavoidable: the server is not part of the agy CLI).",
+	"ACP (default): Google's official server (agy_acp_server.par). Needs a second Google sign-in and a ~1.5 GB server binary downloaded from Google (automatic, one-time, unavoidable: the server is not part of the agy CLI).",
+	"stream-json (fallback): the `agy` CLI you already installed and authenticated. Persistent process, streamed output.",
 ].join("\n");
 
 /** True only for a genuine first interactive run: no saved config yet (any
@@ -65,9 +66,9 @@ export function shouldOfferEnginePicker(
 
 /** Narrow a picker value to an Engine. Items are our own constants, but an
  *  unknown value must never reach config as a cast string: it falls back to
- *  the tested default. */
+ *  the default engine (acp), same rule as loadConfig's narrowing. */
 export function toEngine(value: string): Engine {
-	return value === "acp" ? "acp" : "stream-json";
+	return value === "acp" || value === "stream-json" ? value : DEFAULT_ENGINE;
 }
 
 /** Toast copy shown after the choice is saved. ACP names the promise that

@@ -16,11 +16,11 @@ function rm(p: string): void {
 	fs.rmSync(path.dirname(p), { recursive: true, force: true });
 }
 
-test("engine defaults to stream-json (ACP is opt-in)", () => {
+test("engine defaults to acp (stream-json is the fallback)", () => {
 	const p = tmpConfig();
 	try {
 		const c = loadConfig(p);
-		assert.equal(c.engine, "stream-json");
+		assert.equal(c.engine, "acp");
 		assert.equal(c.acp.bin, "");
 	} finally {
 		rm(p);
@@ -40,17 +40,17 @@ test("engine switches to acp and round-trips", () => {
 	}
 });
 
-test("stale/garbage engine values fall back to stream-json", () => {
+test("stale/garbage engine values fall back to the acp default", () => {
 	const p = tmpConfig();
 	try {
 		saveConfig({ engine: "acp" }, p);
 		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
 		raw.engine = "sqlite"; // pre-1.3.2 value
 		fs.writeFileSync(p, JSON.stringify(raw));
-		assert.equal(loadConfig(p).engine, "stream-json");
+		assert.equal(loadConfig(p).engine, "acp");
 		raw.engine = 42;
 		fs.writeFileSync(p, JSON.stringify(raw));
-		assert.equal(loadConfig(p).engine, "stream-json");
+		assert.equal(loadConfig(p).engine, "acp");
 	} finally {
 		rm(p);
 	}

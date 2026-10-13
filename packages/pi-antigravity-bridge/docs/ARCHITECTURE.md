@@ -5,8 +5,8 @@ How the provider works internally. For build/test/debug workflow see [DEVELOPMEN
 ## Engine
 
 The provider ships two turn engines behind one contract (`TurnDriver`,
-`src/driver-types.ts`): the default **stream-json engine** (below) and the
-opt-in **ACP engine** (bottom of this doc). Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
+`src/driver-types.ts`): the default **ACP engine** (bottom of this doc) and the
+fallback **stream-json engine** (below). Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
 
 Shared infrastructure: session binding (`sessions.json`), runtime config, the `AskAntigravity` tool, the MCP tool bridge surface, and the G1 context digest (off by default - see below).
 
@@ -73,7 +73,7 @@ By default the prompt agy receives is only the latest user message: agy keeps it
 
 The pre-1.3.0 engine (spawn `agy -p`, poll the SQLite conversation DB, decode protobuf step payloads) was removed in 1.3.2. agy 1.1.18 changed the step-row storage to a two-phase write (a metadata-only placeholder row that grows in place), which the polling decoder read once as an empty placeholder and never re-read: turns completed with the full reply in the database and zero text streamed to pi (issue #1, reported by @imatimba). The engine reverse-engineered an undocumented storage format, so every agy storage change risked repeating that silent failure. The stream-json engine shares none of that code path and is unaffected by storage-format changes. `AGY_ENGINE` and the `engine` config key are gone; a stale value in an existing `config.json` is ignored.
 
-## ACP engine (opt-in, official server)
+## ACP engine (default, official server)
 
 `config.engine: "acp"` (or `/agy engine acp`) routes turns through Google's
 official ACP server (`agy_acp_server.par`, registry id `antigravity-acp`)

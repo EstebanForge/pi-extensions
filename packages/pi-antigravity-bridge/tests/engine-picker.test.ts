@@ -51,17 +51,17 @@ test("picker: AGY_ENGINE env suppresses the picker even on a fresh install", () 
 	}
 });
 
-test("picker: stream-json is the first (default preselected) option", () => {
+test("picker: acp is the first (default preselected) option", () => {
 	assert.equal(ENGINE_PICKER_ITEMS.length, 2);
-	assert.equal(ENGINE_PICKER_ITEMS[0]?.value, "stream-json");
-	assert.equal(ENGINE_PICKER_ITEMS[1]?.value, "acp");
+	assert.equal(ENGINE_PICKER_ITEMS[0]?.value, "acp");
+	assert.equal(ENGINE_PICKER_ITEMS[1]?.value, "stream-json");
 });
 
-test("picker: only the literal acp value selects the ACP engine", () => {
+test("picker: only the exact engine literals count; anything else falls to the acp default", () => {
 	assert.equal(toEngine("acp"), "acp");
 	assert.equal(toEngine("stream-json"), "stream-json");
-	assert.equal(toEngine("acp "), "stream-json");
-	assert.equal(toEngine("sqlite"), "stream-json");
+	assert.equal(toEngine("acp "), "acp");
+	assert.equal(toEngine("sqlite"), "acp");
 });
 
 test("picker: saved-engine toast names the download-now and sign-in promise", () => {

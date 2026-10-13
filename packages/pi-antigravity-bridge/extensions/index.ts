@@ -223,9 +223,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// login URLs would silently stop appearing on headless boxes.
 		console.error("[antigravity-bridge] OAuth URL capture unavailable; login URL surfacing is off (setup failed).");
 	}
-	// Two turn engines behind one contract (plan §9): stream-json (tested
-	// default) and the official ACP server (opt-in via config.engine, off by
-	// default). Neither spawns anything until its first turn.
+	// Two turn engines behind one contract (plan §9): the official ACP
+	// server (default for new installs) and the stream-json `agy` CLI
+	// (fallback). Neither spawns anything until its first turn.
 	// ACP log routing: only genuine failures reach stderr. Routine lifecycle
 	// (driver-created, spawn, session-new, ...) stays in the driver's
 	// #lifecycle ring buffer, visible via /agy doctor. An unfiltered sink fired
@@ -1112,7 +1112,7 @@ function statusText(ctx: AgyCommandCtx): string {
 	const source = ctx.usingFallback ? "fallback (agy models failed)" : "discovered";
 	return [
 		"Antigravity bridge",
-		`  engine:        ${config.engine}${config.engine === "acp" ? " (official server, opt-in)" : ""}`,
+		`  engine:        ${config.engine}${config.engine === "stream-json" ? " (agy CLI fallback)" : " (official server)"}`,
 		`  models:        ${ctx.entries.length} ${source}`,
 		...settingsRows(ctx),
 		`  sessions:      ${ctx.store.size} bound`,
