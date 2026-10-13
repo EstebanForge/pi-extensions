@@ -181,11 +181,10 @@ Versions are per-package: a package's version moves only when that package relea
 npm run rel <name> patch     # release one package: check, bump, lockfile, commit, tag <name>-v<version>
 npm run pub <name>           # full check, then npm publish for that package only
 
-npm run release:patch        # fleet stamp: check, then +1 on every package, one commit, one tag per package
-npm run publish              # full check, then npm publish for every package
+npm run release:patch        # fleet stamp: changelog gate, then +1 on every package, one commit, one tag per package
 ```
 
-The registry holds different versions per package by design. Right after a fleet stamp every package has cleared its own registry version, so the blanket publish works; after individual releases, publish those packages individually. Existing installs keep working: package names and entrypoints are unchanged by the monorepo migration.
+The registry holds different versions per package by design. Publish one package at a time with `npm run pub <name>`; it runs the release gates (changelog stamp, dependency floors) before anything reaches npm. Existing installs keep working: package names and entrypoints are unchanged by the monorepo migration.
 
 ## License
 

@@ -50,24 +50,23 @@ npm run release:minor            # +1 minor on every package
 npm run release:major            # +1 major on every package
 ```
 
-What one stamp does: check gates, bumps the root manifest (cursor only, never published) and all 16 packages, syncs the lockfile, one commit `chore(release): fleet patch` whose body lists every `name old -> new`, and one `<name>-v<version>` tag per package (16 tags).
+What one stamp does: runs the per-package changelog gate, bumps the root manifest (cursor only, never published) and all 22 packages, syncs the lockfile, one commit `chore(release): fleet patch` whose body lists every `name old -> new`, and one `<name>-v<version>` tag per package (22 tags). The changelog gate refuses the stamp while any package lacks a dated section for the version the stamp would create: write the entries first, stamp after.
 
-Publishing after a stamp: right after a stamp every package sits above its own registry version, so the blanket publish works:
+Publishing after a stamp: one package at a time, through the gated command:
 
 ```bash
-npm run publish                  # full check, then npm publish for all 16
+npm run pub <name>               # gates, then npm publish for that package
 ```
 
-After individual releases (no stamp), the blanket publish fails on unchanged packages. Publish those individually with `npm run pub <name>`.
+The gates run again inside pub: a package whose changelog section is missing or whose dependency floors lag its imports is refused before anything reaches npm.
 
 ## Reference
 
 | Command | Does | Publishes |
 |---|---|---|
-| `npm run rel <name> <level>` | check, bump one package, lockfile, commit, tag | no |
-| `npm run pub <name> [level]` | release if the package changed since its tag, sync with origin, check, publish one package | one |
-| `npm run release:<level>` | check, +level on every package, one commit, tag | no |
-| `npm run publish` | check, publish every package | all |
+| `npm run rel <name> <level>` | changelog + floor gates, check, bump one package, lockfile, commit, tag | no |
+| `npm run pub <name> [level]` | release if the package changed since its tag, sync with origin, publish one package (gated on both paths) | one |
+| `npm run release:<level>` | changelog gate on every package, +level on every package, one commit, tag | no |
 | `npm run check` | typecheck + tests | - |
 
 Tags always mark a released version: `<name>-v<version>` (pi-slack-me-v1.2.2). A fleet stamp creates the 16 per-package tags for the versions it cut; there is no fleet-wide version to tag. Push commits and tags together: `git push --follow-tags`.

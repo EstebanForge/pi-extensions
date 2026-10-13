@@ -2,11 +2,12 @@
 // Fleet release: bump every package one level from its own current
 // version. For dependency bumps and mass changes. One-off fixes
 // release a single package instead: npm run rel <name> <level>
-// Publishing stays separate: npm run publish
+// Publishing stays separate: npm run pub <name>
 import { execFileSync, execSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkChangelog, resolveChangelog } from "./lib/changelog-gate.mjs";
 
 const bump = process.argv[2];
 if (!bump || !/^(patch|minor|major)$/.test(bump)) {
@@ -25,6 +26,12 @@ if (execSync("git status --porcelain", { encoding: "utf8" }).trim()) {
 }
 run("npm run check");
 
+// Changelog gate for every package at the version this fleet stamp will
+// create. The tag and commit this script produces cannot be repaired after
+// the fact: a later pub of a tagged-but-unstamped version would find the
+// stamp commit changed the package since its tag and bump it AGAIN, so the
+// stamp must exist BEFORE the fleet stamp runs. Offline check only; floor
+// gates run per package at pub time.
 const bumpVersion = (v) => {
   let [major, minor, patch] = v.split(".").map(Number);
   if (bump === "patch") patch += 1;
@@ -32,6 +39,23 @@ const bumpVersion = (v) => {
   else { major += 1; minor = 0; patch = 0; }
   return `${major}.${minor}.${patch}`;
 };
+
+const gateFailures = [];
+for (const entry of readdirSync(join(rootDir, "packages"), { withFileTypes: true })) {
+  if (!entry.isDirectory()) continue;
+  const pkgDir = join(rootDir, "packages", entry.name);
+  const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+  const changelog = resolveChangelog(pkgDir, pkg);
+  if ("skip" in changelog) continue;
+  if ("problem" in changelog) gateFailures.push(`${entry.name}: ${changelog.problem}`);
+  else for (const problem of checkChangelog(changelog.text, bumpVersion(pkg.version))) {
+    gateFailures.push(`${entry.name}: ${problem}`);
+  }
+}
+if (gateFailures.length > 0) {
+  for (const failure of gateFailures) console.error(`refusing to release: ${failure}`);
+  process.exit(1);
+}
 
 const changes = [];
 
@@ -60,4 +84,4 @@ execFileSync("git", ["commit", "-m", `chore(release): fleet ${bump}`, "-m", chan
 // one tag per package, same scheme as single-package releases
 // annotated: git push --follow-tags only carries annotated tags
 for (const c of changes) execFileSync("git", ["tag", "-a", `${c.name}-v${c.to}`, "-m", `${c.name} ${c.to}`], { stdio: "inherit" });
-console.log(`\nfleet ${bump} stamped. publish everything with: npm run publish, or one package with: npm run pub <name>`);
+console.log(`\nfleet ${bump} stamped. publish one package with: npm run pub <name>`);

@@ -2,6 +2,7 @@
 // Single-package release: bump one package version, commit, tag.
 // Publishing stays separate: npm run pub <name>
 import { execFileSync, execSync } from "node:child_process";
+import { assertReleaseGates } from "./lib/gates.mjs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,8 +29,9 @@ if (execSync("git status --porcelain", { encoding: "utf8" }).trim()) {
   console.error("refusing to release: working tree is dirty");
   process.exit(1);
 }
-run("npm run check");
 
+// The target version first: the changelog gate checks the section for the
+// version this bump will create, not the one already in the file.
 const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
 let [major, minor, patch] = pkg.version.split(".").map(Number);
 if (bump === "patch") patch += 1;
@@ -37,6 +39,11 @@ else if (bump === "minor") { minor += 1; patch = 0; }
 else if (bump === "major") { major += 1; minor = 0; patch = 0; }
 else [major, minor, patch] = bump.split(".").map(Number);
 const version = `${major}.${minor}.${patch}`;
+
+// Stamp + floor gates before the slow check: a missing changelog section or
+// a floor that lacks an imported API must fail in seconds, not minutes.
+await assertReleaseGates(rootDir, name, version);
+run("npm run check");
 
 pkg.version = version;
 writeFileSync(pkgJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);

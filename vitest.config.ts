@@ -5,7 +5,7 @@ export default defineConfig({
     environment: "node",
     // contract the auth-heavy suites rely on: no module/state leakage across files
     isolate: true,
-    include: ["packages/*/tests/**/*.test.ts"],
+    include: ["packages/*/tests/**/*.test.ts", "scripts/tests/**/*.test.mjs"],
     // fileParallelism stays at its default (true). It was once pinned false:
     // a cold vite transform cache under full load let a late module fetch
     // (tool-display -> kit) resolve after per-file teardown, failing with an

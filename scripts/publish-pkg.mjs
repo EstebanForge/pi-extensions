@@ -9,6 +9,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertReleaseGates } from "./lib/gates.mjs";
 
 const [name, bump = "patch"] = process.argv.slice(2);
 if (!name || !/^(patch|minor|major)$/.test(bump)) {
@@ -35,6 +36,15 @@ const tag = `${name}-v${version()}`;
 const tagExists = sh(`git tag --list ${tag}`) !== "";
 const changedSinceTag = tagExists && sh(`git log --oneline ${tag}..HEAD -- packages/${name}`) !== "";
 if (tagExists && !changedSinceTag) {
+  // The as-is path bypasses release-pkg.mjs and its gates, so it still
+  // refuses uncommitted package files, then runs the same stamp + floor
+  // gates: a tag made by hand or before the gates existed must not sail
+  // into npm. The rel branch is already gated inside release-pkg.mjs.
+  if (execSync(`git status --porcelain -- packages/${name}`, { encoding: "utf8" }).trim()) {
+    console.error(`refusing to publish: packages/${name} has uncommitted changes`);
+    process.exit(1);
+  }
+  await assertReleaseGates(rootDir, name, version());
   console.log(`${tag} exists and packages/${name} is unchanged since it: publishing ${version()} as-is`);
 } else {
   const why = tagExists ? `commits touch the package since ${tag}` : `no ${tag}`;
