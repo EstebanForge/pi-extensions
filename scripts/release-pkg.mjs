@@ -7,7 +7,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const [name, bump] = process.argv.slice(2);
+const [rawName, bump] = process.argv.slice(2);
+// Accept both the npm name (@estebanforge/pi-x) and the bare directory
+// name (pi-x); everything downstream uses the bare form.
+const name = rawName?.replace(/^@estebanforge\//, "");
 if (!name || !bump || !/^(patch|minor|major|\d+\.\d+\.\d+)$/.test(bump)) {
   console.error("usage: node scripts/release-pkg.mjs <package-name> <patch|minor|major|x.y.z>");
   console.error("example: node scripts/release-pkg.mjs pi-hostname patch");

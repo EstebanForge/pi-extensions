@@ -11,7 +11,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertReleaseGates } from "./lib/gates.mjs";
 
-const [name, bump = "patch"] = process.argv.slice(2);
+const [rawName, bump = "patch"] = process.argv.slice(2);
+// Accept both the npm name (@estebanforge/pi-x) and the bare directory
+// name (pi-x); everything downstream uses the bare form.
+const name = rawName?.replace(/^@estebanforge\//, "");
 if (!name || !/^(patch|minor|major)$/.test(bump)) {
   console.error("usage: node scripts/publish-pkg.mjs <package-name> [patch|minor|major]");
   process.exit(1);
