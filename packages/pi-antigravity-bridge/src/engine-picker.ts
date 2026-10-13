@@ -21,6 +21,7 @@ import {
 } from "@earendil-works/pi-tui";
 import fs from "node:fs";
 import path from "node:path";
+import type { DialogRow } from "@estebanforge/pi-tui-dialogs";
 import type { Engine } from "./config.js";
 
 /** Picker order is the default answer order: stream-json first. */
@@ -76,6 +77,23 @@ export function savedEngineMessage(engine: Engine): string {
 	return engine === "acp"
 		? "Engine saved: acp. The ~1.5 GB server binary downloads now; the Google sign-in opens when it lands. Restart applies the engine."
 		: "Engine saved: stream-json. Restart pi to apply.";
+}
+
+/** /agy settings row that opens the engine picker. Deliberately value-less:
+ *  DialogMenu cycles rows that carry `values`, but resolves the menu with the
+ *  row id on Enter for rows without — the caller then closes settings and
+ *  opens the same modal as the first-run wizard. The active engine rides as
+ *  the display value so the row reads like the rest of the surface. */
+export const ENGINE_SETTINGS_ROW_ID = "engine";
+
+export function engineSettingsRow(engine: Engine): DialogRow {
+	return {
+		id: ENGINE_SETTINGS_ROW_ID,
+		label: "Switch engine",
+		description:
+			"Open the engine picker (stream-json CLI vs the official ACP server). Enter opens it and closes settings; esc in the picker changes nothing. Restart applies a switch.",
+		currentValue: engine,
+	};
 }
 
 /** True when the `agy` CLI binary can be found. A binRef with a path

@@ -10,6 +10,8 @@ import {
 	agyMissingMessage,
 	ENGINE_PICKER_ITEMS,
 	ENGINE_PICKER_INTRO,
+	ENGINE_SETTINGS_ROW_ID,
+	engineSettingsRow,
 	isAgyInstalled,
 	savedEngineMessage,
 	shouldOfferEnginePicker,
@@ -108,4 +110,18 @@ test("picker: intro explains both engines' constraints", () => {
 	// (probe-verified 2026-09-07); the old "adds image input" claim painted
 	// an ACP advantage that no longer exists. Keep it out.
 	assert.doesNotMatch(ENGINE_PICKER_INTRO, /[Aa]dds image/);
+});
+
+test("settings action row: value-less, so Enter resolves the menu instead of cycling", () => {
+	// DialogMenu contract: a row with `values` cycles in place on Enter; a row
+	// with neither values nor onEdit resolves the menu with its id. The engine
+	// row must be the second kind: Enter closes settings and opens the picker.
+	for (const engine of ["stream-json", "acp"] as const) {
+		const row = engineSettingsRow(engine);
+		assert.equal(row.id, ENGINE_SETTINGS_ROW_ID);
+		assert.equal(row.values, undefined);
+		assert.equal(row.currentValue, engine);
+		assert.match(row.label, /[Ss]witch engine/);
+		assert.match(row.description ?? "", /[Rr]estart/);
+	}
 });

@@ -63,7 +63,7 @@ import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
-import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
+import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
@@ -1232,23 +1232,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					// the explanations, not a bare usage line. Semantics match the
 					// direct path above: plan blocks acp, an acp pick chains setup
 					// + sign-in immediately, restart applies the switch.
-					const current = loadConfig().engine;
-					const picked = await showEnginePicker(ui);
-					if (picked === null) {
-						ui.notify(`engine unchanged: ${current}.`, "info");
-						return;
-					}
-					if (picked === current) {
-						ui.notify(`engine is already ${current}. Restart applies it if set this session.`, "info");
-						return;
-					}
-					if (picked === "acp" && loadConfig().mode === "plan") {
-						ui.notify("mode is plan; the ACP engine has no plan mode. /agy mode accept-edits first.", "warning");
-						return;
-					}
-					saveConfig({ engine: picked });
-					ui.notify(savedEngineMessage(picked), "info");
-					if (picked === "acp") void ctx.runAcpPickSetup({ ui });
+					await runEngineModal(ui, ctx);
 				} else {
 					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
 				}
@@ -1807,14 +1791,17 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 }
 
 /** Interactive settings picker (TUI only). Rows: the runtime config surface
- *  (mode, permissions, model, thinking, bridge, digest, system prompt).
- *  Engine switching is command-only: /agy engine stream-json|acp (the
- *  command also runs self-service binary + auth setup for acp). */
+ *  (mode, permissions, model, thinking, bridge, digest, system prompt) plus
+ *  the engine row, which resolves the menu on Enter and opens the same
+ *  picker modal as /agy engine (self-service binary + auth setup for acp). */
 async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const config = loadConfig();
 	const pending: PendingConfig = {};
 
 	const rows: DialogRow[] = [
+		// Value-less action row: DialogMenu resolves the menu with this id on
+		// Enter (see runEngineModal below); every other row cycles in place.
+		engineSettingsRow(config.engine),
 		{
 			id: "mode",
 			label: "Execution mode",
@@ -1905,7 +1892,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		},
 	];
 
-	await ui.custom<void>(
+	const resolved = await ui.custom<string | undefined>(
 		(host, theme, _kb, done) => {
 			const menu = new DialogMenu(
 				host,
@@ -1941,7 +1928,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 						}
 					},
 				},
-				() => done(),
+				(rowId) => done(rowId),
 			);
 			return {
 				render: (w: number) => menu.render(w),
@@ -1955,7 +1942,10 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		DIALOG_OPTIONS,
 	);
 
-	if (Object.keys(pending).length === 0) return;
+	if (Object.keys(pending).length === 0) {
+		if (resolved === ENGINE_SETTINGS_ROW_ID) await runEngineModal(ui, ctx);
+		return;
+	}
 
 	// The picker cannot switch engines (command-only: /agy engine), but the
 	// mode row can still produce plan while the latched engine is acp. Plan
@@ -1996,4 +1986,30 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			"error",
 		);
 	}
+
+	if (resolved === ENGINE_SETTINGS_ROW_ID) await runEngineModal(ui, ctx);
+}
+
+/** The engine-pick modal shared by /agy engine (no args) and the settings
+ *  picker's engine row: the same explanations as the first-run wizard and the
+ *  same semantics — plan blocks acp, an acp pick chains setup + sign-in
+ *  immediately, restart applies the switch. */
+async function runEngineModal(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
+	const current = loadConfig().engine;
+	const picked = await showEnginePicker(ui);
+	if (picked === null) {
+		ui.notify(`engine unchanged: ${current}.`, "info");
+		return;
+	}
+	if (picked === current) {
+		ui.notify(`engine is already ${current}. Restart applies it if set this session.`, "info");
+		return;
+	}
+	if (picked === "acp" && loadConfig().mode === "plan") {
+		ui.notify("mode is plan; the ACP engine has no plan mode. /agy mode accept-edits first.", "warning");
+		return;
+	}
+	saveConfig({ engine: picked });
+	ui.notify(savedEngineMessage(picked), "info");
+	if (picked === "acp") void ctx.runAcpPickSetup({ ui });
 }
