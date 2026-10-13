@@ -2,6 +2,8 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.8.1 — 2026-10-13
+
 ## [Unreleased]
 
 ### Changed
