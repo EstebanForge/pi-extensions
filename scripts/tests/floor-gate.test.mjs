@@ -339,6 +339,61 @@ describe("checkFloors", () => {
     expect(problems.join("\n")).toContain("fresh");
   });
 
+  it("fails a namespace import whose used member is missing from the floor", async () => {
+    const floor = makeFloor("@estebanforge/kit", { "src/index.ts": "export const old = 1;\n" });
+    const pkgDir = makeConsumer(
+      "pi-user",
+      { "src/ui.ts": "import * as kit from \"@estebanforge/kit\";\n\nexport function run() {\n  return kit.dialogChoice();\n}\n" },
+      { "@estebanforge/kit": "^0.1.1" },
+    );
+    const problems = await checkFloors({
+      rootDir: tmpRoot,
+      pkgDir,
+      fetchFloor: fetcherFor({ "@estebanforge/kit@0.1.1": floor }),
+      hasVersion: okVersion,
+      workspaceVersion: noWorkspace,
+    });
+    expect(problems.join("\n")).toContain("dialogChoice");
+  });
+
+  it("passes a namespace import whose used member exists in the floor", async () => {
+    const floor = makeFloor("@estebanforge/kit", { "src/index.ts": "export function dialogChoice() {}\n" });
+    const pkgDir = makeConsumer(
+      "pi-user",
+      { "src/ui.ts": "import * as kit from \"@estebanforge/kit\";\n\nexport function run() {\n  return kit.dialogChoice();\n}\n" },
+      { "@estebanforge/kit": "^0.1.1" },
+    );
+    expect(
+      await checkFloors({
+        rootDir: tmpRoot,
+        pkgDir,
+        fetchFloor: fetcherFor({ "@estebanforge/kit@0.1.1": floor }),
+        hasVersion: okVersion,
+        workspaceVersion: noWorkspace,
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not value-probe members of a type-only namespace import", async () => {
+    // Accepted limit: a type-only namespace lives in type space, so `void
+    // kit.member` would be a bogus value probe. Resolution is still checked.
+    const floor = makeFloor("@estebanforge/kit", { "src/index.ts": "export const a = 1;\n" });
+    const pkgDir = makeConsumer(
+      "pi-user",
+      { "src/ui.ts": "import type * as kit from \"@estebanforge/kit\";\n\nexport type Row = kit.Row;\n" },
+      { "@estebanforge/kit": "^0.1.1" },
+    );
+    expect(
+      await checkFloors({
+        rootDir: tmpRoot,
+        pkgDir,
+        fetchFloor: fetcherFor({ "@estebanforge/kit@0.1.1": floor }),
+        hasVersion: okVersion,
+        workspaceVersion: noWorkspace,
+      }),
+    ).toEqual([]);
+  });
+
   it("ignores imports from non-workspace packages and unshipped test files", async () => {
     const pkgDir = makeConsumer(
       "pi-user",

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Dependency floor `@estebanforge/pi-tui-dialogs` raised from `^0.1.0` to `^0.1.1`: `^0.1.0` never existed on npm, so a fresh install could fail to resolve it. No code change.
+
 ## 1.0.3 (2026-10-12)
 
 ### Changed

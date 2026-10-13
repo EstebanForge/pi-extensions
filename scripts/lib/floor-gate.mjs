@@ -13,18 +13,23 @@
 // missing-member and unresolvable-module diagnostics are failure codes;
 // everything else in the floor's own source is noise we must not judge.
 //
-// Known limits, accepted on purpose: namespace/default imports are checked
-// for resolution and export existence, not for member usage; dynamic
-// `import()` only for resolution; `require()` is not collected. The floor's
-// own external re-export targets (`export * from "@earendil-works/pi-tui"`)
-// resolve through the root node_modules because the probe dir sits under
-// it. fetchFloor/hasVersion are injected so tests run without network.
+// Known limits, accepted on purpose: namespace member usage is probed in
+// value positions via property access only — type-only namespaces, element
+// access (`kit["x"]`), and `require()` are not collected; dynamic `import()`
+// is resolution-checked only. The probe is exact for one dependency level:
+// a floor's own @estebanforge/* imports resolve through the current
+// workspace snapshot, not that package's published floor, so transitive
+// pairs are checked leniently (workspace code is never older than a
+// published floor). External re-export targets (`export * from
+// "@earendil-works/pi-tui"`) resolve through the root node_modules because
+// the probe dir sits under it. fetchFloor/hasVersion are injected so tests
+// run without network.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
 
-const FAILURE_CODES = new Set([2305, 2724, 2614, 2459, 2460, 1192, 2307, 2882]);
+const FAILURE_CODES = new Set([2305, 2724, 2614, 2459, 2460, 1192, 2307, 2882, 2339]);
 const SOURCE_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 // Only ranges with a single floor are verifiable. Returns x.y.z or null.
@@ -74,14 +79,20 @@ function collectWorkspaceImports(pkgDir, pkg) {
   for (const file of sourceFilesUnder(pkgDir, pkg.files ?? [])) {
     const rel = relative(pkgDir, file).replaceAll("\\", "/");
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
-    const statements = []; // { text, spec }
+    const imports = []; // @estebanforge import/export declaration nodes
+    const dynamic = []; // { text, spec } for import() calls
+    const nsMembers = new Map(); // namespace-import local -> Set<member used>
     const visit = (node) => {
       if (
         (ts.isImportDeclaration(node) || (ts.isExportDeclaration(node) && node.moduleSpecifier)) &&
         ts.isStringLiteral(node.moduleSpecifier) &&
         node.moduleSpecifier.text.startsWith("@estebanforge/")
       ) {
-        statements.push({ text: node.getText(source), spec: node.moduleSpecifier.text });
+        imports.push(node);
+        const clause = ts.isImportDeclaration(node) ? node.importClause : undefined;
+        if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings) && !clause.isTypeOnly) {
+          nsMembers.set(clause.namedBindings.name.text, new Set());
+        }
       } else if (
         ts.isCallExpression(node) &&
         node.expression.kind === ts.SyntaxKind.ImportKeyword &&
@@ -89,11 +100,34 @@ function collectWorkspaceImports(pkgDir, pkg) {
         ts.isStringLiteral(node.arguments[0]) &&
         node.arguments[0].text.startsWith("@estebanforge/")
       ) {
-        statements.push({ text: `import(${node.arguments[0].getText(source)});`, spec: node.arguments[0].text });
+        dynamic.push({ text: `import(${node.arguments[0].getText(source)});`, spec: node.arguments[0].text });
       }
       ts.forEachChild(node, visit);
     };
     visit(source);
+    // Members actually used through each namespace local. Without this a
+    // `kit.dialogChoice()` call would pass a floor missing dialogChoice —
+    // the exact 1.8.1 failure shape through a namespace import.
+    const harvest = (node) => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+        nsMembers.get(node.expression.text)?.add(node.name.text);
+      }
+      ts.forEachChild(node, harvest);
+    };
+    harvest(source);
+    const statements = imports.map((node) => {
+      const clause = ts.isImportDeclaration(node) ? node.importClause : undefined;
+      let text = node.getText(source);
+      if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        const members = nsMembers.get(clause.namedBindings.name.text);
+        if (members?.size) {
+          const local = clause.namedBindings.name.text;
+          text += `\n${[...members].map((m) => `void ${local}.${m};`).join("\n")}`;
+        }
+      }
+      return { text, spec: node.moduleSpecifier.text };
+    });
+    statements.push(...dynamic);
     for (const { text, spec } of statements) {
       const dep = spec.split("/").slice(0, 2).join("/");
       if (!declared.has(dep)) undeclared.push({ file: rel, dep });
