@@ -259,13 +259,14 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	// Engine: narrow to the known set; anything else (incl. the pre-1.3.2
 	// "sqlite" value) falls back to the default engine, same as an absent key.
 	// One absence exception: a config file WITHOUT an engine key belongs to an
-	// existing install (saveConfig always writes the key whole), and the acp
-	// default is for new installs only - an existing install keeps the legacy
-	// stream-json engine instead of silently starting the ~1.5 GB acp download.
+	// existing install (saveConfig persists the resolved legacy engine), and
+	// the acp default is for new installs only - an existing install keeps
+	// the legacy stream-json engine instead of silently starting the ~1.5 GB
+	// acp download. existsSync is false on EACCES too, which reads as fresh
+	// and picks acp; an unreadable config dir is a broken install either way.
 	const freshInstall = !fs.existsSync(configPath);
 	const engineFallback = freshInstall || file.engine !== undefined ? DEFAULT_ENGINE : "stream-json";
-	const engineRaw = String(process.env.AGY_ENGINE ?? file.engine ?? engineFallback).toLowerCase();
-	const engine: Engine = engineRaw === "acp" || engineRaw === "stream-json" ? engineRaw : DEFAULT_ENGINE;
+	const engine = narrowEngine(String(process.env.AGY_ENGINE ?? file.engine ?? engineFallback).toLowerCase());
 
 	const mode: AgyMode =
 		process.env.AGY_MODE !== undefined
@@ -390,6 +391,14 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	};
 }
 
+/** Narrow a raw engine string to the known set; anything unknown (incl. the
+ *  pre-1.3.2 "sqlite" value) falls to the default engine. Shared by
+ *  loadConfig's effective-engine resolution and saveConfig's persistence so
+ *  the two can never drift. */
+function narrowEngine(raw: string): Engine {
+	return raw === "acp" || raw === "stream-json" ? raw : DEFAULT_ENGINE;
+}
+
 /** Atomically persist a config patch (temp + rename). Merges onto the RAW
  *  FILE values, never loadConfig(): env overrides must not be baked into the
  *  file (AGY_READONLY=1 in the env would otherwise persist readOnly: true to
@@ -403,6 +412,13 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFI
 	// triggers normalization (a null becomes the default shape, never null).
 	const fileAcp: Partial<AcpConfig> = file.acp && typeof file.acp === "object" ? file.acp : {};
 	const fileApprovals: Partial<GateConfig> = file.approvals && typeof file.approvals === "object" ? file.approvals : {};
+	// Engine persistence follows loadConfig's continuity rule minus env (env
+	// must never be baked into the file). A legacy file without an engine key
+	// persists "stream-json": the bare DEFAULTS spread below would otherwise
+	// write the acp default into an existing install's file on any unrelated
+	// save, arming the ~1.5 GB download on the next start.
+	const persistedEngine = patch.engine ?? file.engine
+		?? (fs.existsSync(configPath) ? "stream-json" : DEFAULT_ENGINE);
 	const next: AgyConfig = {
 		...DEFAULTS,
 		...file,
@@ -413,6 +429,7 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFI
 			? { approvals: { gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode, mode: fileApprovals.mode ?? DEFAULTS.approvals.mode } }
 			: {}),
 		...patch,
+		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 	};
 	const dir = path.dirname(configPath);
 	fs.mkdirSync(dir, { recursive: true });

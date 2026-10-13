@@ -142,6 +142,9 @@ describe("dialogChoice", () => {
 		for (let i = 0; i < 4; i++) view.handleInput("\x1b[B");
 		const moved = stripAnsi(view.render(60).join("\n"));
 		expect(moved).toContain("Option 4");
+		// SelectList appends an "(n/m)" scroll line when windowed; the budget
+		// must leave room for it inside the frame instead of clipping it.
+		expect(moved).toContain("(5/10)");
 		expect(moved.split("\n")).toHaveLength(10); // frame stays the dialog height
 		view.handleInput("\r");
 		await expect(promise).resolves.toBe("v4");

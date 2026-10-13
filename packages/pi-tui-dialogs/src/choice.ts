@@ -32,7 +32,8 @@ export interface ChoiceDialogOptions {
 
 /** Caller-contract validation. Throws before any overlay opens: a choice
  *  modal rendered with 0 options, duplicate values, or a bogus preselect is
- *  a programming error, not a user-facing state. */
+ *  a programming error, not a user-facing state. Used directly by ChoiceView
+ *  (sync throw) and by dialogChoice (which rejects). */
 export function assertChoiceOptions(options: ChoiceOption[], selected?: string): void {
 	if (options.length < 1) {
 		throw new RangeError(`dialogChoice needs at least 1 option, got ${options.length}`);
@@ -111,10 +112,13 @@ export class ChoiceView {
 		// viewport rule). frameDialog clips the body to height - 4; without
 		// this the SelectList would render all options and let the selection
 		// move into clipped, invisible lines on short terminals or with long
-		// descriptions. maxVisible is compile-time private on SelectList but a
-		// plain field at runtime; re-assigning it per render is the intended
-		// windowing knob (the constructor value only sized the initial view).
-		const listBudget = Math.max(1, height - 4 - descriptionLines.length - 2);
+		// descriptions. The - 3 covers the two blank separators plus the
+		// "(n/m)" scroll line SelectList appends whenever the list is windowed
+		// (clipping that line hides the position hint). maxVisible is
+		// compile-time private on SelectList but a plain field at runtime;
+		// re-assigning it per render is the intended windowing knob (the
+		// constructor value only sized the initial view).
+		const listBudget = Math.max(1, height - 4 - descriptionLines.length - 3);
 		(this.list as unknown as { maxVisible: number }).maxVisible = listBudget;
 		return frameDialog(
 			this.theme,

@@ -70,6 +70,24 @@ test("a legacy config file without an engine key keeps stream-json", () => {
 	}
 });
 
+test("saveConfig keeps a legacy key-less file on stream-json", () => {
+	const p = tmpConfig();
+	try {
+		// The blocker's exact sequence: a legacy file loads stream-json, then
+		// ANY unrelated save (mode, digest, patch-cleanup notice) must not
+		// bake DEFAULTS.engine (acp) into the file via the DEFAULTS spread.
+		fs.writeFileSync(p, JSON.stringify({ mode: "accept-edits" }));
+		saveConfig({ digest: true }, p);
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+		assert.equal(raw.engine, "stream-json");
+		saveConfig({ engine: "acp" }, p); // an explicit switch still persists
+		const raw2 = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+		assert.equal(raw2.engine, "acp");
+	} finally {
+		rm(p);
+	}
+});
+
 test("AGY_ENGINE env overrides the file", () => {
 	const p = tmpConfig();
 	const prev = process.env.AGY_ENGINE;
