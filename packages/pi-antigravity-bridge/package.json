@@ -56,6 +56,6 @@
   "dependencies": {
     "@estebanforge/pi-ask-shared": "^0.1.2",
     "@estebanforge/pi-tui-dialogs": "^0.1.2",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.31.0"
   }
 }

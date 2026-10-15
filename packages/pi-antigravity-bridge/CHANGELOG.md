@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **The MCP SDK floor now carries the OAuth credential-routing fix.**
+  `@modelcontextprotocol/sdk` 1.12.0-1.30.1 lets a malicious MCP server
+  redirect client OAuth credentials to an attacker-chosen authorization
+  server (GHSA-6qxp-vccf-f47h). The bridge runs the SDK server-side only
+  (`Server` + `StreamableHTTPServerTransport`) and never acts as an MCP
+  OAuth client, so its own exposure was nil, but the floor now points at
+  1.31.0, the first fixed version, so installs stop tripping audit. The
+  protocol-version clamp is unaffected: it rewrites any unsupported
+  `MCP-Protocol-Version` header to the SDK's own `LATEST_PROTOCOL_VERSION`,
+  whatever ceiling the new version ships. Lockfiles resolve 1.32.1.
+
 ## [1.8.3] - 2026-10-13
 
 ### Fixed
