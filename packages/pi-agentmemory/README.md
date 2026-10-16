@@ -25,6 +25,10 @@ pi install npm:@estebanforge/pi-agentmemory
 
 Start (or restart) Pi in a project. On session start the extension health-checks the server and lights up the footer status.
 
+### Status chips
+
+Chips: `🧠` healthy / `🧠 ~` degraded / `🧠 ×` unreachable. During a network blip the chip may flip briefly; the memory tools keep trying and report failures per call.
+
 ## What it does
 
 Three tools, one command, and a recall/observe lifecycle wired into Pi hooks.
