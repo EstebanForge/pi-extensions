@@ -894,7 +894,7 @@ describe("/codegraph sync (runManualSync)", () => {
     const { runManualSync, setLastIndexActionForTest } = await import("../extensions/codegraph.js");
     setLastIndexActionForTest(undefined);
     await fs.mkdir(path.join(tmpDir, ".codegraph"));
-    const { ctx, notifies } = fakeCtx();
+    const { ctx, notifies, statuses } = fakeCtx();
     const { runner, calls } = makeRunner({
       "status --json": { stdout: JSON.stringify({ initialized: true, pendingChanges: { added: 1 } }) },
     });
@@ -903,6 +903,10 @@ describe("/codegraph sync (runManualSync)", () => {
     await vi.waitFor(() =>
       expect(notifies.some((n: { msg: string }) => n.msg.startsWith("CodeGraph: synced"))).toBe(true),
     );
+
+    // Chip scheme is glyph-only: 🔍 ready, 🔍 … working, 🔍 ~ busy, 🔍 × failed.
+    expect(statuses[0]?.value).toBe("🔍 …");
+    expect(statuses.at(-1)?.value).toBe("🔍");
 
     // Injectable runner proves the exact call sequence: probe → status → sync.
     expect(calls.map((c) => c.args)).toEqual([
@@ -914,7 +918,7 @@ describe("/codegraph sync (runManualSync)", () => {
 
   it("points the user at /codegraph init when no .codegraph/ exists", async () => {
     const { runManualSync } = await import("../extensions/codegraph.js");
-    const { ctx, notifies } = fakeCtx();
+    const { ctx, notifies, statuses } = fakeCtx();
     const { runner, calls } = makeRunner({});
 
     runManualSync(ctx, runner);
@@ -924,17 +928,22 @@ describe("/codegraph sync (runManualSync)", () => {
 
     // No status/sync call should fire when the index dir is absent.
     expect(calls.find((c) => c.args[0] === "status" || c.args[0] === "sync")).toBeUndefined();
+
+    // Chip returns to dormant (cleared): nothing indexed in this folder.
+    expect(statuses.at(-1)?.value).toBeUndefined();
   });
 
   it("warns that codegraph is unavailable when --version fails", async () => {
     const { runManualSync } = await import("../extensions/codegraph.js");
-    const { ctx, notifies } = fakeCtx();
+    const { ctx, notifies, statuses } = fakeCtx();
     const { runner } = makeRunner({ "--version": { stderr: "spawn codegraph ENOENT", code: -1 } });
 
     runManualSync(ctx, runner);
     await vi.waitFor(() =>
       expect(notifies.some((n: { msg: string; level: string }) => n.msg.startsWith("CodeGraph unavailable") && n.level === "warning")).toBe(true),
     );
+
+    expect(statuses.at(-1)?.value).toBe("🔍 ×");
   });
 
   it("reports busy (not corrupt) when sync loses the file lock", async () => {
@@ -951,7 +960,10 @@ describe("/codegraph sync (runManualSync)", () => {
       expect(notifies.some((n: { msg: string }) => n.msg.includes("sync did not complete"))).toBe(true),
     );
 
-    expect(statuses.some((s: { key: string; value: string | undefined }) => typeof s.value === "string" && s.value.includes("index busy"))).toBe(true);
+    expect(statuses.at(-1)?.value).toBe("🔍 ~");
+    // The unlock hint moved off the chip into the notify so it survives the
+    // glyph-only bar.
+    expect(notifies.some((n: { msg: string }) => n.msg.includes("unlock"))).toBe(true);
   });
 
   it("surfaces corrupt/unreadable index distinctly (not busy), pointing at init", async () => {
@@ -969,9 +981,9 @@ describe("/codegraph sync (runManualSync)", () => {
       expect(notifies.some((n: { msg: string }) => n.msg.includes("corrupt or unreadable") && n.msg.includes("/codegraph init"))).toBe(true),
     );
 
-    // No unlock hint, no busy status.
+    // No unlock hint, no busy chip; corrupt lands on the failed glyph.
     expect(notifies.some((n: { msg: string }) => n.msg.includes("unlock"))).toBe(false);
-    expect(statuses.some((s: { key: string; value: string | undefined }) => typeof s.value === "string" && s.value.includes("index busy"))).toBe(false);
+    expect(statuses.at(-1)?.value).toBe("🔍 ×");
   });
 
   it("reports a genuine sync failure distinctly from busy", async () => {
@@ -979,7 +991,7 @@ describe("/codegraph sync (runManualSync)", () => {
     // crash) must surface as a failure, not as "busy" with an unlock hint.
     const { runManualSync } = await import("../extensions/codegraph.js");
     await fs.mkdir(path.join(tmpDir, ".codegraph"));
-    const { ctx, notifies } = fakeCtx();
+    const { ctx, notifies, statuses } = fakeCtx();
     const { runner } = makeRunner({
       "status --json": { stdout: JSON.stringify({ initialized: true, pendingChanges: { added: 2 } }) },
       "sync -q": { stderr: "No space left on device", code: 2 },
@@ -991,6 +1003,7 @@ describe("/codegraph sync (runManualSync)", () => {
     );
 
     expect(notifies.some((n: { msg: string }) => n.msg.includes("unlock"))).toBe(false);
+    expect(statuses.at(-1)?.value).toBe("🔍 ×");
   });
 
   it("records lastIndexAction with manual source (not overwriting startup semantics)", async () => {
@@ -1045,5 +1058,125 @@ describe("/codegraph sync (runManualSync)", () => {
     await vi.waitFor(() => expect(mod.lastIndexAction?.action).toBe("synced"));
     expect(notifies).toHaveLength(0);
     expect(statuses).toHaveLength(0);
+  });
+});
+
+describe("status chips (glyph-only, agentmemory scheme)", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "cg-chip-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function fakeCtx(hasUI = true): any {
+    const notifies: { msg: string; level: string }[] = [];
+    const statuses: { key: string; value: string | undefined }[] = [];
+    return {
+      ctx: {
+        cwd: tmpDir,
+        hasUI,
+        ui: {
+          setStatus: (key: string, value: string | undefined) => statuses.push({ key, value }),
+          notify: (msg: string, level: string) => notifies.push({ msg, level }),
+        },
+      },
+      notifies,
+      statuses,
+    };
+  }
+
+  // CLI-level spawn mock: each `codegraph` child emits its scripted stdout and
+  // exit immediately, exercising ensureCodeGraphIndex's runner path (not MCP).
+  async function mockCliSpawn(script: Array<{ stdout?: string; stderr?: string; code?: number }>): Promise<void> {
+    const { spawn } = await import("node:child_process");
+    let call = 0;
+    vi.mocked(spawn).mockImplementation(() => {
+      const step = script[Math.min(call++, script.length - 1)];
+      const child = new EventEmitter() as any;
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.killed = false;
+      child.kill = vi.fn();
+      queueMicrotask(() => {
+        if (step.stdout) child.stdout.emit("data", Buffer.from(step.stdout));
+        if (step.stderr) child.stderr.emit("data", Buffer.from(step.stderr));
+        child.emit("exit", step.code ?? 0);
+      });
+      return child;
+    });
+  }
+
+  // Loads the extension, registers its handlers, and drives the real
+  // resources_discover startup gate against tmpDir.
+  async function driveStartup(script: Array<{ stdout?: string; stderr?: string; code?: number }>) {
+    const mod = await import("../extensions/codegraph.js");
+    const handlers: Record<string, (e: any, ctx: any) => void> = {};
+    const fakePi = {
+      registerFlag: () => {},
+      registerCommand: () => {},
+      registerTool: () => {},
+      getFlag: () => true,
+      on: (ev: string, fn: any) => {
+        handlers[ev] = fn;
+      },
+    } as any;
+    (mod.default as any)(fakePi);
+    await mockCliSpawn(script);
+    const { ctx, notifies, statuses } = fakeCtx();
+    await handlers["resources_discover"]({ cwd: tmpDir, reason: "startup" }, ctx);
+    return { notifies, statuses };
+  }
+
+  it("manual init starts on 🔍 … and settles on 🔍", async () => {
+    const mod = await import("../extensions/codegraph.js");
+    mod.setLastIndexActionForTest(undefined);
+    await mockCliSpawn([{ code: 0 }, { code: 0 }]);
+    const { ctx, notifies, statuses } = fakeCtx();
+
+    mod.runManualInit(ctx);
+    expect(statuses[0]?.value).toBe("🔍 …");
+    await vi.waitFor(() =>
+      expect(notifies.some((n: { msg: string }) => n.msg.startsWith("CodeGraph: initialized"))).toBe(true),
+    );
+    expect(statuses.at(-1)?.value).toBe("🔍");
+  });
+
+  it("startup gate settles on 🔍 for a clean index", async () => {
+    const mod = await import("../extensions/codegraph.js");
+    mod.setLastIndexActionForTest(undefined);
+    await fs.mkdir(path.join(tmpDir, ".codegraph"));
+    const { statuses } = await driveStartup([
+      { code: 0 },
+      { stdout: JSON.stringify({ initialized: true, pendingChanges: { added: 0, modified: 0, removed: 0 } }), code: 0 },
+    ]);
+
+    await vi.waitFor(() => expect(statuses.at(-1)?.value).toBe("🔍"));
+  });
+
+  it("startup gate lock conflict shows 🔍 ~ and notifies the unlock hint", async () => {
+    await fs.mkdir(path.join(tmpDir, ".codegraph"));
+    const { notifies, statuses } = await driveStartup([
+      { code: 0 },
+      { stderr: "Could not acquire file lock", code: 1 },
+    ]);
+
+    await vi.waitFor(() =>
+      expect(notifies.some((n: { msg: string }) => n.msg.includes("unlock"))).toBe(true),
+    );
+    expect(statuses.at(-1)?.value).toBe("🔍 ~");
+  });
+
+  it("startup gate with missing CLI shows 🔍 ×", async () => {
+    const { notifies, statuses } = await driveStartup([{ code: -1 }]);
+
+    await vi.waitFor(() =>
+      expect(notifies.some((n: { msg: string }) => n.msg.startsWith("CodeGraph unavailable"))).toBe(true),
+    );
+    expect(statuses.at(-1)?.value).toBe("🔍 ×");
   });
 });

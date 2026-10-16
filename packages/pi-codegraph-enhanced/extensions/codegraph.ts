@@ -27,6 +27,15 @@ const FLAGS = [
 
 export const codegraphFlagNames = FLAGS.map((f) => f.name);
 
+// Glyph-only status chip, agentmemory scheme: icon + one state char. Words
+// stay in notifies and the /codegraph panel; no chip = dormant (no index).
+const CHIP = {
+  ready: "🔍",
+  working: "🔍 …",
+  busy: "🔍 ~",
+  failed: "🔍 ×",
+} as const;
+
 // ── File-backed flag persistence ─────────────────────────────────────────────
 // pi's extension flags (pi.registerFlag) are in-memory only: seeded from
 // `default` and CLI `--flag` args at process start. There is no setFlag on
@@ -813,21 +822,21 @@ function reportStartupAction(result: CodeGraphStartupAction, ctx: ExtensionConte
     case "initialized":
     case "rebuilt":
     case "synced":
-      ui.setStatus("codegraph", `🔍 CodeGraph: ${result.action}`);
+    case "skipped":
+      ui.setStatus("codegraph", CHIP.ready);
       break;
     case "busy":
-      ui.setStatus("codegraph", "🔍 CodeGraph: index busy (run `codegraph unlock` if stuck)");
+      ui.setStatus("codegraph", CHIP.busy);
+      // The unlock hint lives here now that the chip is glyph-only.
+      ui.notify("CodeGraph: index busy — run `codegraph unlock` if stuck", "info");
       break;
     case "unavailable":
       // The most actionable signal: warn once that auto-index is off.
+      ui.setStatus("codegraph", CHIP.failed);
       ui.notify(
         "CodeGraph unavailable; auto-index disabled. Ensure the codegraph CLI is installed and on PATH (`npm i -g @colbymchenry/codegraph`).",
         "warning",
       );
-      break;
-    case "skipped":
-    default:
-      ui.setStatus("codegraph", undefined);
       break;
   }
 }
@@ -875,7 +884,7 @@ export function runManualInit(ctx: ExtensionContext): void {
   // Status-bar-only start signal: persists as the in-flight indicator without
   // adding a toast (the completion toast closes the loop). Skipped entirely in
   // headless/print mode, where ctx.hasUI is false.
-  if (ui) safe(() => ui.setStatus("codegraph", "🔍 CodeGraph: indexing…"));
+  if (ui) safe(() => ui.setStatus("codegraph", CHIP.working));
 
   ensureCodeGraphIndexOnce(projectPath)
     .then((result) => {
@@ -886,24 +895,24 @@ export function runManualInit(ctx: ExtensionContext): void {
           case "initialized":
           case "rebuilt":
           case "synced":
-            ui.setStatus("codegraph", `🔍 CodeGraph: ${result.action}`);
+            ui.setStatus("codegraph", CHIP.ready);
             ui.notify(`CodeGraph: ${result.action} (${projectPath})`, "info");
             break;
           case "busy":
-            ui.setStatus("codegraph", "🔍 CodeGraph: index busy (run `codegraph unlock` if stuck)");
-            ui.notify(`CodeGraph: busy (${projectPath})`, "info");
+            ui.setStatus("codegraph", CHIP.busy);
+            ui.notify(`CodeGraph: busy — run \`codegraph unlock\` if stuck (${projectPath})`, "info");
             break;
           case "unavailable":
             // Manual init is the explicit path: surface the install hint, not
             // a terse "unavailable". Mirrors reportStartupAction.
-            ui.setStatus("codegraph", undefined);
+            ui.setStatus("codegraph", CHIP.failed);
             ui.notify(
               "CodeGraph unavailable; init aborted. Install the codegraph CLI and ensure it's on PATH (`npm i -g @colbymchenry/codegraph`).",
               "warning",
             );
             break;
           default: // skipped — already up to date
-            ui.setStatus("codegraph", undefined);
+            ui.setStatus("codegraph", CHIP.ready);
             ui.notify(`CodeGraph: already up to date (${projectPath})`, "info");
         }
       });
@@ -913,7 +922,7 @@ export function runManualInit(ctx: ExtensionContext): void {
       // never re-throw out of .catch (would be an unhandled rejection).
       if (!ui) return;
       safe(() => {
-        ui.setStatus("codegraph", undefined);
+        ui.setStatus("codegraph", CHIP.failed);
         ui.notify("CodeGraph: init failed", "error");
       });
     });
@@ -952,7 +961,7 @@ export function runManualSync(
     lastIndexAction = { action, projectPath, source: "manual" };
   };
 
-  if (ui) safe(() => ui.setStatus("codegraph", "🔍 CodeGraph: syncing…"));
+  if (ui) safe(() => ui.setStatus("codegraph", CHIP.working));
 
   (async () => {
     // Fail fast if the CLI is absent: never report a false "synced" from a
@@ -968,7 +977,7 @@ export function runManualSync(
       record("unavailable");
       if (!ui) return;
       safe(() => {
-        ui.setStatus("codegraph", undefined);
+        ui.setStatus("codegraph", CHIP.failed);
         ui.notify(
           "CodeGraph unavailable; sync aborted. Install the codegraph CLI and ensure it's on PATH (`npm i -g @colbymchenry/codegraph`).",
           "warning",
@@ -1018,8 +1027,8 @@ export function runManualSync(
       record("busy");
       if (!ui) return;
       safe(() => {
-        ui.setStatus("codegraph", "🔍 CodeGraph: index busy (run `codegraph unlock` if stuck)");
-        ui.notify(`CodeGraph: sync did not complete — index busy (${projectPath})`, "info");
+        ui.setStatus("codegraph", CHIP.busy);
+        ui.notify(`CodeGraph: sync did not complete — index busy; run \`codegraph unlock\` if stuck (${projectPath})`, "info");
       });
       return;
     }
@@ -1029,7 +1038,7 @@ export function runManualSync(
     if (statusFailed) {
       if (!ui) return;
       safe(() => {
-        ui.setStatus("codegraph", undefined);
+        ui.setStatus("codegraph", CHIP.failed);
         ui.notify(
           `CodeGraph index is corrupt or unreadable in ${projectPath}. Run /codegraph init to rebuild.`,
           "warning",
@@ -1046,15 +1055,15 @@ export function runManualSync(
       record("busy");
       if (!ui) return;
       safe(() => {
-        ui.setStatus("codegraph", "🔍 CodeGraph: index busy (run `codegraph unlock` if stuck)");
-        ui.notify(`CodeGraph: sync did not complete — index busy (${projectPath})`, "info");
+        ui.setStatus("codegraph", CHIP.busy);
+        ui.notify(`CodeGraph: sync did not complete — index busy; run \`codegraph unlock\` if stuck (${projectPath})`, "info");
       });
       return;
     }
     if (result.code !== 0) {
       if (!ui) return;
       safe(() => {
-        ui.setStatus("codegraph", undefined);
+        ui.setStatus("codegraph", CHIP.failed);
         ui.notify(
           `CodeGraph: sync failed (exit ${result.code}) in ${projectPath}. Try /codegraph init.`,
           "error",
@@ -1066,7 +1075,7 @@ export function runManualSync(
     record("synced");
     if (!ui) return;
     safe(() => {
-      ui.setStatus("codegraph", "🔍 CodeGraph: synced");
+      ui.setStatus("codegraph", CHIP.ready);
       ui.notify(`CodeGraph: synced (${projectPath})`, "info");
     });
   })().catch(() => {
@@ -1074,7 +1083,7 @@ export function runManualSync(
     // re-throw out of .catch (would be an unhandled rejection).
     if (!ui) return;
     safe(() => {
-      ui.setStatus("codegraph", undefined);
+      ui.setStatus("codegraph", CHIP.failed);
       ui.notify("CodeGraph: sync failed", "error");
     });
   });
@@ -1271,6 +1280,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
       "Use codegraph_explore first for broad questions, codegraph_search for symbol-name lookup, codegraph_files for project structure, codegraph_node for a known symbol, and codegraph_callers for impact/flow analysis.",
       "If codegraph_search returns no exact result, try codegraph_explore or codegraph_files/codegraph_node before falling back to grep/read; CodeGraph symbol search may miss literal constants or generated names that still exist in source text.",
       "Only use grep/read after CodeGraph is insufficient or when the user asks for literal text matching.",
+      "Status bar chip: 🔍 index ready, 🔍 … indexing/syncing, 🔍 ~ index busy (lock held elsewhere), 🔍 × unavailable or failed.",
     ].join("\n");
 
     return {

@@ -56,7 +56,7 @@ On every session start and `/reload`, the extension probes the `codegraph` CLI a
 | `status` times out, or any command reports a live file-lock conflict | nothing (`busy`) | Another process owns the index (a `/reload` racing a long index). Skip rather than start a second writer or a wasteful full reindex |
 | `.codegraph/` present, `status` clean | nothing (`skipped`) | Already fresh |
 
-The maintenance runs fire-and-forget and never blocks the agent from starting. Outcome surfaces in the footer (`CodeGraph: initialized` / `synced` / `rebuilt` / `busy` / `unavailable`); a one-time warning fires if the CLI is missing. This replaces the daily `codegraph index && codegraph sync` habit, `index -f` only runs when `status` genuinely cannot read the DB.
+The maintenance runs fire-and-forget and never blocks the agent from starting. Outcome surfaces in the footer as a glyph-only chip: 🔍 ready (initialized / rebuilt / synced / already fresh), 🔍 … working, 🔍 ~ busy (another process holds the lock), 🔍 × unavailable or failed; no chip means this folder has no index and auto-index is off. Full wording stays in the notifications and `/codegraph`, and a one-time warning fires if the CLI is missing. This replaces the daily `codegraph index && codegraph sync` habit, `index -f` only runs when `status` genuinely cannot read the DB.
 
 ## How it works
 
