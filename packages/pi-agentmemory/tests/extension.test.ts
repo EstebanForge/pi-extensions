@@ -560,6 +560,7 @@ describe("remote server handling", () => {
       expect(res.reason).toContain("http://10.40.0.7:3111");
       expect(res.reason).toMatch(/another machine|remote host/i);
       expect(res.reason).toMatch(/do not install/i);
+      expect(res.reason).toContain("Retry once");
     }
     expect(spawnMock).not.toHaveBeenCalled();
   });
@@ -628,5 +629,44 @@ describe("remote server handling", () => {
     );
     expect(res.systemPrompt).toContain("still try the memory tools");
     expect(res.systemPrompt).toContain("never install or start agentmemory");
+  });
+
+  it("memory_search returns ok:false with the retry hint when the call fails", async () => {
+    const toolDefs: any[] = [];
+    const pi: any = new Proxy(
+      {
+        registerTool: (def: any) => void toolDefs.push(def),
+        registerCommand: () => {},
+        getFlag: () => undefined,
+      },
+      {
+        get(target, prop) {
+          return prop in target ? (target as any)[prop] : () => {};
+        },
+      },
+    );
+    await factory(pi);
+    const search = toolDefs.find((t) => t.name === "memory_search");
+    // First fetch = ensureServer health check (up); second = search POST,
+    // which rejects: the tool must surface the failure, not report
+    // "No relevant memories found" with ok:true.
+    let i = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        if (i++ === 0) {
+          return new Response(JSON.stringify({ status: "healthy" }), {
+            status: 200,
+          });
+        }
+        throw new Error("ECONNREFUSED");
+      }),
+    );
+    const res = await search.execute("t1", { query: "auth flow" });
+    expect(res.details.ok).toBe(false);
+    expect(res.content[0].text).toContain("Search failed");
+    expect(res.content[0].text).toContain(
+      "Retry once; if it fails again, tell the human.",
+    );
   });
 });

@@ -43,6 +43,10 @@ type StartAttempt = { up: boolean; installed: boolean; spawned: boolean };
 
 let starting: Promise<StartAttempt> | null = null;
 
+// Appended to every model-facing failure: a single failure may be a blip,
+// so retry once before reporting.
+export const RETRY_HINT = "Retry once; if it fails again, tell the human.";
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -190,14 +194,14 @@ export async function ensureServer(opts: EnsureOptions): Promise<EnsureResult> {
   if (!isLoopbackHost(opts.baseUrl)) {
     return {
       ok: false,
-      reason: `agentmemory server at ${opts.baseUrl} is unreachable. That address is another machine, so the server cannot be started or installed from here — do not install or start agentmemory on this machine. Check the network route to that host (VPN, tailscale, firewall) or tell the human, and continue without memory tools.`,
+      reason: `agentmemory server at ${opts.baseUrl} is unreachable. That address is another machine, so the server cannot be started or installed from here — do not install or start agentmemory on this machine. Check the network route to that host (VPN, tailscale, firewall) or tell the human, and continue without memory tools. ${RETRY_HINT}`,
     };
   }
   if (!opts.autostart) {
     return {
       ok: false,
       reason:
-        "agentmemory server is not running and autostart is disabled (flag agentmemory-autostart=false). Start it manually with `agentmemory`.",
+        "agentmemory server is not running and autostart is disabled (flag agentmemory-autostart=false). Start it manually with `agentmemory`. " + RETRY_HINT,
     };
   }
 
@@ -236,13 +240,13 @@ export async function ensureServer(opts: EnsureOptions): Promise<EnsureResult> {
     return {
       ok: false,
       reason:
-        "agentmemory server not running and the CLI is not installed. Install: `npm i -g @agentmemory/agentmemory`, or enable flag agentmemory-npx-fallback. See https://www.agent-memory.dev",
+        "agentmemory server not running and the CLI is not installed. Install: `npm i -g @agentmemory/agentmemory`, or enable flag agentmemory-npx-fallback. See https://www.agent-memory.dev " + RETRY_HINT,
     };
   }
   return {
     ok: false,
     reason: `agentmemory server did not become healthy within ${Math.round(
       (opts.timeoutMs ?? START_TIMEOUT_MS) / 1000,
-    )}s. First run downloads its engine; retry shortly or run \`agentmemory --verbose\`.`,
+    )}s. First run downloads its engine; retry shortly or run \`agentmemory --verbose\`. ${RETRY_HINT}`,
   };
 }

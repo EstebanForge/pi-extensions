@@ -9,7 +9,7 @@ import {
   setPlaintextBearerAuthNotifySink,
   resetPlaintextBearerAuthWarning,
 } from "./security.js";
-import { ensureServer } from "./server.js";
+import { ensureServer, RETRY_HINT } from "./server.js";
 import { loadFlagSettings, saveFlagSetting, getSettingsPath } from "./flag-settings.js";
 import { withDialogLock } from "./dialog-lock.js";
 
@@ -87,11 +87,11 @@ const FLAGS = [
 ] as const;
 
 const TOOL_GUIDANCE = [
-  "agentmemory is available for cross-session memory.",
-  "Use memory_search to recall prior decisions, preferences, bugs, and workflows.",
-  "Use memory_save when you discover durable facts worth remembering beyond this session.",
-  "The status line may briefly show 🧠 ~ (degraded) or 🧠 × (unreachable) during a network blip; still try the memory tools when relevant — failures surface per call.",
-  "The server may run on this machine or a remote host (see AGENTMEMORY_URL). If it is unreachable, report that and continue; never install or start agentmemory on this machine unless its address points here.",
+  "agentmemory gives cross-session memory.",
+  "Use memory_search to recall past decisions, preferences, bugs, and workflows.",
+  "Use memory_save for durable facts worth keeping beyond this session.",
+  "Status line: 🧠 healthy, 🧠 ~ degraded, 🧠 × unreachable. Blips are transient: still try the memory tools; failures surface per call.",
+  "The server may be remote (AGENTMEMORY_URL). If unreachable, report it and continue; never install or start agentmemory locally unless its address points at this machine.",
 ].join(" ");
 
 function normalizeBaseUrl(url: string): string {
@@ -505,7 +505,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
               type: "text",
               text: `agentmemory is unreachable at ${
                 normalizeBaseUrl(process.env.AGENTMEMORY_URL || DEFAULT_URL)
-              }. The server may run on another machine — do not install or start agentmemory here; check the network route or tell the human.`,
+              }. The server may run on another machine — do not install or start agentmemory here; check the network route or tell the human. ${RETRY_HINT}`,
             },
           ],
           details: { ok: false },
@@ -548,7 +548,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     name: "memory_search",
     label: "Memory Search",
     description:
-      "Search agentmemory for cross-session project memory, prior decisions, bugs, and user preferences",
+      "Search agentmemory for past decisions, bugs, preferences, and project memory",
     parameters: Type.Object({
       query: Type.String({ description: "What to search for in memory" }),
       limit: Type.Optional(
@@ -576,7 +576,13 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
         "search",
         { body: { query: params.query, limit: params.limit ?? 5 } },
       );
-      const results = result?.results || [];
+      if (!result) {
+        return {
+          content: [{ type: "text", text: `Search failed. ${RETRY_HINT}` }],
+          details: { ok: false, query: params.query, results: [] },
+        };
+      }
+      const results = result.results || [];
       return {
         content: [{ type: "text", text: formatSearchResults(results) }],
         details: { ok: true, query: params.query, results },
@@ -611,7 +617,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       if (!result) {
         return {
           content: [
-            { type: "text", text: "Failed to save memory to agentmemory." },
+            { type: "text", text: `Failed to save memory to agentmemory. ${RETRY_HINT}` },
           ],
           details: { ok: false },
         };
@@ -632,11 +638,11 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     name: "memory_delete",
     label: "Memory Delete",
     description:
-      "Permanently delete a memory, an entire session (+ its observations), or specific observations from agentmemory. HARD CONFIRMATION REQUIRED: shows the human exactly what will be removed and blocks until they approve. Never use for bulk pruning (consolidation handles that); reserve for privacy removal or correcting wrong info.",
+      "Permanently delete a memory, an entire session (+ its observations), or specific observations. Requires human confirmation: shows what will be removed and blocks until approved. Use only for privacy removal or correcting wrong info.",
     promptSnippet:
       "memory_delete removes a memory/session/observations from agentmemory. It ALWAYS prompts the human for explicit confirmation first; never call it speculatively.",
     promptGuidelines: [
-      "memory_delete is destructive and always prompts the human. Requires the user to name the specific item to delete in THIS turn — do not infer deletion intent from earlier instructions. Never use it for bulk cleanup (consolidation owns that). If you need observation IDs, call memory_search first; do not fall back to deleting a whole session when specific observations were requested.",
+      "memory_delete is destructive and always prompts the human. Use it only when the user names the specific item to delete in THIS turn; do not infer deletion intent from earlier instructions. Never use it for bulk cleanup (consolidation owns that). If you need observation IDs, call memory_search first; do not delete a whole session when specific observations were requested.",
     ],
     parameters: Type.Object({
       id: Type.String({
@@ -769,7 +775,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       if (!result) {
         return {
           content: [
-            { type: "text", text: "Forget call failed (engine unreachable or refused)." },
+            { type: "text", text: `Forget call failed (engine unreachable or refused). ${RETRY_HINT}` },
           ],
           details: { ok: false },
         };
