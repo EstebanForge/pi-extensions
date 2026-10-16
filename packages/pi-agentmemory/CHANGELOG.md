@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.4] - 2026-10-16
 
 ### Changed
 - **Failed memory-tool calls now tell the model to retry once, and only report after the second failure.** Every model-facing failure string (the four `ensureServer` reasons, `memory_health` unreachable, `memory_save` failure, `memory_delete` forget failure) ends with a shared hint: "Retry once; if it fails again, tell the human." A single blip no longer pushes the model straight to reporting or giving up.
