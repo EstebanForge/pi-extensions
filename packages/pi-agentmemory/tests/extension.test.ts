@@ -138,7 +138,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠~");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 ~");
     // Agents obey the bar; guidance tells them to try anyway.
     expect(res.systemPrompt).toContain("still try the memory tools");
   });
@@ -155,7 +155,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠~");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 ~");
   });
 
   // A future engine dialect must not read as off while the server serves:
@@ -172,7 +172,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠~");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 ~");
   });
 
   it("bar stays off only when health AND livez both fail", async () => {
@@ -187,7 +187,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠×");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 ×");
   });
 
   it("bar stays off on 401 (durable auth failure gets no livez fallback)", async () => {
@@ -199,7 +199,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠×");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 ×");
     expect(fetchMock).toHaveBeenCalledTimes(1); // livez never asked
   });
 
@@ -224,7 +224,7 @@ describe("status bar resilience", () => {
     await vi.waitFor(() =>
       expect(setStatus).toHaveBeenCalledWith(
         "agentmemory",
-        "🧠×",
+        "🧠 ×",
       ),
     );
     await handlers.agent_end({

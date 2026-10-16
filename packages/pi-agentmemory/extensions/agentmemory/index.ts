@@ -90,7 +90,7 @@ const TOOL_GUIDANCE = [
   "agentmemory is available for cross-session memory.",
   "Use memory_search to recall prior decisions, preferences, bugs, and workflows.",
   "Use memory_save when you discover durable facts worth remembering beyond this session.",
-  "The status line may briefly show 🧠~ (degraded) or 🧠× (unreachable) during a network blip; still try the memory tools when relevant — failures surface per call.",
+  "The status line may briefly show 🧠 ~ (degraded) or 🧠 × (unreachable) during a network blip; still try the memory tools when relevant — failures surface per call.",
   "The server may run on this machine or a remote host (see AGENTMEMORY_URL). If it is unreachable, report that and continue; never install or start agentmemory on this machine unless its address points here.",
 ].join(" ");
 
@@ -313,7 +313,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       cls = (await livezOk(baseUrl)) ? "degraded" : "unhealthy";
     }
     const label =
-      cls === "healthy" ? "🧠" : cls === "degraded" ? "🧠~" : "🧠×";
+      cls === "healthy" ? "🧠" : cls === "degraded" ? "🧠 ~" : "🧠 ×";
     ctx.ui.setStatus("agentmemory", label);
   }
 
