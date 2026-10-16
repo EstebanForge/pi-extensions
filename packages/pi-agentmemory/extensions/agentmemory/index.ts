@@ -76,7 +76,7 @@ const FLAGS = [
     name: "agentmemory-autostart",
     label: "Auto-start server",
     description:
-      "Start the local agentmemory server automatically when a session starts or a memory tool runs, if it is installed (or via npx when agentmemory-npx-fallback is on). Off by default — enable if your machine starts the server quickly.",
+      "Start an agentmemory server on this machine automatically when a session starts or a memory tool runs, if it is installed (or via npx when agentmemory-npx-fallback is on). Only used when the server address (AGENTMEMORY_URL) points at this machine — a remote server is never started or installed here. Off by default — enable if your machine starts the server quickly.",
   },
   {
     name: "agentmemory-npx-fallback",
@@ -90,7 +90,8 @@ const TOOL_GUIDANCE = [
   "agentmemory is available for cross-session memory.",
   "Use memory_search to recall prior decisions, preferences, bugs, and workflows.",
   "Use memory_save when you discover durable facts worth remembering beyond this session.",
-  "The status line may briefly show agentmemory off during a network blip; still try the memory tools when relevant — failures surface per call.",
+  "The status line may briefly show agentmemory unreachable during a network blip; still try the memory tools when relevant — failures surface per call.",
+  "The server may run on this machine or a remote host (see AGENTMEMORY_URL). If it is unreachable, report that and continue; never install or start agentmemory on this machine unless its address points here.",
 ].join(" ");
 
 function normalizeBaseUrl(url: string): string {
@@ -316,7 +317,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
         ? "🧠 agentmemory"
         : cls === "degraded"
           ? "🧠 agentmemory~"
-          : "🧠 agentmemory off";
+          : "🧠 agentmemory unreachable";
     ctx.ui.setStatus("agentmemory", label);
   }
 
@@ -497,7 +498,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     name: "memory_health",
     label: "Memory Health",
     description:
-      "Check whether the local agentmemory server is reachable and healthy",
+      "Check whether the agentmemory server (this machine or a remote host, per AGENTMEMORY_URL) is reachable and healthy",
     parameters: Type.Object({}),
     async execute() {
       const health = await getHealth();
@@ -508,7 +509,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
               type: "text",
               text: `agentmemory is unreachable at ${
                 normalizeBaseUrl(process.env.AGENTMEMORY_URL || DEFAULT_URL)
-              }`,
+              }. The server may run on another machine — do not install or start agentmemory here; check the network route or tell the human.`,
             },
           ],
           details: { ok: false },

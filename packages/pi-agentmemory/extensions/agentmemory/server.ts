@@ -55,6 +55,28 @@ function livezUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/agentmemory/livez`;
 }
 
+// Autostart can only ever serve the machine Pi runs on: a spawned local
+// server never answers a remote AGENTMEMORY_URL, so a non-loopback target
+// must fail fast with remote guidance instead of spawning or npx-downloading
+// here (agents otherwise read the failure as "install the CLI on this box").
+// Unparseable URLs count as non-loopback: spawning against an address we
+// cannot classify is the wrong default.
+export function isLoopbackHost(baseUrl: string): boolean {
+  try {
+    const { hostname } = new URL(baseUrl);
+    const host = hostname.replace(/^\[|\]$/g, "");
+    return (
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host === "::1" ||
+      host === "::" ||
+      host.startsWith("127.")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function isServerHealthy(
   baseUrl: string,
   secret?: string,
@@ -161,6 +183,15 @@ export async function ensureServer(opts: EnsureOptions): Promise<EnsureResult> {
   // misread as absent, which would spawn a duplicate or trip the autostart bail.
   if (await isServerHealthy(opts.baseUrl, opts.secret, { fallbackToLivez: true })) {
     return { ok: true, started: false };
+  }
+  // Remote target: nothing on this machine can fix it — no spawn, no npx,
+  // no CLI probe. The reason doubles as agent guidance, so it must name
+  // the address and forbid local installs explicitly.
+  if (!isLoopbackHost(opts.baseUrl)) {
+    return {
+      ok: false,
+      reason: `agentmemory server at ${opts.baseUrl} is unreachable. That address is another machine, so the server cannot be started or installed from here — do not install or start agentmemory on this machine. Check the network route to that host (VPN, tailscale, firewall) or tell the human, and continue without memory tools.`,
+    };
   }
   if (!opts.autostart) {
     return {

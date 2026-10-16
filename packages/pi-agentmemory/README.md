@@ -15,7 +15,7 @@ agentmemory
 
 Or run it without installing: `npx -y @agentmemory/agentmemory@latest`.
 
-By default the REST API listens on `http://localhost:3111` (the web viewer is on `http://localhost:3113`). See the [agent-memory.dev docs](https://www.agent-memory.dev/docs) and the [source on GitHub](https://github.com/rohitg00/agentmemory) for auth, Docker, and configuration.
+By default the REST API listens on `http://localhost:3111` (the web viewer is on `http://localhost:3113`). The server can also run on another machine: point `AGENTMEMORY_URL` at it (see [Configuration](#configuration)). For a remote address the extension only probes the server — it never starts or installs anything on this machine. See the [agent-memory.dev docs](https://www.agent-memory.dev/docs) and the [source on GitHub](https://github.com/rohitg00/agentmemory) for auth, Docker, and configuration.
 
 ## Install
 
@@ -67,6 +67,8 @@ The extension brings the server up on demand so you rarely start it by hand. On 
 3. Polls health for up to ~20s (first run downloads its engine), then proceeds or reports a clear error.
 
 Closing Pi leaves the server running; reopening Pi, or opening a second Pi at the same time, detects it via the health check and does not start it again. A single Pi process also starts it only once per outage, even if several memory tools fire while it is down.
+
+Auto-start only acts when the server address points at this machine (loopback: `localhost`, `127.0.0.0/8`, `::1`). A remote `AGENTMEMORY_URL` is only probed — a locally spawned server cannot answer a remote address, so when the remote server is unreachable the tools report the address and how to reach it instead of starting or installing anything locally.
 
 Two flags control this (edit in `pi config`):
 

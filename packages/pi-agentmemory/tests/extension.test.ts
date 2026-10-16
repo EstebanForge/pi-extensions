@@ -1,6 +1,15 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import factory from "../extensions/agentmemory/index.js";
-import { isServerHealthy } from "../extensions/agentmemory/server.js";
+import {
+  ensureServer,
+  isLoopbackHost,
+  isServerHealthy,
+} from "../extensions/agentmemory/server.js";
+
+const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+// ensureServer spawns on the autostart path; mock file-wide so the remote
+// tests can prove no local spawn/npx ever happens for a remote address.
+vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 
 describe("pi-agentmemory extension entry", () => {
   it("registers the memory_health tool", async () => {
@@ -178,7 +187,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 agentmemory off");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 agentmemory unreachable");
   });
 
   it("bar stays off on 401 (durable auth failure gets no livez fallback)", async () => {
@@ -190,7 +199,7 @@ describe("status bar resilience", () => {
       ctxOf(setStatus),
     );
     await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
-    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 agentmemory off");
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠 agentmemory unreachable");
     expect(fetchMock).toHaveBeenCalledTimes(1); // livez never asked
   });
 
@@ -215,7 +224,7 @@ describe("status bar resilience", () => {
     await vi.waitFor(() =>
       expect(setStatus).toHaveBeenCalledWith(
         "agentmemory",
-        "🧠 agentmemory off",
+        "🧠 agentmemory unreachable",
       ),
     );
     await handlers.agent_end({
@@ -497,5 +506,127 @@ describe("observation retry queue", () => {
       expect(posted).toContain(`t${i}`);
     }
     expect(posted).toContain("late");
+  });
+});
+
+describe("isLoopbackHost", () => {
+  it.each([
+    ["http://localhost:3111", true],
+    ["http://127.0.0.1:3111", true],
+    ["http://127.9.9.9/", true],
+    ["http://[::1]:3111", true],
+    ["http://pi.localhost:3111", true],
+    ["http://10.40.0.7:3111", false],
+    ["http://memory.lan:3111", false],
+    ["https://memory.example.com", false],
+    ["not a url", false],
+  ])("%s -> %s", (url, expected) => {
+    expect(isLoopbackHost(url as string)).toBe(expected);
+  });
+});
+
+describe("remote server handling", () => {
+  beforeEach(() => spawnMock.mockReset());
+  afterEach(() => vi.unstubAllGlobals());
+
+  // runShort resolves on 'close'; spawnServer only needs on('error') + unref.
+  const fakeChild = (closeCode: number) => ({
+    on: (_event: string, cb: (arg?: unknown) => void) => {
+      if (_event === "close") queueMicrotask(() => cb(closeCode));
+    },
+    kill: () => {},
+    unref: () => {},
+  });
+
+  const unreachableFetch = () =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    );
+
+  it("remote URL: fails fast with remote guidance, never spawns or installs", async () => {
+    spawnMock.mockImplementation(() => fakeChild(0));
+    unreachableFetch();
+    const res = await ensureServer({
+      baseUrl: "http://10.40.0.7:3111",
+      autostart: true,
+      npxFallback: true,
+      timeoutMs: 500,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toContain("http://10.40.0.7:3111");
+      expect(res.reason).toMatch(/another machine|remote host/i);
+      expect(res.reason).toMatch(/do not install/i);
+    }
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("loopback URL, autostart off: keeps the local start-it-manually advice", async () => {
+    unreachableFetch();
+    const res = await ensureServer({
+      baseUrl: "http://localhost:3111",
+      autostart: false,
+      npxFallback: true,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain("Start it manually");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("loopback URL, autostart on: spawns the local server, then reports timeout", async () => {
+    spawnMock.mockImplementation(() => fakeChild(0));
+    unreachableFetch();
+    const res = await ensureServer({
+      baseUrl: "http://localhost:3111",
+      autostart: true,
+      npxFallback: true,
+      timeoutMs: 600,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/did not become healthy/);
+    expect(
+      spawnMock.mock.calls.some(
+        (c) => c[0] === "agentmemory" && (c[1] as string[]).length === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it("system prompt guidance says the server may be remote and forbids local installs", async () => {
+    const handlers: Record<string, any> = {};
+    const toolDefs: any[] = [];
+    const pi: any = new Proxy(
+      {
+        registerTool: (def: any) => void toolDefs.push(def),
+        registerCommand: () => {},
+        getFlag: () => undefined,
+        on: (event: string, handler: any) => {
+          handlers[event] = handler;
+        },
+      },
+      {
+        get(target, prop) {
+          return prop in target ? (target as any)[prop] : () => {};
+        },
+      },
+    );
+    await factory(pi);
+    const health = toolDefs.find((t) => t.name === "memory_health");
+    expect(health.description).not.toMatch(/\blocal\b/);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ status: "healthy" }), { status: 200 }),
+      ),
+    );
+    const res = await handlers.before_agent_start(
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
+      { ui: { setStatus: () => {} } },
+    );
+    expect(res.systemPrompt).toContain("still try the memory tools");
+    expect(res.systemPrompt).toContain("never install or start agentmemory");
   });
 });
