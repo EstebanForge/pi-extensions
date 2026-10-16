@@ -2,7 +2,7 @@
 
 ## 1.1.2 (2026-10-13)
 
-## [Unreleased]
+## 1.1.3 (2026-10-16)
 
 ### Fixed
 - **Unreachable-server wording no longer tells agents the memory server lives on this machine.** Every failure string (tool-failure reasons, `memory_health`, the `🧠 agentmemory off` status label, system-prompt guidance) implied a local install, so against a remote `AGENTMEMORY_URL` agents went looking for the `agentmemory` binary and tried to install it on the machine Pi runs on. The status chip drops the word entirely (`🧠` healthy, `🧠 ~` degraded, `🧠 ×` unreachable), and every failure names the configured address and forbids local installs: the server may run on another machine, so check the network route or tell the human.
