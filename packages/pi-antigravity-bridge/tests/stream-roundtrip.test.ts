@@ -341,6 +341,62 @@ test("consumeActivity: wrap is skipped when antigravity tool is not active (suba
 	assert.deepEqual(logEvents, [["wrap-skip", { tool: "some_custom_mutating_tool" }, "debug"]]);
 });
 
+test("consumeActivity: subagent session sequence — junk streams through, only whitelisted natives park (issue #6)", () => {
+	// End-to-end shape of the 39x "Tool antigravity not found" transcript: a
+	// subagent session's activity burst carries wrap-replay candidates and agy
+	// MCP plumbing; under a restricted whitelist only real native reads park.
+	const driver = new StreamDriver();
+	const rt = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const logEvents: Array<[string, unknown, string?]> = [];
+	const diffCtx = new TurnDiffContext(createExecGitOps());
+	const feats = {
+		replay,
+		nativeActive: (toolName: string) => toolName === "read",
+		roundTrips: rt,
+		log: (event: string, data: unknown, level?: string) => logEvents.push([event, data, level]),
+	};
+	assert.equal(
+		consumeActivity(stream, blocks, { type: "tool_done", stepId: 21, name: "some_custom_mutating_tool", args: { foo: "bar" }, output: "done" }, diffCtx, "/w", feats),
+		"continue",
+	);
+	assert.equal(
+		consumeActivity(stream, blocks, { type: "tool_done", stepId: 22, name: "call_mcp_tool", args: { tool: "memory_search" }, output: "{}" }, diffCtx, "/w", feats),
+		"continue",
+	);
+	assert.equal(
+		consumeActivity(stream, blocks, { type: "tool_done", stepId: 23, name: "view_file", args: { path: "/w/f.ts" }, output: "body" }, diffCtx, "/w", feats),
+		"parked",
+	);
+	const cards = collected.filter((e) => (e as { type: string }).type === "toolcall_end") as Array<{
+		toolCall: { name: string };
+	}>;
+	assert.deepEqual(cards.map((c) => c.toolCall.name), ["read"]);
+	// Every toolUse card in the transcript is the whitelisted read; no
+	// 'antigravity' card exists anywhere (the 39x unknown-tool class, issue #6).
+	for (const e of collected) {
+		const tc = (e as { toolCall?: { name?: string } }).toolCall;
+		if (tc) assert.equal(tc.name, "read");
+	}
+	const done = collected.find((e) => (e as { type: string }).type === "done") as { reason: string };
+	assert.equal(done.reason, "toolUse");
+	// The skipped wrap still leaves its thinking label for the transcript.
+	const thinking = collected
+		.filter((e) => (e as { type: string }).type === "thinking_delta")
+		.map((e) => (e as { delta: string }).delta)
+		.join("");
+	assert.match(thinking, /agy tool: some_custom_mutating_tool/);
+	assert.deepEqual(logEvents, [["wrap-skip", { tool: "some_custom_mutating_tool" }, "debug"]]);
+});
+
 test("consumeActivity: without a replay store, tool steps stay label-only", () => {
 	const stream = createAssistantMessageEventStream();
 	const blocks = newBlocks();

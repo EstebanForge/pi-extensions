@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Declare native subagent masking explicitly in the staged system-prompt carrier (`subagent: false`, `agents: []`; issue #7).** Agent-file presence already suppresses the native subagent tools, but that was an accident of staging; the frontmatter now states it so provider sessions do not depend on an undocumented engine behavior (probe attribution of presence vs keys is untested). Sessions without the carrier (`systemPrompt: false` or a custom agent) keep native tools; the tool-priority note steers the model to bridge delegation where a delegation tool is listed.
+
 ## [1.8.5] - 2026-10-20
 
 ### Fixed

@@ -11,8 +11,13 @@
 //
 // Frontmatter keeps agy's DEFAULTS on purpose (no excludeDefaultComponents,
 // no tools list, no inheritMcp override): provider sessions need the normal
-// toolset and the bridge MCP config for G9 round-trips. Contrast the ask-tool
-// reviewer agent, which strips everything for sandboxing.
+// toolset and the bridge MCP config for G9 round-trips. The subagent keys are
+// the one deliberate exception: agent-file presence already suppresses agy's
+// native subagent tools (probed 2026-10-20, issue #7), and declaring it makes
+// the suppression explicit instead of relying on the accident (whether the
+// keys themselves mask, apart from presence, is unattributed).
+// Contrast the ask-tool reviewer agent, which strips everything for
+// sandboxing.
 //
 // Lifecycle: one agent dir per DISTINCT body (content-addressed by sha256);
 // two conversations with different system prompts in one process stage two
@@ -49,6 +54,8 @@ export function syspromptAgentMd(name: string, body: string): string {
 		"description: \"Pi bridge system-prompt carrier: pi operating instructions plus project AGENTS.md context\"",
 		"mainAgent: true",
 		"model: inherit",
+		"subagent: false",
+		"agents: []",
 		"---",
 		"",
 		body,

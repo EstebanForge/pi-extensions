@@ -161,6 +161,7 @@ test("late delivery: incident repro, tool result after park death runs as a new 
 	assert.match(seen.opts.prompt, /Late tool delivery/);
 	assert.match(seen.opts.prompt, /AskClaude/);
 	assert.match(seen.opts.prompt, /agy disconnected before the tool result arrived/);
+	assert.match(seen.opts.prompt, /pi tool "AskClaude":/);
 	assert.match(seen.opts.prompt, /REVIEW OUTPUT/);
 	// The old user message is NOT re-sent (extractUserPrompt reads the last
 	// message only, and the last message is the toolResult).

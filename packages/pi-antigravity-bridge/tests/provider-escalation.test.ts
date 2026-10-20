@@ -240,6 +240,9 @@ test("escalation: unpolled result with a dead agy turn is re-delivered as a late
 	assert.match(prompt, /Late tool delivery/);
 	assert.match(prompt, /USER ANSWER/);
 	assert.match(prompt, /without calling bridge_poll_result/);
+	// The framing must name the tool (issue #7): a bare result reads as a
+	// random follow-up prompt.
+	assert.match(prompt, /pi tool "ask_user_question":/);
 	assert.equal(d.seen.opts?.conversationId, "conv-9");
 	// The entry stays pollable for a late model poll; the claim is single-use.
 	assert.equal(rt.poll("call-1")?.state, "done");
@@ -273,6 +276,8 @@ test("escalation: two stranded results in one pass redeliver in a single late pr
 	const prompt = d.seen.opts?.prompt ?? "";
 	assert.match(prompt, /ANSWER ONE/);
 	assert.match(prompt, /COMMIT SHA/);
+	assert.match(prompt, /pi tool "ask_user_question":/);
+	assert.match(prompt, /pi tool "git_commit":/);
 	assert.equal(d.seen.opts?.conversationId, "conv-m");
 });
 
@@ -396,6 +401,7 @@ test("escalation: live turn that ends without polling redelivers after outcome",
 	const prompt = d.seen.opts?.prompt ?? "";
 	assert.match(prompt, /Late tool delivery/);
 	assert.match(prompt, /LATE ANSWER/);
+	assert.match(prompt, /pi tool "ask_user_question":/);
 	assert.equal(d.seen.opts?.conversationId, "conv-b");
 	assert.equal(errors.length, 0);
 });
