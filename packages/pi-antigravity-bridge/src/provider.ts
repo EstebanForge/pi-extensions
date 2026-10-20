@@ -140,7 +140,7 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
  *  the user's machine must go through the bridge. Rides the systemPrompt
  *  gate: the note ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -418,6 +418,27 @@ export const POLL_TOOL_NAME = "bridge_poll_result";
 /** Default quiet period before a park escalates to a poll handle. Well under
  *  agy's ~180s request deadline; fast tools never see it. */
 export const ESCALATE_AFTER_MS = 20_000;
+
+/** Synchronous window for delegation-shaped tools. pi subagents commonly run
+ *  30-120s (issue #6) and orchestrators expect a plain tool result; past this
+ *  they escalate to the poll path. The ceiling stays under agy's ~180s
+ *  tools/call abandonment, which would kill the request with no result and no
+ *  poll handle. */
+export const DELEGATION_ESCALATE_MS = 120_000;
+
+/** Names that get the long synchronous window: pi's agent_spawn/agent_wait
+ *  family, subagent_run-style tools, *delegate*, and the Claude Code-style
+ *  exact name "Agent" (start-anchored stem so incidental agent_ substrings
+ *  elsewhere in a name keep the fast ack). Human-gated tools
+ *  (ask_user_question) deliberately stay on the fast ack: their poll path is
+ *  load-bearing for permission flows. */
+const DELEGATION_NAME_RE = /subagent|delegate|^agent(_|$)/i;
+
+/** Per-call escalation threshold. Config can add extra long-running names
+ *  (escalateLongTools). */
+export function defaultEscalateAfterMs(name: string, extraLongNames: readonly string[] = []): number {
+	return DELEGATION_NAME_RE.test(name) || extraLongNames.includes(name) ? DELEGATION_ESCALATE_MS : ESCALATE_AFTER_MS;
+}
 /** Escalated parks carry a longer TTL: human-gated tools (commit previews,
  *  permission dialogs) legitimately block for many minutes. */
 export const ESCALATED_TIMEOUT_MS = 1_800_000;
@@ -647,7 +668,7 @@ export class ToolRoundTrips {
 	 *  late-delivery path (see buildLateResultPrompt). */
 	#dead = new Map<string, { name: string; reason: string }>();
 	#escalations = new EscalationRegistry();
-	#escalateAfterMs: number;
+	#escalateAfterMs: number | ((name: string) => number);
 	#getDriver: () => TurnDriver;
 	#log: (s: string, d?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 	/** Approval park controls (mcp-server handle). Assigned by the extension
@@ -660,11 +681,11 @@ export class ToolRoundTrips {
 	constructor(
 		driver: TurnDriver | (() => TurnDriver),
 		log?: (s: string, d?: unknown, level?: "debug" | "info" | "warn" | "error") => void,
-		opts: { escalateAfterMs?: number } = {},
+		opts: { escalateAfterMs?: number | ((name: string) => number) } = {},
 	) {
 		this.#getDriver = typeof driver === "function" ? driver : () => driver;
 		this.#log = log ?? (() => {});
-		this.#escalateAfterMs = opts.escalateAfterMs ?? ESCALATE_AFTER_MS;
+		this.#escalateAfterMs = opts.escalateAfterMs ?? defaultEscalateAfterMs;
 	}
 
 	get pendingIds(): string[] {
@@ -862,7 +883,8 @@ export class ToolRoundTrips {
 			const onAbort = () => this.#fail(callId, "agy disconnected before the tool result arrived");
 			signal.addEventListener("abort", onAbort, { once: true });
 			const entry: PendingRoundTrip = { kind: "bridge", name, resolve, reject, timer, onAbort, signal };
-			if (this.#escalateAfterMs > 0) {
+			const escalateAfterMs = typeof this.#escalateAfterMs === "function" ? this.#escalateAfterMs(name) : this.#escalateAfterMs;
+			if (escalateAfterMs > 0) {
 				entry.escalateTimer = setTimeout(() => {
 					const e = this.#pending.get(callId);
 					// Resolved (or failed) between arm and fire: nothing to escalate.
@@ -878,7 +900,7 @@ export class ToolRoundTrips {
 					}
 					this.#escalations.escalate(callId, e.name);
 					resolve({ escalated: true, callId, name: e.name });
-				}, this.#escalateAfterMs);
+				}, escalateAfterMs);
 			}
 			this.#pending.set(callId, entry);
 			// Strip the internal marker fields from model-supplied args (peer
@@ -1051,6 +1073,7 @@ export interface ActivityFeatures {
 	engine?: "stream-json" | "acp";
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
 	roster?: SubagentRoster;
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 }
 
 /** Process-wide counter: round-trip ids must never repeat across turns in
@@ -1197,6 +1220,7 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 			// resume on the toolResult continuation. Without a replay store
 			// (feature off) keep the label-only behavior.
 			if (!feats.replay || !feats.roundTrips) return "continue";
+			if (activity.name === "call_mcp_tool") return "continue";
 			const mapped = mapAgyToolToNative(activity.name, activity.args);
 			if (mapped && (!feats.nativeActive || feats.nativeActive(mapped.tool))) {
 				const id = nextRtId("nat");
@@ -1208,6 +1232,12 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 					...mapped.args,
 				} as Record<string, JsonValue>);
 				return "parked";
+			}
+			if (feats.nativeActive && !feats.nativeActive("antigravity")) {
+				// Subagent sessions whitelist tools and drop the display wrapper;
+				// emitting here would fail every card with "not found".
+				feats.log?.("wrap-skip", { tool: activity.name }, "debug");
+				return "continue";
 			}
 			{
 				const id = nextRtId("wrap");
@@ -1464,6 +1494,7 @@ async function runTurnDriver(
 		engine: deps.engine,
 		onNativeEvent: deps.onNativeEvent,
 		roster: deps.roster,
+		log: deps.log,
 	};
 
 	const drainTurn = async (h: TurnHandle): Promise<"parked" | undefined> => {

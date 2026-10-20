@@ -103,6 +103,27 @@ test("AGY_ENGINE env overrides the file", () => {
 	}
 });
 
+test("escalateLongTools: junk file shapes fall back to empty, strings and env still parse (issue #6)", () => {
+	const p = tmpConfig();
+	const prevEnv = process.env.AGY_ESCALATE_LONG_TOOLS;
+	delete process.env.AGY_ESCALATE_LONG_TOOLS;
+	try {
+		// Non-array, non-string junk must not throw the per-call loadConfig.
+		fs.writeFileSync(p, JSON.stringify({ escalateLongTools: 42 }));
+		assert.deepEqual(loadConfig(p).escalateLongTools, []);
+		// Non-string elements are dropped; strings are trimmed.
+		fs.writeFileSync(p, JSON.stringify({ escalateLongTools: [" mem_search ", 1, null, "agent_x", ""] }));
+		assert.deepEqual(loadConfig(p).escalateLongTools, ["mem_search", "agent_x"]);
+		// Env string still wins over the file.
+		process.env.AGY_ESCALATE_LONG_TOOLS = " a ,, b ";
+		assert.deepEqual(loadConfig(p).escalateLongTools, ["a", "b"]);
+	} finally {
+		if (prevEnv === undefined) delete process.env.AGY_ESCALATE_LONG_TOOLS;
+		else process.env.AGY_ESCALATE_LONG_TOOLS = prevEnv;
+		rm(p);
+	}
+});
+
 test("AGY_ACP_BIN env overrides acp.bin", () => {
 	const p = tmpConfig();
 	const prev = process.env.AGY_ACP_BIN;

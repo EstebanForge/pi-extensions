@@ -43,6 +43,7 @@ import {
 	ToolRoundTrips,
 	WrapperReplay,
 	createStreamSimple,
+	defaultEscalateAfterMs,
 	formatEscalatedAck,
 	formatPollAnswer,
 	type NativeDisplayEvent,
@@ -362,6 +363,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				d,
 				level ?? (s === "round-trip-fail" ? "warn" : "debug"),
 			),
+		// Delegation tools hold the sync window 120s (issue #6); config adds
+		// extra long-running names, re-read per call so edits apply live.
+		{ escalateAfterMs: (name) => defaultEscalateAfterMs(name, loadConfig().escalateLongTools) },
 	);
 	const replay = new WrapperReplay();
 	// Subagent roster: folded from every driver activity (both engines) via

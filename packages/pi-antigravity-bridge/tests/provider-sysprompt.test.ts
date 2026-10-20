@@ -49,6 +49,21 @@ test("tool priority note rides the system prompt gate, before END", () => {
 	assert.equal(buildFullPrompt(undefined, "", "hello").includes(TOOL_PRIORITY_NOTE), false);
 });
 
+test("tool priority note routes subagent delegation through pi (issue #6)", () => {
+	// Native tools are named so the model recognizes what to avoid.
+	assert.match(TOOL_PRIORITY_NOTE, /invoke_subagent/);
+	assert.match(TOOL_PRIORITY_NOTE, /manage_subagents/);
+	// Conditional: a session with no pi delegation tool bridged must still
+	// be allowed to use native spawns, or the model refuses legitimate work.
+	assert.match(TOOL_PRIORITY_NOTE, /only if no pi delegation tool/i);
+	// Native spawns run inside agy and are invisible to pi-side harnesses.
+	assert.match(TOOL_PRIORITY_NOTE, /invisible to pi/i);
+	// Ecosystem delegation tool names are listed verbatim so the model
+	// recognizes them in its own tool list (pi-subagents' "subagent",
+	// Claude Code-style "Agent").
+	assert.match(TOOL_PRIORITY_NOTE, /for example subagent, Agent, agent_spawn/);
+});
+
 test("empty-string system prompt is treated as absent", () => {
 	assert.equal(buildFullPrompt("", "", "hello"), "hello");
 });

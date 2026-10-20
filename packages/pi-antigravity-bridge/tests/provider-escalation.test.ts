@@ -13,11 +13,14 @@ import path from "node:path";
 import { test } from "vitest";
 import { normalizeContext, type Api, type AssistantMessage, type Message, type Model, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import {
+	DELEGATION_ESCALATE_MS,
+	ESCALATE_AFTER_MS,
 	EscalationRegistry,
 	POLL_TOOL_NAME,
 	ToolRoundTrips,
 	collectToolResults,
 	createStreamSimple,
+	defaultEscalateAfterMs,
 	formatEscalatedAck,
 	formatPollAnswer,
 	type BridgeCallResultShape,
@@ -116,6 +119,54 @@ test("escalation: slow calls settle with a sentinel, poll reports running then t
 	assert.equal(done.isError, false);
 	// No tombstone: nothing failed, the late-delivery path must not fire.
 	assert.deepEqual(rt.deadIds, []);
+});
+
+test("escalation: delegation-shaped tools escalate later by default (issue #6)", () => {
+	// 120s holds the synchronous window across the 30-120s subagent range
+	// while staying under agy's ~180s tools/call abandonment.
+	assert.equal(defaultEscalateAfterMs("subagent_run"), DELEGATION_ESCALATE_MS);
+	assert.equal(defaultEscalateAfterMs("agent_spawn"), DELEGATION_ESCALATE_MS);
+	assert.equal(defaultEscalateAfterMs("agent_wait"), DELEGATION_ESCALATE_MS);
+	// Claude Code-style exact names (tintinweb pi-subagents registers "Agent").
+	assert.equal(defaultEscalateAfterMs("Agent"), DELEGATION_ESCALATE_MS);
+	assert.equal(defaultEscalateAfterMs("agent"), DELEGATION_ESCALATE_MS);
+	// Ordinary and human-gated tools keep the fast ack: the poll path is
+	// load-bearing for permission flows.
+	assert.equal(defaultEscalateAfterMs("read"), ESCALATE_AFTER_MS);
+	assert.equal(defaultEscalateAfterMs("ask_user_question"), ESCALATE_AFTER_MS);
+	assert.equal(defaultEscalateAfterMs("bridge_poll_result"), ESCALATE_AFTER_MS);
+	// The agent stem is start-anchored: incidental agent_ substrings elsewhere
+	// in a name keep the fast ack.
+	assert.equal(defaultEscalateAfterMs("user_agent_lookup"), ESCALATE_AFTER_MS);
+	assert.equal(defaultEscalateAfterMs("pageagent"), ESCALATE_AFTER_MS);
+	// Config-listed names join the long class.
+	assert.equal(defaultEscalateAfterMs("db_benchmark", ["db_benchmark"]), DELEGATION_ESCALATE_MS);
+});
+
+test("escalation: per-call resolver gives delegation and ordinary tools different clocks", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, {
+		escalateAfterMs: (name) => (name === "subagent_run" ? 120 : 20),
+	});
+	const slow = rt.onToolCall("c1", "subagent_run", {}, new AbortController().signal);
+	const fast = rt.onToolCall("c2", "read", {}, new AbortController().signal);
+	await new Promise((r) => setTimeout(r, 60));
+	// Ordinary tool escalated at 20ms; the delegation call still holds its
+	// synchronous window (no poll handle yet).
+	assert.equal(rt.poll("c2")?.state, "running");
+	assert.equal(rt.poll("c1"), undefined);
+	assert.deepEqual(await fast, { escalated: true, callId: "c2", name: "read" });
+	assert.deepEqual(await slow, { escalated: true, callId: "c1", name: "subagent_run" });
+});
+
+test("escalation: escalateAfterMs 0 disables the early ack entirely", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: 0 });
+	const p = rt.onToolCall("c1", "AskClaude", {}, new AbortController().signal);
+	rt.resolve("c1", "DONE", false);
+	const res = (await p) as BridgeCallResultShape;
+	assert.equal("escalated" in res, false);
+	assert.equal(rt.poll("c1"), undefined);
 });
 
 test("escalation: aborted escalated calls report through poll AND keep the tombstone backstop", async () => {

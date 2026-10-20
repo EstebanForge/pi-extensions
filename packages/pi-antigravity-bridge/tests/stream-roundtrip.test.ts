@@ -267,6 +267,80 @@ test("consumeActivity: mutating tool replays through the antigravity wrapper car
 	assert.equal(rt.resolve(end.toolCall.arguments.key, "ignored", false), true);
 });
 
+test("consumeActivity: call_mcp_tool is skipped from wrap replay", async () => {
+	const driver = new StreamDriver();
+	const rt = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{
+			type: "tool_done",
+			stepId: 10,
+			name: "call_mcp_tool",
+			args: { tool: "read" },
+			output: "some content",
+		},
+		new TurnDiffContext(createExecGitOps()),
+		"/w",
+		featsWith(rt, replay),
+	);
+	assert.equal(out, "continue");
+	assert.ok(!collected.some((e) => (e as { type: string }).type.startsWith("toolcall")));
+	assert.equal(rt.pendingIds.length, 0);
+	assert.equal(replay.size, 0);
+});
+
+test("consumeActivity: wrap is skipped when antigravity tool is not active (subagent isolation)", async () => {
+	const driver = new StreamDriver();
+	const rt = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const logEvents: Array<[string, unknown, string?]> = [];
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{
+			type: "tool_done",
+			stepId: 11,
+			name: "some_custom_mutating_tool",
+			args: { foo: "bar" },
+			output: "done",
+		},
+		new TurnDiffContext(createExecGitOps()),
+		"/w",
+		{
+			replay,
+			// subagent tool isolation: only 'read' is active, 'antigravity' is inactive
+			nativeActive: (toolName) => toolName === "read",
+			roundTrips: rt,
+			log: (event, data, level) => logEvents.push([event, data, level]),
+		},
+	);
+	assert.equal(out, "continue");
+	assert.ok(!collected.some((e) => (e as { type: string }).type.startsWith("toolcall")));
+	assert.equal(rt.pendingIds.length, 0);
+	assert.equal(replay.size, 0);
+	// The skip is observable: display cards silently disappearing must be
+	// diagnosable from the debug log.
+	assert.deepEqual(logEvents, [["wrap-skip", { tool: "some_custom_mutating_tool" }, "debug"]]);
+});
+
 test("consumeActivity: without a replay store, tool steps stay label-only", () => {
 	const stream = createAssistantMessageEventStream();
 	const blocks = newBlocks();

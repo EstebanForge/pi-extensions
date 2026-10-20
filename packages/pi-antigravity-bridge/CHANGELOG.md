@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.5] - 2026-10-20
+
+### Fixed
+
+- **Skip `call_mcp_tool` replay and guard synthetic `antigravity` toolUse against inactive whitelist in subagents (issue #6).** In subagent sessions with strict tool whitelists, unconditional wrap replay caused 39 consecutive `Tool antigravity not found` errors. In parent sessions, Antigravity's internal `call_mcp_tool` steps generated duplicate dummy tool calls returning `(agy recorded no output)`. The bridge now drops `call_mcp_tool` from wrap replay and checks `feats.nativeActive("antigravity")` before emitting synthetic toolUse.
+
+### Changed
+
+- **Subagent delegation routes through pi and holds a longer synchronous window (issue #6).** Antigravity orchestrators picked agy's native `invoke_subagent`/`run_subagent`/`manage_subagents`, whose spawns run inside agy, never surface in pi, and leave pi-side harnesses at "0 active / 0 finished". The tool-priority note now mandates bridged delegation tools when one exists (conditional, so a session without one keeps the native fallback), and delegation-shaped bridge calls (`subagent`/`subagent_run`-style tools, the Claude Code-style exact `Agent`, pi's `agent_spawn`/`agent_wait` family, `*delegate*`) hold the synchronous window 120s instead of 20s: the 30-120s subagent range now returns a plain tool result while staying under agy's ~180s `tools/call` abandonment, and longer runs escalate to the existing poll path. `escalateLongTools` in config.json (env `AGY_ESCALATE_LONG_TOOLS`, comma-separated) adds custom names; `escalateAfterMs: 0` still disables the early ack.
+
 ## [1.8.4] - 2026-10-15
 
 ### Security

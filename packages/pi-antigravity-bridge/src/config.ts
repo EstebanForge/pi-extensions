@@ -142,6 +142,13 @@ export interface AgyConfig {
 	 *  "mcp" surface serves an empty catalog on installs without
 	 *  pi-mcp-adapter), "mcp" (pi-mcp-adapter tools + skills bridge only). */
 	bridgeTools: BridgeTools;
+	/** Extra pi tool names that get the long (120s) synchronous escalation
+	 *  window, in addition to delegation-shaped names (subagent_run,
+	 *  agent_spawn/agent_wait, *delegate*; issue #6). For custom tools that
+	 *  legitimately run minutes-long but must return a plain result to an
+	 *  orchestrator. Env AGY_ESCALATE_LONG_TOOLS (comma-separated) wins over
+	 *  the file. Takes effect on the next bridge call. */
+	escalateLongTools?: string[];
 	/** Inject a delta digest of pi-side context (compaction summaries, turns
 	 *  handled by other providers or pi's own tools) into each agy prompt.
 	 *
@@ -318,6 +325,20 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 			? bridgeRaw
 			: DEFAULTS.bridgeTools;
 
+	// Extra long-window tool names for the bridge escalation (issue #6).
+	// Comma-separated in the env; junk entries and junk shapes are dropped,
+	// not fatal - loadConfig runs per bridge call and must never throw.
+	const longToolsRaw: unknown =
+		process.env.AGY_ESCALATE_LONG_TOOLS ?? file.escalateLongTools;
+	const longToolsParts: unknown[] = typeof longToolsRaw === "string"
+		? longToolsRaw.split(",")
+		: Array.isArray(longToolsRaw) ? longToolsRaw : [];
+	const escalateLongTools = longToolsParts
+		.filter((s): s is string => typeof s === "string")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0)
+		.slice(0, 32);
+
 	const digest = process.env.AGY_DIGEST !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())
 		: file.digest ?? false;
@@ -381,6 +402,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		askTool,
 		webTools,
 		bridgeTools,
+		escalateLongTools,
 		digest,
 		systemPrompt,
 		turnTimeoutMin,
