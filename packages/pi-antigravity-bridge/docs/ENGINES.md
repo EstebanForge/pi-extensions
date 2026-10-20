@@ -31,7 +31,7 @@ Picking **acp** starts the server download immediately (progress in the status b
 | Inline file edit diffs | Sourced from git working tree in thinking block | Sourced from `tool_call content[]` or disk vs git HEAD |
 | Permission handling | `--dangerously-skip-permissions` (unattended CLI requirement) | Protocol-native `session/request_permission` (auto-approve when `skipPermissions` is on; auto-deny when off) |
 | Context digest delivery (G1) | Prepend plain text inline in prompt | Native `embeddedContext` resource block |
-| System prompt delivery (G10) | Staged agy agent file via `--agent` (content-addressed dir under the agents root, write-once; the prompt line carries only the user text) | Prepend to first prompt of conversation |
+| System prompt delivery (G10) | Staged agy agent file via `--agent` (content-addressed dir under the agents root, write-once; the prompt line carries only the user text; the frontmatter declares `subagent: false` + `agents: []`, masking the native subagent tools - issue #7) | Prepend to first prompt of conversation |
 | Authentication methods | Inherits existing `agy` CLI OAuth state | 4 methods: `oauth-personal`, `oauth-business`, `gemini-api-key`, `agent-platform` |
 | Wire protocol | Undocumented CLI NDJSON stream format | Versioned JSON-RPC 2.0 over stdio (`protocolVersion: 1`) |
 | Diagnostics (`/agy doctor`) | Child PID, state, process spawns, recycles, queue stats | Server version, agentInfo, session counts, reconnect count, cancel support |
