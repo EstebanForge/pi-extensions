@@ -735,9 +735,22 @@ describe("settings modal interval cycler", () => {
     expect(rows[2]?.currentValue).toBe("0.5");
   });
   it("maps menu values to staged booleans or raw strings", () => {
-    expect(stageMenuValue("on")).toBe(true);
-    expect(stageMenuValue("off")).toBe(false);
-    expect(stageMenuValue("10")).toBe("10");
+    expect(stageMenuValue("agentmemory-watchdog", "on")).toBe(true);
+    expect(stageMenuValue("agentmemory-watchdog", "off")).toBe(false);
+    expect(stageMenuValue("agentmemory-watchdog-interval", "10")).toBe("10");
+    // The interval's "off" is a value, not a boolean flip: it must stage as
+    // the string so it survives persistence and reload seeding.
+    expect(stageMenuValue("agentmemory-watchdog-interval", "off")).toBe("off");
+  });
+  it("carries a staged interval off through to a disabled watchdog", () => {
+    expect(parseWatchdogIntervalMinutes("off")).toBe(null);
+    const getFlag = (n: string) => (n === "agentmemory-watchdog-interval" ? "5" : undefined);
+    expect(
+      selectStagedDeltas(
+        [["agentmemory-watchdog-interval", stageMenuValue("agentmemory-watchdog-interval", "off")]],
+        getFlag,
+      ),
+    ).toEqual([["agentmemory-watchdog-interval", "off"]]);
   });
   it("drops net-zero flips and keeps genuine deltas", () => {
     const getFlag = (n: string) =>

@@ -42,7 +42,7 @@ describe("flag settings persistence", () => {
     });
   });
 
-  it("keeps a saved value when another write fails shape checks", () => {
+  it("keeps prior keys when writing a second flag", () => {
     expect(saveFlagSetting("agentmemory-watchdog", false)).toBe(true);
     // loadFlagSettings drops non-boolean/string entries defensively.
     expect(saveFlagSetting("agentmemory-watchdog-interval", "0.5")).toBe(true);

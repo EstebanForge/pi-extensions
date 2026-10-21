@@ -113,19 +113,20 @@ export function buildSettingsRows(
   rows.push({
     id: WATCHDOG_INTERVAL_FLAG,
     label: "Watchdog interval",
-    description: `Minutes between background health checks: ${WATCHDOG_INTERVAL_CHOICES.join(" / ")}.`,
+    description: `Background health-check interval: ${WATCHDOG_INTERVAL_CHOICES.join(" / ")} (minutes).`,
     currentValue: interval,
     values: [...WATCHDOG_INTERVAL_CHOICES],
   });
   return rows;
 }
 
-// Menu rows carry display strings; stage booleans for on/off rows and the
-// raw string for everything else (the interval presets).
-export function stageMenuValue(value: string): boolean | string {
-  if (value === "on") return true;
-  if (value === "off") return false;
-  return value;
+// Menu rows carry display strings; on/off rows stage booleans. The interval
+// row stages its raw preset: "off" must persist as the string "off" — boolean
+// false would fail the reload's string seed check and silently revert to the
+// 5-minute default.
+export function stageMenuValue(id: string, value: string): boolean | string {
+  if (id === WATCHDOG_INTERVAL_FLAG) return value;
+  return value === "on";
 }
 
 // Net-zero staged flips are dropped so a flag cycled within one modal visit
@@ -575,7 +576,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
               onChange: (id, value) => {
                 // Stage the change; persist + reload on close, not here,
                 // so the user can flip several flags per visit.
-                pending.set(id, stageMenuValue(value));
+                pending.set(id, stageMenuValue(id, value));
               },
             },
             () => done(),
@@ -596,7 +597,11 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
       // staleness trigger, and we haven't called it yet). Drop net-zero
       // flips (a flag cycled on then off stages but changes nothing),
       // then persist genuine deltas and reload once if any moved.
-      const deltas = selectStagedDeltas([...pending], (n) => pi.getFlag(n));
+      // Net-zero must compare against the value the row displayed, so the
+      // interval is read through the same normalized view as its row.
+      const deltas = selectStagedDeltas([...pending], (n) =>
+        n === WATCHDOG_INTERVAL_FLAG ? watchdogIntervalSetting() : pi.getFlag(n),
+      );
       if (deltas.length === 0) return;
 
       const failures: string[] = [];
