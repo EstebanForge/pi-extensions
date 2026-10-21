@@ -3,6 +3,11 @@ import factory, {
   parseWatchdogIntervalMinutes,
 } from "../extensions/agentmemory/index.js";
 import {
+  buildSettingsRows,
+  selectStagedDeltas,
+  stageMenuValue,
+} from "../extensions/agentmemory/index.js";
+import {
   ensureServer,
   isLoopbackHost,
   isServerHealthy,
@@ -697,6 +702,60 @@ describe("parseWatchdogIntervalMinutes", () => {
     expect(parseWatchdogIntervalMinutes("abc")).toBe(5);
     expect(parseWatchdogIntervalMinutes("5m")).toBe(5);
     expect(parseWatchdogIntervalMinutes("0.01")).toBe(0.25);
+  });
+});
+
+describe("settings modal interval cycler", () => {
+  const FLAGS_STUB = [
+    { name: "agentmemory-autostart", label: "Auto-start server", description: "d1" },
+    { name: "agentmemory-watchdog", label: "Background health watchdog", description: "d2" },
+  ];
+  it("builds an on/off row per flag plus an interval cycler row", () => {
+    const rows = buildSettingsRows(FLAGS_STUB, (n) => n === "agentmemory-watchdog", "5");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({
+      id: "agentmemory-autostart",
+      currentValue: "off",
+      values: ["on", "off"],
+    });
+    expect(rows[1]).toMatchObject({
+      id: "agentmemory-watchdog",
+      currentValue: "on",
+      values: ["on", "off"],
+    });
+    expect(rows[2]).toMatchObject({
+      id: "agentmemory-watchdog-interval",
+      label: "Watchdog interval",
+      currentValue: "5",
+      values: ["5", "10", "30", "off"],
+    });
+  });
+  it("shows the live interval value, including non-preset ones", () => {
+    const rows = buildSettingsRows(FLAGS_STUB, () => false, "0.5");
+    expect(rows[2]?.currentValue).toBe("0.5");
+  });
+  it("maps menu values to staged booleans or raw strings", () => {
+    expect(stageMenuValue("on")).toBe(true);
+    expect(stageMenuValue("off")).toBe(false);
+    expect(stageMenuValue("10")).toBe("10");
+  });
+  it("drops net-zero flips and keeps genuine deltas", () => {
+    const getFlag = (n: string) =>
+      n === "agentmemory-watchdog" ? true : n === "agentmemory-watchdog-interval" ? "5" : undefined;
+    const deltas = selectStagedDeltas(
+      [
+        ["agentmemory-watchdog", true], // staged on, already on: net zero
+        ["agentmemory-watchdog-interval", "5"], // unchanged
+        ["agentmemory-autostart", false], // default-off toggled off again
+        ["agentmemory-watchdog-interval", "30"], // genuine change
+        ["agentmemory-autostart", true], // genuine flip on
+      ],
+      getFlag,
+    );
+    expect(deltas).toEqual([
+      ["agentmemory-watchdog-interval", "30"],
+      ["agentmemory-autostart", true],
+    ]);
   });
 });
 

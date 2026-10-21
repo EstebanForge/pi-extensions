@@ -5,9 +5,9 @@
 // is no setFlag on ExtensionAPI, and `pi config set <flag> <value>` is NOT a
 // real command (pi config only accepts -l/--approve/--no-approve). So we own a
 // tiny settings file at <piDir>/pi-agentmemory.json mapping flag names to
-// booleans. The factory reads it at load to seed each registerFlag default; the
-// /agentmemory toggle writes through to it before reloading. `piDir` =
-// process.env.PI_CODING_AGENT_DIR || ~/.pi/agent.
+// booleans or strings. The factory reads it at load to seed each
+// registerFlag default; the /agentmemory modal writes through to it before
+// reloading. `piDir` = process.env.PI_CODING_AGENT_DIR || ~/.pi/agent.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -56,7 +56,7 @@ export function loadFlagSettings(): FlagMap {
  * Persist a single flag into the settings file, merging into whatever is
  * already on disk. mkdir recursive + writeFileSync. Returns true on success.
  */
-export function saveFlagSetting(name: string, value: boolean): boolean {
+export function saveFlagSetting(name: string, value: boolean | string): boolean {
   const dir = getPiDir();
   const path = join(dir, SETTINGS_FILENAME);
   try {

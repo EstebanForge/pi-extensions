@@ -85,6 +85,65 @@ export function parseWatchdogIntervalMinutes(raw: string | undefined): number | 
   return DEFAULT_WATCHDOG_MINUTES;
 }
 
+// Presets the /agentmemory settings modal cycles through for the interval.
+// Arbitrary values ("0.5") still work via the settings file; the modal just
+// snaps to a preset on the first Enter.
+export const WATCHDOG_INTERVAL_CHOICES = ["5", "10", "30", "off"] as const;
+
+export interface SettingsFlagMeta {
+  name: string;
+  label: string;
+  description: string;
+}
+
+// Pure so the modal shape stays testable without a TUI: one on/off row per
+// flag, then the interval cycler showing the live value.
+export function buildSettingsRows(
+  flags: ReadonlyArray<SettingsFlagMeta>,
+  flagValue: (name: string) => boolean | string | undefined,
+  interval: string,
+): DialogRow[] {
+  const rows: DialogRow[] = flags.map((f) => ({
+    id: f.name,
+    label: f.label,
+    description: f.description,
+    currentValue: flagValue(f.name) === true ? "on" : "off",
+    values: ["on", "off"],
+  }));
+  rows.push({
+    id: WATCHDOG_INTERVAL_FLAG,
+    label: "Watchdog interval",
+    description: `Minutes between background health checks: ${WATCHDOG_INTERVAL_CHOICES.join(" / ")}.`,
+    currentValue: interval,
+    values: [...WATCHDOG_INTERVAL_CHOICES],
+  });
+  return rows;
+}
+
+// Menu rows carry display strings; stage booleans for on/off rows and the
+// raw string for everything else (the interval presets).
+export function stageMenuValue(value: string): boolean | string {
+  if (value === "on") return true;
+  if (value === "off") return false;
+  return value;
+}
+
+// Net-zero staged flips are dropped so a flag cycled within one modal visit
+// writes nothing. Booleans compare against the on/off view (unset counts as
+// off) so a default-off flag left off persists nothing.
+export function selectStagedDeltas(
+  pending: ReadonlyArray<[string, boolean | string]>,
+  getFlag: (name: string) => boolean | string | undefined,
+): Array<[string, boolean | string]> {
+  const deltas: Array<[string, boolean | string]> = [];
+  for (const [name, val] of pending) {
+    const current = typeof val === "boolean" ? getFlag(name) === true : getFlag(name);
+    if (current === val) continue;
+    deltas.push([name, val]);
+  }
+  return deltas;
+}
+
 // Module scope so the timer outlives one factory instance: a /reload's fresh
 // session_start must be able to clear the previous instance's tick.
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
@@ -496,14 +555,8 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const pending = new Map<string, boolean>();
-      const rows: DialogRow[] = FLAGS.map((f) => ({
-        id: f.name,
-        label: f.label,
-        description: f.description,
-        currentValue: pi.getFlag(f.name) === true ? "on" : "off",
-        values: ["on", "off"],
-      }));
+      const pending = new Map<string, boolean | string>();
+      const rows = buildSettingsRows(FLAGS, (n) => pi.getFlag(n), watchdogIntervalSetting());
 
       const healthText = health
         ? `${health.status || health.health?.status || "unknown"}${health.version ? ` v${health.version}` : ""}`
@@ -522,7 +575,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
               onChange: (id, value) => {
                 // Stage the change; persist + reload on close, not here,
                 // so the user can flip several flags per visit.
-                pending.set(id, value === "on");
+                pending.set(id, stageMenuValue(value));
               },
             },
             () => done(),
@@ -541,14 +594,9 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
 
       // Dialog closed. ctx is still valid here (reload is the only
       // staleness trigger, and we haven't called it yet). Drop net-zero
-      // flips (a flag toggled on then off stages but changes nothing),
+      // flips (a flag cycled on then off stages but changes nothing),
       // then persist genuine deltas and reload once if any moved.
-      const deltas: Array<[string, boolean]> = [];
-      for (const [name, val] of pending) {
-        const currentlyOn = pi.getFlag(name) === true;
-        if (currentlyOn === val) continue; // net-zero: toggled back to current
-        deltas.push([name, val]);
-      }
+      const deltas = selectStagedDeltas([...pending], (n) => pi.getFlag(n));
       if (deltas.length === 0) return;
 
       const failures: string[] = [];
