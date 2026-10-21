@@ -31,6 +31,7 @@ import {
   countDiffChanges,
   countGrepMatches,
   firstNonEmptyLine,
+  tidyExpandHint,
   tidyIcon,
 } from "./tidy-cards.js";
 import {
@@ -433,10 +434,6 @@ function captureExistingWriteContent(
     existed: existing.exists,
     content: existing.content,
   };
-}
-
-function formatExpandHint(theme: RenderTheme): string {
-  return theme.fg("muted", " • Ctrl+O to expand");
 }
 
 function formatTruncationHint(remaining: number, expanded: boolean, theme: RenderTheme): string {
@@ -1168,7 +1165,7 @@ function renderSearchResult(
       config.showTruncationHints,
       pluralLabel,
     );
-    summary += formatExpandHint(theme);
+    summary += tidyExpandHint(theme);
     summary += formatRtkSummarySuffix({ details, config, theme });
     return textResult(summary);
   }
@@ -1278,7 +1275,7 @@ export function renderMcpResult(
       "muted",
       `↳ ${lineCount} ${pluralize(lineCount, "line")} returned`,
     );
-    summary += formatExpandHint(theme);
+    summary += tidyExpandHint(theme);
     if (config.showTruncationHints && truncation.truncated) {
       summary += theme.fg("warning", " • truncated");
     }
@@ -1429,7 +1426,7 @@ function renderReadDisplayResult(
       theme,
       config.showTruncationHints,
     );
-    summary += formatExpandHint(theme);
+    summary += tidyExpandHint(theme);
     summary += formatRtkSummarySuffix({ details: result.details, config, theme });
     return textResult(summary);
   }
@@ -1697,20 +1694,20 @@ function tidyCountSummary(
     if (files > 0) {
       body += theme.fg("success", ` in ${files} ${pluralize(files, "file")}`);
     }
-    return tidyResultLine(theme, body + suffix);
+    return tidyResultLine(theme, body + tidyExpandHint(theme) + suffix);
   }
 
   if (toolName === "read") {
     const lines = compactOutputLines(splitLines(rawOutput), { expanded: true });
     return tidyResultLine(
       theme,
-      theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`) + suffix,
+      theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`) + tidyExpandHint(theme) + suffix,
     );
   }
 
   const count = countNonEmptyLines(splitLines(rawOutput));
   const label = toolName === "find" ? pluralize(count, "result") : pluralize(count, "entry", "entries");
-  return tidyResultLine(theme, theme.fg("success", `${count} ${label}`) + suffix);
+  return tidyResultLine(theme, theme.fg("success", `${count} ${label}`) + tidyExpandHint(theme) + suffix);
 }
 
 function tidyBashSummary(result: ToolRenderInput, config: ToolDisplayConfig, theme: RenderTheme): string {
@@ -1720,7 +1717,7 @@ function tidyBashSummary(result: ToolRenderInput, config: ToolDisplayConfig, the
   }
   return tidyResultLine(
     theme,
-    theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`),
+    theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`) + tidyExpandHint(theme),
   );
 }
 
@@ -1730,12 +1727,12 @@ function tidyEditSummary(result: ToolRenderInput, theme: RenderTheme): string {
     return tidyResultLine(theme, theme.fg("muted", "edited"));
   }
   const { added, removed } = countDiffChanges(diff);
-  return tidyResultLine(theme, `${theme.fg("success", `+${added}`)}${theme.fg("error", `/-${removed}`)}`);
+  return tidyResultLine(theme, `${theme.fg("success", `+${added}`)}${theme.fg("error", `/-${removed}`)}${tidyExpandHint(theme)}`);
 }
 
 function tidyWriteSummary(args: Record<string, unknown> | undefined, theme: RenderTheme): string {
   const lineCount = countWriteContentLines(getToolContentArg(args));
-  return tidyResultLine(theme, theme.fg("success", `${lineCount} ${pluralize(lineCount, "line")}`));
+  return tidyResultLine(theme, theme.fg("success", `${lineCount} ${pluralize(lineCount, "line")}`) + tidyExpandHint(theme));
 }
 
 function renderTidyResult(
@@ -2031,7 +2028,7 @@ export function getBuiltInDisplayRenderers(
             theme,
             config.showTruncationHints,
           );
-          summary += formatExpandHint(theme);
+          summary += tidyExpandHint(theme);
           if (config.showTruncationHints) {
             summary += formatBashTruncationHints(details, theme);
           }

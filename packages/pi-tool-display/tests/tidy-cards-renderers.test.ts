@@ -150,14 +150,14 @@ test("tidy cards are the default: read renders an icon call line and a collapsed
 	const read = findTool(tools, "read");
 
 	assert.equal(renderToolCall(read, { path: "src/auth.ts" }), "📖 read src/auth.ts");
-	assert.equal(renderToolResult(read, { text: "alpha\nbeta\n" }), "  → 2 lines");
+	assert.equal(renderToolResult(read, { text: "alpha\nbeta\n" }), "  → 2 lines • Ctrl+O to expand");
 });
 
 test("tidy read output mode overrides stay collapsed and expansion shows the full output", async () => {
 	const tools = await registerWith(buildConfig({ readOutputMode: "hidden" }));
 	const read = findTool(tools, "read");
 
-	assert.equal(renderToolResult(read, { text: "alpha\nbeta\n" }), "  → 2 lines");
+	assert.equal(renderToolResult(read, { text: "alpha\nbeta\n" }), "  → 2 lines • Ctrl+O to expand");
 	assert.equal(renderToolResult(read, { text: "alpha\nbeta\n", expanded: true }), "alpha\nbeta");
 });
 
@@ -177,14 +177,14 @@ test("tidy grep and find summarize counts, files, and results", async () => {
 	assert.equal(renderToolCall(grep, { pattern: "verifyToken", path: "src" }), "📖 grep /verifyToken/ in src");
 	assert.equal(
 		renderToolResult(grep, { text: "a.ts:1:alpha\nb.ts:2:beta\na.ts:3:gamma\n" }),
-		"  → 3 matches in 2 files",
+		"  → 3 matches in 2 files • Ctrl+O to expand",
 	);
-	assert.equal(renderToolResult(find, { text: "a.txt\nb.txt\n" }), "  → 2 results");
+	assert.equal(renderToolResult(find, { text: "a.txt\nb.txt\n" }), "  → 2 results • Ctrl+O to expand");
 });
 
 test("tidy ls keeps entry counts", async () => {
 	const tools = await registerWith(buildConfig({}));
-	assert.equal(renderToolResult(findTool(tools, "ls"), { text: "a.txt\nb.txt\n" }), "  → 2 entries");
+	assert.equal(renderToolResult(findTool(tools, "ls"), { text: "a.txt\nb.txt\n" }), "  → 2 entries • Ctrl+O to expand");
 });
 
 test("tidy bash keeps the shell call line and collapses output to a summary", async () => {
@@ -192,7 +192,7 @@ test("tidy bash keeps the shell call line and collapses output to a summary", as
 	const bash = findTool(tools, "bash");
 
 	assert.equal(renderToolCall(bash, { command: "npm test" }), "$ npm test");
-	assert.equal(renderToolResult(bash, { text: "alpha\nbeta\ngamma\n" }), "  → 3 lines");
+	assert.equal(renderToolResult(bash, { text: "alpha\nbeta\ngamma\n" }), "  → 3 lines • Ctrl+O to expand");
 	assert.equal(renderToolResult(bash, { text: "" }), "  → (no output)");
 	assert.equal(renderToolResult(bash, { text: "alpha\nbeta\ngamma\n", expanded: true }), "alpha\nbeta\ngamma");
 });
@@ -222,7 +222,7 @@ test("tidy edit shows a +/- delta when collapsed and the diff when expanded", as
 
 	assert.equal(
 		renderToolResult(edit, { text: "ok\n", details: { diff: "+b\n-a\n context\n" } }, args),
-		"  → +1/-1",
+		"  → +1/-1 • Ctrl+O to expand",
 	);
 
 	const expanded = renderToolResult(
@@ -231,7 +231,7 @@ test("tidy edit shows a +/- delta when collapsed and the diff when expanded", as
 		args,
 	);
 	assert.match(expanded, /b/);
-	assert.notEqual(expanded, "  → +1/-1");
+	assert.notEqual(expanded, "  → +1/-1 • Ctrl+O to expand");
 });
 
 test("tidy edit errors and partial states keep the classic paths", async () => {
@@ -255,7 +255,7 @@ test("tidy write summarizes the written line count", async () => {
 	const args = { path: "src/auth.ts", content: "alpha\nbeta\n" };
 
 	assert.match(renderToolCall(write, args), /^✏️ write src\/auth\.ts/);
-	assert.equal(renderToolResult(write, { text: "ok\n" }, args), "  → 2 lines");
+	assert.equal(renderToolResult(write, { text: "ok\n" }, args), "  → 2 lines • Ctrl+O to expand");
 });
 
 test("tidy expanded output respects expandedPreviewMaxLines", async () => {
@@ -275,7 +275,7 @@ test("tidy bash keeps truncation hints on collapsed and expanded results", async
 
 	assert.equal(
 		renderToolResult(bash, { text: "alpha\n", details }),
-		"  → 1 line\n(output truncated • full output: /tmp/out.log)",
+		"  → 1 line • Ctrl+O to expand\n(output truncated • full output: /tmp/out.log)",
 	);
 	assert.equal(
 		renderToolResult(bash, { text: "alpha\nbeta\n", details, expanded: true }),
@@ -297,6 +297,26 @@ test("tidy error summaries never leak raw ANSI resets from tool output", async (
 	const rendered = renderToolResult(bash, { text: "\u001b[0mboom\n", isError: true });
 	assert.ok(rendered.startsWith("  → failed: "));
 	assert.ok(!rendered.includes("\u001b[0m"), "raw reset must be sanitized before embedding");
+});
+
+test("collapsed summaries carry the hint in muted color; empty, failed, and running states do not", async () => {
+	const tools = await registerWith(buildConfig({}));
+	const bash = findTool(tools, "bash");
+	const read = findTool(tools, "read");
+
+	const mutedRendered = normalizeRenderedText(
+		bash.renderResult!(
+			{ content: [{ type: "text", text: "alpha\n" }], details: {}, isError: false },
+			{ isPartial: false, expanded: false },
+			{ fg: (color: string, value: string) => `<${color}>${value}</${color}>`, bold: (value: string) => value },
+			undefined,
+		),
+	);
+	assert.match(mutedRendered, /<muted> • Ctrl\+O to expand<\/muted>/);
+
+	assert.equal(renderToolResult(bash, { text: "" }), "  → (no output)");
+	assert.equal(renderToolResult(bash, { text: "boom\n", isError: true }), "  → failed: boom");
+	assert.equal(renderToolResult(read, { text: "", isPartial: true }), "  → running…");
 });
 
 test("tidyCards=false restores the classic rendering exactly", async () => {

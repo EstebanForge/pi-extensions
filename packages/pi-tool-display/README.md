@@ -22,7 +22,7 @@ Built-in tool calls render as **tidy cards**: a one-line header with an icon, to
 
 ## Features
 
-- **Tidy tool cards (on by default)** for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write`: icon + target header, one-line result summary, collapsed by default, and full output on `Ctrl+O`
+- **Tidy tool cards (on by default)** for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write`: icon + target header, one-line result summary with a muted `Ctrl+O to expand` hint, collapsed by default, and full output on `Ctrl+O`
 - **Compact built-in tool rendering** for `read`, `grep`, `find`, `ls`, `bash`, `edit`, and `write` when tidy cards are off
 - **MCP-aware rendering** with hidden, summary, and preview modes
 - **Opt-in custom tool overrides** for noisy extension tools, defaulting to generic rendering unless `kind: "mcp"` is selected
@@ -289,14 +289,16 @@ With `tidyCards` on (the default), owned built-in tools render as two-line cards
 
 ```text
 📖 read src/auth.ts
-  → 8 lines
-⚡ (bash keeps its native `$ command` line with the live spinner)
-  → 3 lines
+  → 8 lines • Ctrl+O to expand
+⚡ make check
+  → 3 lines • Ctrl+O to expand
 ✏️ edit src/auth.ts (1 line)
-  → +1/-1
+  → +1/-1 • Ctrl+O to expand
 ```
 
 The first line is the icon, tool name, and argument target; the second line is a short result summary colored by outcome (green counts, red failures, `+adds/-dels` for edits). `bash` keeps its native `$ command` header with the live spinner, so only its result line becomes a card. Cards are collapsed by default; `Ctrl+O` expands the card in place — reads, searches, and bash show the full output, edits and writes show the full diff renderer. Errors collapse to `→ failed: <first error line>` and expand to the full error output.
+
+Every collapsed summary ends with a muted `• Ctrl+O to expand` hint so the expansion key is visible where the collapse happens; states with nothing to show behind them (running, failed, empty output, no diff) stay clean. Long or multiline `bash` commands collapse to their first line (capped at 160 characters) with a muted `(+N more lines • Ctrl+O to expand)` suffix, and `Ctrl+O` shows the full command again.
 
 Tidy mode replaces the collapsed presentation only: output modes, bash live output while a command streams, pending edit/write previews, RTK and truncation hints, and MCP/custom tool rendering all still apply. Setting `tidyCards: false` restores the classic header + output-mode rendering exactly; no other feature changes. Unlike pi-tidy-tools, no extra model-facing parameter is injected — the card target comes from the tool's own arguments.
 

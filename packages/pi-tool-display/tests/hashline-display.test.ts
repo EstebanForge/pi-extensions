@@ -115,7 +115,7 @@ test("replace result renders diff counts, noop, errors, partial, batch, and warn
 	const renderers = getHashlineDisplayRenderers("replace", () => buildConfig());
 	assert.ok(renderers);
 
-	assert.equal(resultLine(renderers, { ...textResult("ok"), details: EDIT_DIFF_DETAILS } as never), "→ +2/-1");
+	assert.equal(resultLine(renderers, { ...textResult("ok"), details: EDIT_DIFF_DETAILS } as never), "→ +2/-1 • Ctrl+O to expand");
 	assert.equal(
 		resultLine(renderers, { ...textResult("ok"), details: { classification: "noop", diff: "" } } as never),
 		"→ no changes",
@@ -130,14 +130,14 @@ test("replace result renders diff counts, noop, errors, partial, batch, and warn
 			renderers,
 			{ ...textResult("ok"), details: { ...EDIT_DIFF_DETAILS, batch: { id: 4, size: 3, last: false } } } as never,
 		),
-		"→ +2/-1 • batch 4 queued (3 edits)",
+		"→ +2/-1 • batch 4 queued (3 edits) • Ctrl+O to expand",
 	);
 	assert.equal(
 		resultLine(
 			renderers,
 			{ ...textResult("ok"), details: { ...EDIT_DIFF_DETAILS, warnings: ["w1", "w2"], hints: ["h1"] } } as never,
 		),
-		"→ +2/-1 • 2 warnings • 1 hint",
+		"→ +2/-1 • 2 warnings • 1 hint • Ctrl+O to expand",
 	);
 	assert.equal(
 		resultLine(renderers, { ...textResult("ok"), details: { diff: "" } } as never),
@@ -206,7 +206,7 @@ test("anchor_grep call and result summarize like the grep card", () => {
 	);
 	assert.equal(
 		resultLine(renderers, textResult("src/a.ts:1: foo\nsrc/b.ts:2: foo\nsrc/b.ts:3: foo\n")),
-		"→ 3 matches in 2 files",
+		"→ 3 matches in 2 files • Ctrl+O to expand",
 	);
 	assert.equal(resultLine(renderers, textResult("")), "→ (no output)");
 });

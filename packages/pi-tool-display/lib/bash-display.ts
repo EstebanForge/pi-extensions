@@ -1,5 +1,6 @@
 import { Text } from "@earendil-works/pi-tui";
 import { registerCleanup, registerTimer } from "./disposable.js";
+import { pluralize } from "./render-utils.js";
 
 const BASH_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const BASH_SPINNER_INTERVAL_MS = 200;
@@ -36,6 +37,7 @@ interface BashCallRenderContextLike {
 	lastComponent?: unknown;
 	state?: unknown;
 	toolCallId?: string;
+	expanded?: boolean;
 }
 
 const spinnerStatesByToolCallId = new Map<string, BashSpinnerState>();
@@ -136,13 +138,32 @@ function buildCommandDisplay(args: BashCallArgs): string {
 	return prefix ? `${prefix} ${command}` : command;
 }
 
+// renderCall never sees the pane width, so the cap is fixed instead of width-based.
+const COMMAND_PREVIEW_MAX_CHARS = 160;
+
+function collapseCommandDisplay(commandDisplay: string, theme: BashCallRenderTheme): string {
+	const lines = commandDisplay.split("\n");
+	const firstLine = lines[0] ?? "";
+	const cut = firstLine.length > COMMAND_PREVIEW_MAX_CHARS;
+	const preview = cut ? `${firstLine.slice(0, COMMAND_PREVIEW_MAX_CHARS)}…` : firstLine;
+	const hiddenLines = lines.length - 1 + (cut ? 1 : 0);
+	const suffix =
+		hiddenLines > 0
+			? theme.fg("muted", ` (+${hiddenLines} more ${pluralize(hiddenLines, "line")} • Ctrl+O to expand)`)
+			: "";
+	return `${preview}${suffix}`;
+}
+
 function buildBashCallText(
 	args: BashCallArgs,
 	theme: BashCallRenderTheme,
 	spinnerFrame?: string,
 	elapsedMs?: number,
+	expanded?: boolean,
 ): string {
-	const commandDisplay = buildCommandDisplay(args);
+	const commandDisplay = expanded
+		? buildCommandDisplay(args)
+		: collapseCommandDisplay(buildCommandDisplay(args), theme);
 	const shellSuffix =
 		typeof args.shellPath === "string" &&
 		args.shellPath.trim().length > 0 &&
@@ -174,7 +195,7 @@ export function renderBashCall(
 
 	if (!shouldSpin) {
 		stopSpinner(toolCallId, spinnerState);
-		text.setText(buildBashCallText(args, theme));
+		text.setText(buildBashCallText(args, theme, undefined, undefined, context.expanded === true));
 		return text;
 	}
 
@@ -189,6 +210,7 @@ export function renderBashCall(
 						theme,
 						BASH_SPINNER_FRAMES[spinnerState.frameIndex],
 						Date.now() - (spinnerState.startedAt ?? Date.now()),
+						context.expanded === true,
 					),
 				);
 				context.invalidate?.();
@@ -207,6 +229,6 @@ export function renderBashCall(
 	const elapsedMs = spinnerState?.startedAt !== undefined
 		? Date.now() - spinnerState.startedAt
 		: undefined;
-	text.setText(buildBashCallText(args, theme, spinnerFrame, elapsedMs));
+	text.setText(buildBashCallText(args, theme, spinnerFrame, elapsedMs, context.expanded === true));
 	return text;
 }

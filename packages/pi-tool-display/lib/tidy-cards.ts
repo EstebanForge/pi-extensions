@@ -104,6 +104,10 @@ export function buildTidyHeaderLine(
 	return detail ? `${header} ${theme.fg("accent", detail)}` : header;
 }
 
+export function tidyExpandHint(theme: Pick<TidyTheme, "fg">): string {
+	return theme.fg("muted", " • Ctrl+O to expand");
+}
+
 export interface GrepMatchCounts {
 	matches: number;
 	files: number;

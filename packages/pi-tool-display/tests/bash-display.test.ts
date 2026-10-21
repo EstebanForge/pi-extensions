@@ -18,6 +18,7 @@ interface BashCallRenderContextLike {
 	invalidate(): void;
 	lastComponent?: unknown;
 	state?: unknown;
+	expanded?: boolean;
 }
 
 /** Pass-through theme that returns text unchanged */
@@ -121,13 +122,46 @@ test("renderBashCall handles very long commands without crashing", () => {
 	assert.ok(output.length > 10, "output should have content");
 });
 
-test("renderBashCall displays multiline command", () => {
+test("renderBashCall collapses a multiline command to its first line with an expand hint", () => {
 	const text = renderBashCall(
-		{ command: "echo hello\necho world" },
+		{ command: "echo hello\necho world\necho again" },
 		createPassThroughTheme(),
 		makeContext(),
 	);
+	assert.equal(renderedText(text), "$ echo hello (+2 more lines • Ctrl+O to expand)");
+});
+
+test("renderBashCall shows the full multiline command when the context is expanded", () => {
+	const text = renderBashCall(
+		{ command: "echo hello\necho world" },
+		createPassThroughTheme(),
+		makeContext({ expanded: true }),
+	);
 	assert.ok(renderedText(text).includes("echo hello\necho world"));
+});
+
+test("renderBashCall caps an overlong single-line command and hints expansion", () => {
+	const longCmd = "node " + "a".repeat(200);
+	const text = renderBashCall({ command: longCmd }, createPassThroughTheme(), makeContext());
+	// Wide render so the 160-char preview does not wrap and split the assertion targets
+	const output = text.render(400).map((line) => line.trimEnd()).join("\n").trim();
+	assert.ok(output.startsWith("$ node "), "collapsed preview must keep the command prefix");
+	assert.ok(output.includes("…"), "cut preview must end with an ellipsis");
+	assert.ok(output.includes("(+1 more line • Ctrl+O to expand)"));
+	assert.ok(!output.includes("a".repeat(161)), "hidden tail must not render");
+});
+
+test("renderBashCall colors the collapsed-command expand hint with the muted theme color", () => {
+	const text = renderBashCall(
+		{ command: "echo hello\necho world" },
+		createAnsiTheme(),
+		makeContext(),
+	);
+	const rendered = renderedText(text);
+	assert.ok(
+		rendered.includes("\x1b[90m (+1 more line • Ctrl+O to expand)\x1b[0m"),
+		`expected muted hint in: ${JSON.stringify(rendered)}`,
+	);
 });
 
 test("renderBashCall appends timeout suffix when timeout is provided", () => {

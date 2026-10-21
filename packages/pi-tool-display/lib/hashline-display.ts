@@ -5,6 +5,7 @@ import {
   countDiffChanges,
   countGrepMatches,
   firstNonEmptyLine,
+  tidyExpandHint,
   tidyIcon,
   type TidyTheme,
 } from "./tidy-cards.js";
@@ -243,8 +244,10 @@ function renderEditFamilyResult(
   } else {
     body = theme.fg("muted", "applied");
   }
+  // Noop and applied cards expand to an empty diff body, so they get no hint.
+  const expandHint = diff.trim() ? tidyExpandHint(theme) : "";
   return textResult(
-    tidyResultLine(theme, body + getBatchSuffix(details, theme) + getWarningsSuffix(details, theme)),
+    tidyResultLine(theme, body + getBatchSuffix(details, theme) + getWarningsSuffix(details, theme) + expandHint),
   );
 }
 
@@ -289,7 +292,7 @@ function renderGrepFamilyResult(
   } else {
     body = theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`);
   }
-  return textResult(tidyResultLine(theme, body));
+  return textResult(tidyResultLine(theme, body + tidyExpandHint(theme)));
 }
 
 export function getHashlineDisplayRenderers(
