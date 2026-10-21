@@ -303,6 +303,7 @@ test("collapsed summaries carry the hint in muted color; empty, failed, and runn
 	const tools = await registerWith(buildConfig({}));
 	const bash = findTool(tools, "bash");
 	const read = findTool(tools, "read");
+	const grep = findTool(tools, "grep");
 
 	const mutedRendered = normalizeRenderedText(
 		bash.renderResult!(
@@ -317,6 +318,8 @@ test("collapsed summaries carry the hint in muted color; empty, failed, and runn
 	assert.equal(renderToolResult(bash, { text: "" }), "  → (no output)");
 	assert.equal(renderToolResult(bash, { text: "boom\n", isError: true }), "  → failed: boom");
 	assert.equal(renderToolResult(read, { text: "", isPartial: true }), "  → running…");
+	assert.equal(renderToolResult(read, { text: "" }), "  → 0 lines");
+	assert.equal(renderToolResult(grep, { text: "" }), "  → 0 matches");
 });
 
 test("tidyCards=false restores the classic rendering exactly", async () => {

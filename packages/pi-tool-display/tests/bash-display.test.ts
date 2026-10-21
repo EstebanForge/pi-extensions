@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { Text } from "@earendil-works/pi-tui";
 import { renderBashCall } from "../lib/bash-display";
 
@@ -162,6 +162,40 @@ test("renderBashCall colors the collapsed-command expand hint with the muted the
 		rendered.includes("\x1b[90m (+1 more line • Ctrl+O to expand)\x1b[0m"),
 		`expected muted hint in: ${JSON.stringify(rendered)}`,
 	);
+});
+
+test("renderBashCall does not count a trailing newline as a hidden line", () => {
+	const text = renderBashCall({ command: "npm test\n" }, createPassThroughTheme(), makeContext());
+	assert.equal(renderedText(text), "$ npm test");
+});
+
+test("renderBashCall counts CRLF lines without leaking carriage returns", () => {
+	const text = renderBashCall({ command: "echo a\r\necho b" }, createPassThroughTheme(), makeContext());
+	assert.equal(renderedText(text), "$ echo a (+1 more line • Ctrl+O to expand)");
+});
+
+test("renderBashCall keeps an expanded running command expanded across spinner ticks", () => {
+	vi.useFakeTimers();
+	try {
+		const state: Record<string, unknown> = {};
+		const text = renderBashCall(
+			{ command: "echo hello\necho world" },
+			createPassThroughTheme(),
+			makeContext({ executionStarted: true, isPartial: true, state }),
+		);
+		renderBashCall(
+			{ command: "echo hello\necho world" },
+			createPassThroughTheme(),
+			makeContext({ executionStarted: true, isPartial: true, state, expanded: true, lastComponent: text }),
+		);
+		vi.advanceTimersByTime(200);
+		assert.ok(
+			renderedText(text).includes("echo hello\necho world"),
+			"expanded view must survive a spinner tick",
+		);
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 test("renderBashCall appends timeout suffix when timeout is provided", () => {

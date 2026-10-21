@@ -1694,20 +1694,26 @@ function tidyCountSummary(
     if (files > 0) {
       body += theme.fg("success", ` in ${files} ${pluralize(files, "file")}`);
     }
-    return tidyResultLine(theme, body + tidyExpandHint(theme) + suffix);
+    // Zero counts leave nothing behind the card, so they get no hint.
+    return tidyResultLine(theme, body + (matches > 0 ? tidyExpandHint(theme) : "") + suffix);
   }
 
   if (toolName === "read") {
     const lines = compactOutputLines(splitLines(rawOutput), { expanded: true });
     return tidyResultLine(
       theme,
-      theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`) + tidyExpandHint(theme) + suffix,
+      theme.fg("success", `${lines.length} ${pluralize(lines.length, "line")}`) +
+        (lines.length > 0 ? tidyExpandHint(theme) : "") +
+        suffix,
     );
   }
 
   const count = countNonEmptyLines(splitLines(rawOutput));
   const label = toolName === "find" ? pluralize(count, "result") : pluralize(count, "entry", "entries");
-  return tidyResultLine(theme, theme.fg("success", `${count} ${label}`) + tidyExpandHint(theme) + suffix);
+  return tidyResultLine(
+    theme,
+    theme.fg("success", `${count} ${label}`) + (count > 0 ? tidyExpandHint(theme) : "") + suffix,
+  );
 }
 
 function tidyBashSummary(result: ToolRenderInput, config: ToolDisplayConfig, theme: RenderTheme): string {

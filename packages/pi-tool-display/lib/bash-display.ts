@@ -23,6 +23,7 @@ interface BashSpinnerState {
 	frameIndex: number;
 	startedAt?: number;
 	timer?: ReturnType<typeof setInterval>;
+	expanded?: boolean;
 }
 
 interface BashSpinnerStateCarrier {
@@ -142,7 +143,9 @@ function buildCommandDisplay(args: BashCallArgs): string {
 const COMMAND_PREVIEW_MAX_CHARS = 160;
 
 function collapseCommandDisplay(commandDisplay: string, theme: BashCallRenderTheme): string {
-	const lines = commandDisplay.split("\n");
+	// Trailing newlines and CRLF endings would otherwise inflate (+N) or leak a carriage return.
+	const normalized = commandDisplay.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+	const lines = normalized.split("\n");
 	const firstLine = lines[0] ?? "";
 	const cut = firstLine.length > COMMAND_PREVIEW_MAX_CHARS;
 	const preview = cut ? `${firstLine.slice(0, COMMAND_PREVIEW_MAX_CHARS)}…` : firstLine;
@@ -201,6 +204,9 @@ export function renderBashCall(
 
 	if (spinnerState) {
 		spinnerState.startedAt ??= Date.now();
+		// The timer closure outlives the render that created it, so expansion state
+		// must live on the spinner state, not on the captured context.
+		spinnerState.expanded = context.expanded === true;
 		if (!spinnerState.timer && typeof context.invalidate === "function") {
 			const timer = setInterval(() => {
 				spinnerState.frameIndex = (spinnerState.frameIndex + 1) % BASH_SPINNER_FRAMES.length;
@@ -210,7 +216,7 @@ export function renderBashCall(
 						theme,
 						BASH_SPINNER_FRAMES[spinnerState.frameIndex],
 						Date.now() - (spinnerState.startedAt ?? Date.now()),
-						context.expanded === true,
+						spinnerState.expanded === true,
 					),
 				);
 				context.invalidate?.();
