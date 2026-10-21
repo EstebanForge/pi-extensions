@@ -803,6 +803,64 @@ describe("background health watchdog", () => {
     expect(setStatus).toHaveBeenLastCalledWith("agentmemory", "🧠");
   });
 
+  it("honors a custom 10-minute interval", async () => {
+    const { pi, handlers, setStatus } = makeFakePi({
+      ...START,
+      "agentmemory-watchdog-interval": "10",
+    });
+    healthFail = false;
+    livezUp = true;
+    stubProbes();
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    const before = healthCalls();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(healthCalls()).toBe(before);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(healthCalls()).toBeGreaterThan(before);
+  });
+
+  it("a stale slow probe never overwrites a newer healthy status", async () => {
+    const { pi, handlers, setStatus } = makeFakePi(START);
+    let healthN = 0;
+    let staleSettled = false;
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) => {
+        const u = String(url);
+        if (u.endsWith("/agentmemory/health")) {
+          healthN++;
+          if (healthN === 2) {
+            // Watchdog tick probe hangs, then fails after a newer probe won.
+            await probeGate;
+            staleSettled = true;
+            throw new Error("timeout");
+          }
+          return new Response(JSON.stringify({ status: "healthy" }), { status: 200 });
+        }
+        if (u.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    expect(setStatus).toHaveBeenLastCalledWith("agentmemory", "🧠");
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await handlers.before_agent_start(
+      { systemPromptOptions: { cwd: "/tmp" }, messageType: "user", prompt: "", systemPrompt: "" },
+      { ui: { setStatus } },
+    );
+    await vi.waitFor(() => expect(setStatus).toHaveBeenLastCalledWith("agentmemory", "🧠"));
+    releaseProbe();
+    await vi.waitFor(() => expect(staleSettled).toBe(true));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(setStatus).toHaveBeenLastCalledWith("agentmemory", "🧠"));
+  });
+
   it("does not poll when agentmemory-watchdog is false", async () => {
     const { pi, handlers, setStatus } = makeFakePi({
       ...START,

@@ -81,7 +81,7 @@ Two flags control this (edit in `pi config`):
 | `agentmemory-autostart` | `false` | Master switch. `true` enables auto-start; when off the extension only health-checks and reports if the server is down. |
 | `agentmemory-npx-fallback` | `true` | If `agentmemory` is not on PATH, start it via `npx`. `false` starts only a globally-installed server and otherwise reports that it is not installed. Use this if `npx` is too slow for you. |
 | `agentmemory-watchdog` | `true` | Probe the server in the background so the status chip recovers on its own after a transient blip, instead of staying on 🧠 × until the next agent turn. |
-| `agentmemory-watchdog-interval` | `"5"` | Watchdog interval in minutes (`"10"`, `"0.5"` = 30 s), or `"off"` to disable. Unset or invalid values fall back to 5; only an explicit `"off"`/`0` disables. Not in the `/agentmemory` toggle menu (booleans only) — set it as a launch flag or hand-edit `pi-agentmemory.json`. |
+| `agentmemory-watchdog-interval` | `"5"` | Watchdog interval in minutes (`"10"`, `"0.5"` = 30 s), or `"off"` to disable. Unset or invalid values fall back to 5; only `"off"`/zero/negative disables. Not in the `/agentmemory` toggle menu (booleans only) — set it as a launch flag or hand-edit `pi-agentmemory.json`. |
 
 **Security note:** `npx -y @agentmemory/agentmemory@latest` downloads and runs the latest published package (unpinned) on first use. This is the official no-install path, but it is remote code execution. Install the CLI globally or set `agentmemory-npx-fallback=false` if that is not acceptable in your environment.
 

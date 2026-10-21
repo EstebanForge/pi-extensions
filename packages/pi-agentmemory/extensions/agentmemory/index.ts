@@ -89,6 +89,11 @@ export function parseWatchdogIntervalMinutes(raw: string | undefined): number | 
 // session_start must be able to clear the previous instance's tick.
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
+// Monotonic probe sequence shared across factory instances: a probe that
+// resolves after a newer one (slow watchdog tick vs fast turn-start check)
+// must not overwrite fresher status.
+let statusProbeSeq = 0;
+
 function stopWatchdog(): void {
   if (watchdogTimer !== null) {
     clearInterval(watchdogTimer);
@@ -352,6 +357,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
   async function refreshStatus(ctx: {
     ui: { setStatus: (key: string, text: string) => void };
   }) {
+    const seq = ++statusProbeSeq;
     const { baseUrl, secret } = ensureOpts();
     const headers: Record<string, string> = {};
     if (secret) headers.Authorization = `Bearer ${secret}`;
@@ -381,7 +387,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     }
     const label =
       cls === "healthy" ? "🧠" : cls === "degraded" ? "🧠 ~" : "🧠 ×";
-    ctx.ui.setStatus("agentmemory", label);
+    if (seq === statusProbeSeq) ctx.ui.setStatus("agentmemory", label);
   }
 
   // Build the /agentmemory status panel. Read-only snapshot of server
