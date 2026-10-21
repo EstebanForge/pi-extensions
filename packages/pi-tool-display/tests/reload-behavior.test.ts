@@ -1117,7 +1117,7 @@ test("14: open settings modal onClose callback can be invoked multiple times", (
   assert.ok(true, "onClose can be called multiple times safely");
 });
 
-test("14: extension re-initialization does not leave stale modal references", () => {
+test("14: extension re-initialization does not leave stale modal references", async () => {
   // When the extension is re-loaded, the old controller and modal closures
   // are replaced. The new extension function creates fresh closures.
   // This test verifies the old references don't interfere.
@@ -1137,14 +1137,16 @@ test("14: extension re-initialization does not leave stale modal references", ()
   assert.ok(firstCommandHandler, "first handler exists");
   assert.ok(secondCommandHandler, "second handler exists");
 
-  // First handler should still be callable without affecting second
+  // First handler should still be callable without affecting second.
+  // Await it: the handler lazy-imports the modal kit, and a dropped promise
+  // can reject after vitest tears the environment down (flaky failure).
   if (firstCommandHandler) {
-    assert.doesNotThrow(() =>
-      firstCommandHandler("show", {
+    await assert.doesNotReject(async () => {
+      await firstCommandHandler("show", {
         ui: { notify: () => {}, theme: {} },
         hasUI: false,
-      }),
-    );
+      });
+    });
   }
 });
 
