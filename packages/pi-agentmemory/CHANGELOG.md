@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-10-21
+
 ### Added
 - **Background health watchdog.** A timer probes the server on an interval (default 5 minutes) and refreshes the status chip through the same classify path as the turn-start check, so a transient blip no longer pins 🧠 × until the next agent turn — the chip self-heals within one interval. `agentmemory-watchdog` (boolean, default on) is the master switch; `agentmemory-watchdog-interval` (string, default `"5"`) takes minutes (`"10"`, `"0.5"` = 30 s) or `"off"`, with invalid values falling back to 5 rather than silently disabling. The timer is `unref`ed so it never holds the process open, and a `/reload` drops the previous instance's tick. Status probes carry a monotonic sequence so a slow probe that settles after a newer one (background tick vs turn-start check) cannot overwrite fresher status. The `/agentmemory` settings modal exposes the interval as a `5 / 10 / 30 / off` cycler row; arbitrary values stay settable via the settings file.
 

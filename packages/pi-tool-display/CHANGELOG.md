@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-21
+
 ### Added
 - Collapsed card summaries (built-in tidy cards and hashline cards) end with a muted `• Ctrl+O to expand` hint, matching what the classic renderers already did. The hint appears only when content sits behind the card: running, failed, empty-output, and no-diff states stay clean.
 - Long or multiline `bash` command headers collapse to their first line (capped at 160 characters) with a muted `(+N more lines • Ctrl+O to expand)` suffix; `Ctrl+O` shows the full command again.
