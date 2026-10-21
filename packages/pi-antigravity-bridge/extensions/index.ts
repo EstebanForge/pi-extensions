@@ -48,6 +48,7 @@ import {
 	formatPollAnswer,
 	type NativeDisplayEvent,
 } from "../src/provider.js";
+import { PollRunFolder, type PollRunData } from "../src/poll-fold.js";
 import {
 	createShadowTool,
 	stripMarkerFields,
@@ -396,15 +397,52 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 			return new Text(lines.join("\n"), 0, 0);
 		});
+		// Collapsed poll runs: one ♊︎-marked counted line per consecutive poll
+		// burst instead of one entry per poll.
+		pi.registerEntryRenderer<PollRunData>("agy-poll-run", (entry, { expanded }, theme) => {
+			const run = entry.data;
+			const count = run?.count ?? 0;
+			const label = `Poll ${run?.target ?? "bridge call"} (x${count}${run?.state === "failed" ? ", failed" : ""})`;
+			const lines = [`♊︎ ${theme.fg("toolTitle", POLL_TOOL_NAME)} ${theme.fg("muted", label)}`];
+			if (expanded && run) {
+				const time = (iso: string): string => new Date(iso).toLocaleTimeString();
+				lines.push(theme.fg("dim", `${count} ${count === 1 ? "poll" : "polls"}, ${time(run.firstAt)} → ${time(run.lastAt)}`));
+			}
+			return new Text(lines.join("\n"), 0, 0);
+		});
 	}
 	let pendingNativeTools = 0;
+	const pollRuns = new PollRunFolder();
+	const closePollRun = (): void => {
+		const settled = pollRuns.flush();
+		if (settled) pi.appendEntry<PollRunData>("agy-poll-run", settled);
+		setDimStatus("agy-poll", undefined);
+	};
+	// Footer statuses render muted, matching pi-hostname's dim treatment.
+	const setDimStatus = (key: string, text: string | undefined): void => {
+		const ui = activeUi;
+		if (!ui) return;
+		ui.setStatus(key, text === undefined ? undefined : ui.theme.fg("dim", text));
+	};
 	const onNativeEvent = (event: NativeDisplayEvent): void => {
-		if (engine !== "acp" || event.mcpServer === "pi-bridge") return;
+		if (engine !== "acp") return;
+		// Polls are bridge-local (never get a genuine Pi card); the mcpServer
+		// tag is unreliable on these frames, so the tool name discriminates.
+		if (event.name === POLL_TOOL_NAME) {
+			const view = event.callId ? roundTrips.poll(event.callId) : undefined;
+			const switched = pollRuns.add(view?.name ?? "unknown call", view?.state ?? "running", new Date());
+			if (switched) pi.appendEntry<PollRunData>("agy-poll-run", switched);
+			const open = pollRuns.open;
+			setDimStatus("agy-poll", open ? `♊︎ bridge_poll_result → ${open.target} (x${open.count})` : undefined);
+			return;
+		}
+		closePollRun();
+		if (event.mcpServer === "pi-bridge") return;
 		// MCP calls through our own pi-bridge already have genuine Pi tool cards;
 		// only native Antigravity / other MCP events need display-only entries.
 		if (event.status === "started") {
 			pendingNativeTools++;
-			activeUi?.setStatus("agy-native", `agy ${event.name}… (${pendingNativeTools})`);
+			setDimStatus("agy-native", `agy ${event.name}… (${pendingNativeTools})`);
 			return;
 		}
 		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
@@ -439,6 +477,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			outcome.status === "OK" ? "info" : "warn",
 		);
 		roundTrips.failAll(FAIL_REASON_TURN_END);
+		// Closes a poll run that no display event flushed.
+		closePollRun();
 		// Stamp live escalations with the ended turn's conversation: the park
 		// pass returns before the provider's store.set, so a first-turn park
 		// has no other record of where its result must be re-delivered.
@@ -454,7 +494,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		pi.on("message_update", (event, ctx) => {
 			if (!ctx.hasUI || event.message.role !== "assistant" || event.message.provider !== "antigravity" || loadConfig().acp.usageEstimate === "off") return;
 			const { input, output } = event.message.usage;
-			const status = `ACP ≈ ${input} in / ${output} out`;
+			const status = ctx.ui.theme.fg("dim", `ACP ≈ ${input} in / ${output} out`);
 			if (status !== lastUsageStatus) {
 				lastUsageStatus = status;
 				ctx.ui.setStatus("agy-usage", status);
@@ -467,6 +507,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		pi.on("agent_end", (event, ctx) => {
 			clearUsageStatus(event, ctx);
 			pendingNativeTools = 0;
+			closePollRun();
 			if (ctx.hasUI) ctx.ui.setStatus("agy-native", undefined);
 		});
 		pi.on("session_shutdown", (event, ctx) => {

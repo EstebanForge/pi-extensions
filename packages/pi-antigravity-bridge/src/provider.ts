@@ -332,6 +332,9 @@ export interface NativeDisplayEvent {
 	name: string;
 	mcpServer?: string;
 	status: "started" | "completed" | "failed";
+	/** Bridge callId from the tool args (poll calls carry one); lets the
+	 *  extension resolve the polled pi tool via the escalation registry. */
+	callId?: string;
 	path?: string;
 	command?: string;
 	output?: string;
@@ -1143,10 +1146,16 @@ export function consumeActivity(
 			// model-facing result is produced. Persist a card only on completion.
 			if (feats.engine === "acp" && feats.onNativeEvent) {
 				try {
-					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "started" });
+					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "started", callId: callIdArg(activity.args) });
 				} catch { /* UI failure must not fail the generation. */ }
 			}
 			return "continue";
+/** Bridge callId arg of an MCP tool call (bridge_poll_result requires it). */
+function callIdArg(args: Record<string, unknown>): string | undefined {
+	const v = args.callId;
+	return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
 /** File-path argument of an ACP edit tool (observed: `file_path`); other
  *  tool kinds (execute, read) don't carry one. Returns undefined for
  *  non-edit tools. */
@@ -1183,7 +1192,7 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 				let displayed = false;
 				try {
 					if (feats.onNativeEvent) {
-						feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "completed", path: file, command, output: activity.output, diff: diffText });
+						feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "completed", path: file, command, output: activity.output, diff: diffText, callId: callIdArg(activity.args) });
 						displayed = true;
 					}
 				} catch { /* A stale renderer must never fail the model turn. */ }

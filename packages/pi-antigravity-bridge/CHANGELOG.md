@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.7] - 2026-10-21
+
+### Changed
+
+- **Consecutive `bridge_poll_result` polls collapse into one counted transcript line.** Each poll used to append its own display-only entry (observed live: 60 `Poll git_commit` entries from a single wait, flushed in bursts when the parked round-trip resolved). Poll events now fold into a single ♊︎-marked `agy-poll-run` entry per consecutive run (`♊︎ bridge_poll_result Poll git_commit (x30)`; expanded view shows the poll span) with a live dim status counter while a run is open. Runs close on a target switch, the next non-poll display event, turn end, and agent end. Bridge footer statuses (`agy-native`, `agy-usage`, the poll counter) now render muted, matching pi-hostname's dim treatment.
+
 ## [1.8.6] - 2026-10-20
 
 ### Changed
