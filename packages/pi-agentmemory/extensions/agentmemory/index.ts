@@ -66,6 +66,36 @@ const DEFAULT_URL = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 const PROBE_TIMEOUT_MS = 5_000;
 const CALL_TIMEOUT_MS = 20_000;
 
+const DEFAULT_WATCHDOG_MINUTES = 5;
+const MIN_WATCHDOG_MINUTES = 0.25;
+const WATCHDOG_INTERVAL_FLAG = "agentmemory-watchdog-interval";
+
+// Background watchdog knob: minutes (fractional ok) or "off". Unset or
+// garbage falls back to the default — a typo must not silently disable
+// self-healing; only an explicit "off"/0/negative does.
+export function parseWatchdogIntervalMinutes(raw: string | undefined): number | null {
+  const text = (raw ?? "").trim().toLowerCase();
+  if (text === "") return DEFAULT_WATCHDOG_MINUTES;
+  const minutes = Number(text);
+  if (Number.isFinite(minutes)) {
+    if (minutes <= 0) return null;
+    return Math.max(MIN_WATCHDOG_MINUTES, minutes);
+  }
+  if (text === "off") return null;
+  return DEFAULT_WATCHDOG_MINUTES;
+}
+
+// Module scope so the timer outlives one factory instance: a /reload's fresh
+// session_start must be able to clear the previous instance's tick.
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopWatchdog(): void {
+  if (watchdogTimer !== null) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+}
+
 // User-facing flags. Single source of truth — drives registerFlag, the
 // /agentmemory status display, autocomplete, and the toggle subcommand.
 // Auto-start is OPT-IN (default false): spawning a detached server (and
@@ -74,15 +104,24 @@ const CALL_TIMEOUT_MS = 20_000;
 const FLAGS = [
   {
     name: "agentmemory-autostart",
+    defaultOn: false,
     label: "Auto-start server",
     description:
       "Start an agentmemory server on this machine automatically when a session starts or a memory tool runs, if it is installed (or via npx when agentmemory-npx-fallback is on). Only used when the server address (AGENTMEMORY_URL) points at this machine — a remote server is never started or installed here. Off by default — enable if your machine starts the server quickly.",
   },
   {
     name: "agentmemory-npx-fallback",
+    defaultOn: true,
     label: "npx fallback",
     description:
       "If the agentmemory CLI is not on PATH, start it via `npx -y @agentmemory/agentmemory@latest`. Disable to only start a globally-installed server (and otherwise report that it is not installed).",
+  },
+  {
+    name: "agentmemory-watchdog",
+    defaultOn: true,
+    label: "Background health watchdog",
+    description:
+      "Probe the server in the background every agentmemory-watchdog-interval minutes so the status chip recovers on its own after a transient blip instead of staying on 🧠 × until the next agent turn.",
   },
 ] as const;
 
@@ -90,7 +129,7 @@ const TOOL_GUIDANCE = [
   "agentmemory gives cross-session memory.",
   "Use memory_search to recall past decisions, preferences, bugs, and workflows.",
   "Use memory_save for durable facts worth keeping beyond this session.",
-  "Status line: 🧠 healthy, 🧠 ~ degraded, 🧠 × unreachable. Blips are transient: still try the memory tools; failures surface per call.",
+  "Status line: 🧠 healthy, 🧠 ~ degraded, 🧠 × unreachable. Blips are transient: still try the memory tools; failures surface per call. The status self-refreshes in the background.",
   "The server may be remote (AGENTMEMORY_URL). If unreachable, report it and continue; never install or start agentmemory locally unless its address points at this machine.",
 ].join(" ");
 
@@ -256,10 +295,21 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     pi.registerFlag(f.name, {
       description: f.description,
       type: "boolean",
-      default:
-        typeof stored === "boolean" ? stored : f.name === "agentmemory-npx-fallback",
+      default: typeof stored === "boolean" ? stored : f.defaultOn,
     });
   }
+  // String knob, not in FLAGS: the toggle menu assumes booleans. Persisted
+  // via the same settings file (hand-edit) or a launch flag; reload applies.
+  const storedInterval = persisted[WATCHDOG_INTERVAL_FLAG];
+  pi.registerFlag(WATCHDOG_INTERVAL_FLAG, {
+    description:
+      'Background health-check interval in minutes (e.g. "10", "0.5"), or "off" to disable the watchdog. Master switch is the agentmemory-watchdog flag.',
+    type: "string",
+    default:
+      typeof storedInterval === "string" && storedInterval.trim()
+        ? storedInterval
+        : String(DEFAULT_WATCHDOG_MINUTES),
+  });
 
   let autoStartedNotified = false;
   function ensureOpts() {
@@ -275,6 +325,23 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
   let currentProject = process.cwd();
   let lastPrompt = "";
   let pendingSearch: Promise<string> | null = null;
+
+  function watchdogIntervalSetting(): string {
+    const value = pi.getFlag(WATCHDOG_INTERVAL_FLAG);
+    return typeof value === "string" && value.trim() ? value : String(DEFAULT_WATCHDOG_MINUTES);
+  }
+
+  function startWatchdog(ui: { setStatus: (key: string, text: string) => void }) {
+    stopWatchdog();
+    if (pi.getFlag("agentmemory-watchdog") === false) return;
+    const minutes = parseWatchdogIntervalMinutes(watchdogIntervalSetting());
+    if (minutes === null) return;
+    watchdogTimer = setInterval(() => {
+      void refreshStatus({ ui });
+    }, minutes * 60_000);
+    // The watchdog must never be the thing keeping the process alive.
+    watchdogTimer.unref();
+  }
 
   async function getHealth() {
     return await callAgentMemory<HealthResponse>("health", {
@@ -331,11 +398,13 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
     const flagLines = FLAGS.map(
       (f) => `  ${pi.getFlag(f.name) === true ? "[x]" : "[ ]"} ${f.name}`,
     );
+    const intervalLine = `  agentmemory-watchdog-interval: ${watchdogIntervalSetting()} (minutes, "off" disables)`;
     return [
       `agentmemory — server: ${healthLine}`,
       "",
       "flags:",
       ...flagLines,
+      intervalLine,
       "",
       "toggle: /agentmemory toggle <flag>   (shorthand: /agentmemory <flag>)",
     ].join("\n");
@@ -830,6 +899,13 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
         /* best-effort; tools retry on demand */
       });
     await refreshStatus(ctx);
+    startWatchdog(ui);
+  });
+
+  // Reload re-runs the factory: drop this instance's timer so the next
+  // session_start owns the only one.
+  pi.on("session_shutdown", (event: { reason: string }) => {
+    if (event.reason === "reload") stopWatchdog();
   });
 
   // Hook: before_agent_start (start search, return immediately)

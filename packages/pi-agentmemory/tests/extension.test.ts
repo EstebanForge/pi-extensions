@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
-import factory from "../extensions/agentmemory/index.js";
+import factory, {
+  parseWatchdogIntervalMinutes,
+} from "../extensions/agentmemory/index.js";
 import {
   ensureServer,
   isLoopbackHost,
@@ -668,5 +670,179 @@ describe("remote server handling", () => {
     expect(res.content[0].text).toContain(
       "Retry once; if it fails again, tell the human.",
     );
+  });
+});
+
+describe("parseWatchdogIntervalMinutes", () => {
+  it("defaults to 5 minutes when unset or empty", () => {
+    expect(parseWatchdogIntervalMinutes(undefined)).toBe(5);
+    expect(parseWatchdogIntervalMinutes("")).toBe(5);
+    expect(parseWatchdogIntervalMinutes("  ")).toBe(5);
+  });
+
+  it("parses whole and fractional minutes", () => {
+    expect(parseWatchdogIntervalMinutes("5")).toBe(5);
+    expect(parseWatchdogIntervalMinutes("10")).toBe(10);
+    expect(parseWatchdogIntervalMinutes("0.5")).toBe(0.5);
+  });
+
+  it("disables on off, 0, and negatives", () => {
+    expect(parseWatchdogIntervalMinutes("off")).toBe(null);
+    expect(parseWatchdogIntervalMinutes("OFF")).toBe(null);
+    expect(parseWatchdogIntervalMinutes("0")).toBe(null);
+    expect(parseWatchdogIntervalMinutes("-3")).toBe(null);
+  });
+
+  it("falls back to the default on garbage and clamps tiny values", () => {
+    expect(parseWatchdogIntervalMinutes("abc")).toBe(5);
+    expect(parseWatchdogIntervalMinutes("5m")).toBe(5);
+    expect(parseWatchdogIntervalMinutes("0.01")).toBe(0.25);
+  });
+});
+
+describe("background health watchdog", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function makeFakePi(flags: Record<string, boolean | string> = {}) {
+    const handlers: Record<string, any> = {};
+    const registeredFlags: Array<{ name: string; options: any }> = [];
+    const setStatus = vi.fn();
+    const pi: any = new Proxy(
+      {
+        registerTool: () => {},
+        registerCommand: () => {},
+        registerFlag: (name: string, options: any) =>
+          void registeredFlags.push({ name, options }),
+        getFlag: (name: string) => flags[name],
+        on: (event: string, handler: any) => {
+          handlers[event] = handler;
+        },
+      },
+      {
+        get(target, prop) {
+          return prop in target ? (target as any)[prop] : () => {};
+        },
+      },
+    );
+    return { pi, handlers, setStatus, registeredFlags };
+  }
+
+  const SESSION_CTX = (setStatus: any) => ({
+    sessionManager: { getSessionFile: () => "/tmp/session.json" },
+    ui: { setStatus },
+  });
+
+  // Stateful probe mock: the watchdog flips server state over time, so
+  // routes answer from mutable flags instead of a fixed response queue.
+  let healthFail: boolean;
+  let livezUp: boolean;
+  let fetchMock: any;
+
+  function stubProbes() {
+    fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.endsWith("/agentmemory/health")) {
+        if (healthFail) throw new Error("ECONNREFUSED");
+        return new Response(JSON.stringify({ status: "healthy" }), { status: 200 });
+      }
+      if (u.endsWith("/agentmemory/livez")) {
+        if (!livezUp) throw new Error("ECONNREFUSED");
+        return new Response("ok", { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  const healthCalls = () =>
+    fetchMock.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).endsWith("/agentmemory/health"),
+    ).length;
+
+  const START = { agentmemory: false } as const;
+
+  it("registers the watchdog flags with the right types", async () => {
+    const { pi, registeredFlags } = makeFakePi();
+    await factory(pi);
+    const wd = registeredFlags.find((f) => f.name === "agentmemory-watchdog");
+    const iv = registeredFlags.find(
+      (f) => f.name === "agentmemory-watchdog-interval",
+    );
+    expect(wd?.options).toMatchObject({ type: "boolean" });
+    expect(iv?.options).toMatchObject({ type: "string", default: "5" });
+  });
+
+  it("polls health in the background and keeps the chip fresh", async () => {
+    const { pi, handlers, setStatus } = makeFakePi(START);
+    healthFail = false;
+    livezUp = true;
+    stubProbes();
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    expect(setStatus).toHaveBeenCalledWith("agentmemory", "🧠");
+    const before = healthCalls();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(healthCalls()).toBeGreaterThan(before);
+  });
+
+  it("self-heals the chip from × to 🧠 on a later tick", async () => {
+    const { pi, handlers, setStatus } = makeFakePi(START);
+    healthFail = true;
+    livezUp = false;
+    stubProbes();
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    expect(setStatus).toHaveBeenLastCalledWith("agentmemory", "🧠 ×");
+    healthFail = false;
+    livezUp = true;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(setStatus).toHaveBeenLastCalledWith("agentmemory", "🧠");
+  });
+
+  it("does not poll when agentmemory-watchdog is false", async () => {
+    const { pi, handlers, setStatus } = makeFakePi({
+      ...START,
+      "agentmemory-watchdog": false,
+    });
+    healthFail = false;
+    livezUp = true;
+    stubProbes();
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    const before = healthCalls();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(healthCalls()).toBe(before);
+  });
+
+  it("does not poll when the interval is off", async () => {
+    const { pi, handlers, setStatus } = makeFakePi({
+      ...START,
+      "agentmemory-watchdog-interval": "off",
+    });
+    healthFail = false;
+    livezUp = true;
+    stubProbes();
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    const before = healthCalls();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(healthCalls()).toBe(before);
+  });
+
+  it("stops polling after a session reload", async () => {
+    const { pi, handlers, setStatus } = makeFakePi(START);
+    healthFail = false;
+    livezUp = true;
+    stubProbes();
+    await factory(pi);
+    await handlers.session_start({}, SESSION_CTX(setStatus));
+    await handlers.session_shutdown({ reason: "reload" });
+    const before = healthCalls();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(healthCalls()).toBe(before);
   });
 });

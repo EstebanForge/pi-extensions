@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 const SETTINGS_FILENAME = "pi-agentmemory.json";
 
-type FlagMap = Record<string, boolean>;
+type FlagMap = Record<string, boolean | string>;
 
 // Resolve the agent config dir the same way pi does (dist/config.js
 // getAgentDir): env override wins, else ~/.pi/agent. Exported so tests can
@@ -40,10 +40,10 @@ export function loadFlagSettings(): FlagMap {
     if (!existsSync(path)) return {};
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     const out: FlagMap = {};
-    // Keep only literal boolean values; drop anything else defensively so a
-    // hand-edited or corrupt file can't inject a wrong-typed seed.
+    // Keep only literal boolean/string values; drop anything else defensively
+    // so a hand-edited or corrupt file can't inject a wrong-typed seed.
     for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === "boolean") out[k] = v;
+      if (typeof v === "boolean" || typeof v === "string") out[k] = v;
     }
     return out;
   } catch {
