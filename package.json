@@ -20,9 +20,9 @@
   },
   "devDependencies": {
     "@colbymchenry/codegraph": "^1.0.1",
-    "@earendil-works/pi-ai": "^1.2.0",
-    "@earendil-works/pi-coding-agent": "^1.2.0",
-    "@earendil-works/pi-tui": "^1.2.0",
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
     "@rolldown/binding-wasm32-wasi": "^1.2.4",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
