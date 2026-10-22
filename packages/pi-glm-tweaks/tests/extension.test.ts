@@ -275,32 +275,37 @@ describe("pi-glm-tweaks extension entry", () => {
 		};
 		await factory(pi2);
 
-		// Full Model shape: the clamp reads reasoning + thinkingLevelMap off
-		// event.model, exactly what the registered glm-5.3 entry carries.
-		handlers.model_select(
-			{
-				model: {
-					provider: "zai",
-					id: "glm-5.3",
-					reasoning: true,
-					thinkingLevelMap: {
-						off: "low",
-						minimal: null,
-						medium: null,
-						low: "low",
-						high: "high",
-						xhigh: null,
-						max: "max",
-					},
-				},
-			},
-			ctx,
-		);
+		// Bare {provider, id} on purpose: the clamp must derive from the spec,
+		// not from event.model carrying a thinkingLevelMap (catalog and custom
+		// entries may not have one).
+		handlers.model_select({ model: { provider: "zai", id: "glm-5.3" } }, ctx);
 
 		// xhigh was the pre-1.5.0 label for wire "max": the clamp must land on
 		// max (same wire effort) instead of silently halving to high.
 		expect(set).toEqual(["max"]);
 		expect(notes[0]).toContain('Switched to max');
+	});
+
+	it("model_select clamps glm-5.2, whose map omits off", async () => {
+		const { pi, handlers, ctx } = makePi([{ provider: "zai", id: "glm-5.2" }]);
+		const set: string[] = [];
+		const notes: string[] = []
+		const pi2 = {
+			...pi,
+			getThinkingLevel: () => "minimal",
+			setThinkingLevel: (l: string) => void set.push(l),
+		} as unknown as Parameters<typeof factory>[0];
+		(ctx as { ui: { notify: (m: string) => void } }).ui = {
+			notify: (m: string) => void notes.push(m),
+		};
+		await factory(pi2);
+
+		handlers.model_select({ model: { provider: "zai", id: "glm-5.2" } }, ctx);
+
+		// 5.2 hides minimal/low/medium via explicit nulls and wires off
+		// elsewhere; the nearest visible level at or above minimal is high.
+		expect(set).toEqual(["high"]);
+		expect(notes[0]).toContain('Switched to high');
 	});
 });
 

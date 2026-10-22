@@ -935,7 +935,12 @@ export default function (pi: ExtensionAPI) {
 		// setThinkingLevel is a no-op if already at the requested level.
 		const current = pi.getThinkingLevel();
 		if (hiddenLevels(spec).has(current)) {
-			const clamped = clampThinkingLevel(event.model, current);
+			// Merge the spec map: event.model can be a catalog or custom entry
+			// without thinkingLevelMap, which would degrade the clamp.
+			const clamped = clampThinkingLevel(
+				{ ...event.model, reasoning: true, thinkingLevelMap: spec.thinkingLevelMap },
+				current,
+			);
 			pi.setThinkingLevel(clamped);
 			ctx.ui.notify(
 				`${event.model.id} thinking: "${current}" not supported. Switched to ${clamped} (${wireLabels(spec).join(" | ")}).`,

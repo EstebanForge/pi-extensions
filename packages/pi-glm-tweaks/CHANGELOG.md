@@ -5,7 +5,7 @@
 ## [Unreleased]
 
 ### Changed
-- **Thinking-level clamping now calls pi-ai's `clampThinkingLevel` directly.** The extension loader exposes the `@earendil-works/pi-ai/models` subpath since pi 1.4.0, so the hand-rolled `nextVisibleLevel` mirror is deleted. Same up-first behavior on every reachable input: a stale `xhigh` still lands on `max`, and the clamp reads the `thinkingLevelMap` the registered model entry already carries.
+- **Thinking-level clamping now calls pi-ai's `clampThinkingLevel` directly.** The extension loader exposes the `@earendil-works/pi-ai/models` subpath since pi 1.4.0, so the hand-rolled `nextVisibleLevel` mirror is deleted. Same up-first behavior on every reachable input (a stale `xhigh` still lands on `max`), with the spec's `thinkingLevelMap` merged over the event model so catalog or custom entries without a map cannot degrade the clamp. Peer floors move to `^1.4.0` accordingly.
 
 ## 1.8.1 — 2026-10-13
 
