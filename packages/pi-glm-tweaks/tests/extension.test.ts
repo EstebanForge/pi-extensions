@@ -275,7 +275,27 @@ describe("pi-glm-tweaks extension entry", () => {
 		};
 		await factory(pi2);
 
-		handlers.model_select({ model: { provider: "zai", id: "glm-5.3" } }, ctx);
+		// Full Model shape: the clamp reads reasoning + thinkingLevelMap off
+		// event.model, exactly what the registered glm-5.3 entry carries.
+		handlers.model_select(
+			{
+				model: {
+					provider: "zai",
+					id: "glm-5.3",
+					reasoning: true,
+					thinkingLevelMap: {
+						off: "low",
+						minimal: null,
+						medium: null,
+						low: "low",
+						high: "high",
+						xhigh: null,
+						max: "max",
+					},
+				},
+			},
+			ctx,
+		);
 
 		// xhigh was the pre-1.5.0 label for wire "max": the clamp must land on
 		// max (same wire effort) instead of silently halving to high.

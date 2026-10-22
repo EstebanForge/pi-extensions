@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Thinking-level clamping now calls pi-ai's `clampThinkingLevel` directly.** The extension loader exposes the `@earendil-works/pi-ai/models` subpath since pi 1.4.0, so the hand-rolled `nextVisibleLevel` mirror is deleted. Same up-first behavior on every reachable input: a stale `xhigh` still lands on `max`, and the clamp reads the `thinkingLevelMap` the registered model entry already carries.
+
 ## 1.8.1 — 2026-10-13
 
 ### Fixed

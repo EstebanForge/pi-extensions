@@ -78,6 +78,7 @@
  */
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai/models";
 import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { Type } from "typebox";
 import { loadFlagSettings, loadStringSettings, saveSetting, getSettingsPath } from "../lib/flag-settings";
@@ -249,29 +250,6 @@ function wireLabels(spec: GlmSpec): string[] {
 	const labels = new Set<string>(spec.canDisableThinking && !("off" in spec.thinkingLevelMap) ? ["off"] : []);
 	for (const v of Object.values(spec.thinkingLevelMap)) if (v !== null) labels.add(v);
 	return [...labels];
-}
-
-// Pi's canonical thinking-level ladder, low -> high.
-const PI_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-// Clamp target for a hidden level: the nearest VISIBLE level at or above
-// the requested one (then below, if none above exists). Mirrors pi-ai's
-// clampThinkingLevel up-first semantics: a stale `xhigh` (the pre-1.5.0
-// label for wire "max") lands on `max`, not `high`, so upgrades don't
-// silently halve the user's effort tier; `minimal`/`medium` bump to the
-// next wire-real level.
-function nextVisibleLevel(spec: GlmSpec, level: string): (typeof PI_LEVEL_ORDER)[number] {
-	const visible = (l: string) => spec.thinkingLevelMap[l] !== null && spec.thinkingLevelMap[l] !== undefined;
-	const idx = PI_LEVEL_ORDER.indexOf(level as (typeof PI_LEVEL_ORDER)[number]);
-	if (idx === -1) {
-		// Unknown level string: clamp up from the bottom of the ladder so the
-		// fallback is itself a visible level, never a hardcoded name.
-		for (let i = 0; i < PI_LEVEL_ORDER.length; i++) if (visible(PI_LEVEL_ORDER[i])) return PI_LEVEL_ORDER[i];
-		return "high"; // unreachable: every spec maps at least one level
-	}
-	for (let i = idx; i < PI_LEVEL_ORDER.length; i++) if (visible(PI_LEVEL_ORDER[i])) return PI_LEVEL_ORDER[i];
-	for (let i = idx - 1; i >= 0; i--) if (visible(PI_LEVEL_ORDER[i])) return PI_LEVEL_ORDER[i];
-	return "high"; // unreachable: every spec maps at least one level
 }
 
 // Lightest wire effort a spec documents: the first non-null value in the
@@ -957,7 +935,7 @@ export default function (pi: ExtensionAPI) {
 		// setThinkingLevel is a no-op if already at the requested level.
 		const current = pi.getThinkingLevel();
 		if (hiddenLevels(spec).has(current)) {
-			const clamped = nextVisibleLevel(spec, current);
+			const clamped = clampThinkingLevel(event.model, current);
 			pi.setThinkingLevel(clamped);
 			ctx.ui.notify(
 				`${event.model.id} thinking: "${current}" not supported. Switched to ${clamped} (${wireLabels(spec).join(" | ")}).`,
