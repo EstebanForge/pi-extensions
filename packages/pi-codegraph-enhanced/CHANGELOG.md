@@ -5,10 +5,6 @@
 ### Changed
 - **Status chip is glyph-only** (same scheme as pi-agentmemory): 🔍 index ready, 🔍 … indexing/syncing, 🔍 ~ index busy, 🔍 × unavailable/failed. No chip means the folder has no index and auto-index is off. Words stay in notifications and the `/codegraph` panel; the `codegraph unlock` hint moved from the busy chip into the busy notifications; a clean startup now keeps the 🔍 chip instead of clearing it; a one-line decode in the tool guidance keeps the glyphs readable to models.
 
-## 1.1.1 — 2026-10-13
-
-## [Unreleased]
-
 ## 1.1.0 — 2026-10-12
 
 ### Changed

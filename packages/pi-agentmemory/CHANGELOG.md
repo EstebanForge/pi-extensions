@@ -1,7 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
 ## [1.1.5] - 2026-10-21
 
 ### Added
@@ -13,8 +11,6 @@
 - **Failed memory-tool calls now tell the model to retry once, and only report after the second failure.** Every model-facing failure string (the four `ensureServer` reasons, `memory_health` unreachable, `memory_save` failure, `memory_delete` forget failure) ends with a shared hint: "Retry once; if it fails again, tell the human." A single blip no longer pushes the model straight to reporting or giving up.
 - **`memory_search` no longer masks a failed call as "no results".** A failed search returned `formatSearchResults([])` with `ok: true`, so the model read an outage as an empty memory. Failures now return a failure text with the retry hint and `ok: false`.
 - **Model-facing wording tightened to cut recurring tokens (~20% on the system-prompt guidance).** `TOOL_GUIDANCE` now decodes all three status glyphs including healthy (the old text only explained degraded/unreachable) and drops filler around the recall/save/search lines; the `memory_search` and `memory_delete` descriptions and the delete guidelines lose redundancy with the guidance. The load-bearing phrases survive verbatim: the delete tool still always blocks on human confirmation, and the guidance keeps "still try the memory tools" and the lowercase "never install or start agentmemory" clause that tests (and remote-server agents) depend on.
-
-## 1.1.2 (2026-10-13)
 
 ## 1.1.3 (2026-10-16)
 
