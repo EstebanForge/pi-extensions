@@ -87,7 +87,7 @@ const text = [];
 const toolStarts = [];
 const handle = await driver.run({
 	cwd: process.cwd(),
-	model: "gemini-3.7-flash",
+	model: "gemini-3.8-flash",
 	effort: "low",
 	mode: "accept-edits",
 	skipPermissions: true,
