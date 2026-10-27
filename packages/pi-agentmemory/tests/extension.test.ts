@@ -773,7 +773,20 @@ describe("settings modal interval cycler", () => {
 });
 
 describe("background health watchdog", () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // A down server sends session_start into the autostart path (default
+    // on) even though the chip under test comes from refreshStatus alone;
+    // without a spawn stub the file-wide mock returns undefined and the
+    // fake-timer sweep detonates runShort's kill timer.
+    spawnMock.mockImplementation(() => ({
+      on: (_event: string, cb: (arg?: unknown) => void) => {
+        if (_event === "close") queueMicrotask(() => cb(0));
+      },
+      kill: () => {},
+      unref: () => {},
+    }));
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -906,8 +919,11 @@ describe("background health watchdog", () => {
         const u = String(url);
         if (u.endsWith("/agentmemory/health")) {
           healthN++;
-          if (healthN === 2) {
+          if (healthN === 3) {
             // Watchdog tick probe hangs, then fails after a newer probe won.
+            // Probe order: #1 ensureServer's health check (session_start's
+            // fire-and-forget kick), #2 session_start's awaited refreshStatus,
+            // #3 the watchdog tick, #4 before_agent_start's refresh.
             await probeGate;
             staleSettled = true;
             throw new Error("timeout");
