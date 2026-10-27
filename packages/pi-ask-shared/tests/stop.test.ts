@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type { BackgroundRun } from "../src/registry.js";
 import { BackgroundRunRegistry } from "../src/registry.js";
 import { createStopHandler } from "../src/stop.js";
 
-const makeFixture = () => {
+const makeFixture = (guard?: (run: BackgroundRun) => string | null) => {
 	let counter = 0;
 	const registry = new BackgroundRunRegistry({
 		toolName: "ask-test",
@@ -10,7 +11,7 @@ const makeFixture = () => {
 	});
 	const kill = vi.fn();
 	const onStopped = vi.fn();
-	const stop = createStopHandler(registry, { kill, onStopped });
+	const stop = createStopHandler(registry, { kill, onStopped, guard });
 	return { registry, kill, onStopped, stop };
 };
 
@@ -67,5 +68,29 @@ describe("createStopHandler", () => {
 		expect(kill).not.toHaveBeenCalled();
 		expect(message).toContain("bg_");
 		expect(message).toMatch(/bg_\d+[\s\S]*bg_\d+/);
+	});
+
+	it("guard veto leaves the run untouched and reports the refusal", async () => {
+		// The finishing window: the child closed but the answer is not settled
+		// yet. A stop here would settle failed and discard a computed answer.
+		const { registry, kill, onStopped, stop } = makeFixture((run) =>
+			run.status === "running" ? `Run ${run.runId} already finished; its result is being delivered.` : null,
+		);
+		const run = registry.start("review foo");
+		const message = await stop("");
+		expect(kill).not.toHaveBeenCalled();
+		expect(onStopped).not.toHaveBeenCalled();
+		expect(registry.get(run.runId)?.status).toBe("running");
+		expect(message).toMatch(/already finished/);
+		expect(message).toContain(run.runId);
+	});
+
+	it("guard null proceeds with the normal stop", async () => {
+		const { registry, kill, stop } = makeFixture(() => null);
+		const run = registry.start("review foo");
+		const message = await stop("");
+		expect(kill).toHaveBeenCalledWith(run);
+		expect(registry.get(run.runId)?.status).toBe("failed");
+		expect(message).toContain(run.runId);
 	});
 });

@@ -5,6 +5,13 @@ export interface StopHandlerOptions {
 	kill: (run: BackgroundRun) => void;
 	/** Called after a successful stop; owners send the failure wake here. */
 	onStopped: (run: BackgroundRun) => void;
+	/**
+	 * Optional veto consulted before kill/settle. Return a refusal message to
+	 * leave the run untouched, null to proceed. Covers the window where the
+	 * child already closed but the run is still finishing (output discovery,
+	 * classification): settling failed there would discard a computed answer.
+	 */
+	guard?: (run: BackgroundRun) => string | null;
 }
 
 /**
@@ -53,6 +60,8 @@ function stopBestMatch(registry: BackgroundRunRegistry, options: StopHandlerOpti
 }
 
 function stopRun(registry: BackgroundRunRegistry, options: StopHandlerOptions, run: BackgroundRun): string {
+	const veto = options.guard?.(run);
+	if (veto) return veto;
 	options.kill(run);
 	registry.settle(run.runId, { status: "failed", error: "stopped by /stop command" });
 	options.onStopped(run);
