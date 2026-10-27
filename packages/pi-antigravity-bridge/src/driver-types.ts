@@ -32,7 +32,8 @@ export interface DriverTurnRequest extends DriverProfile {
 	prompt: string;
 	/** Image blocks riding with the prompt. ACP forwards them as typed
 	 *  content blocks (probe 2026-09-03: 64x64 two-tone PNG answered
-	 *  correctly); the stream-json CLI prompt is text-only and ignores them. */
+	 *  correctly); on stream-json the provider stages them to files, so the
+	 *  driver itself ignores this field. */
 	images?: Array<{ data: string; mimeType: string }>;
 	/** ACP only: pi-side context delivered as a native `embeddedContext`
 	 *  resource block instead of inline prompt text (G1 on ACP). Stream-json

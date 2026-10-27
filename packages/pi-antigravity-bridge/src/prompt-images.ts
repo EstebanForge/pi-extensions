@@ -41,6 +41,8 @@ function sweepStale(root: string): void {
 		if (!entry.startsWith(STAGE_DIR_PREFIX)) continue;
 		const full = path.join(root, entry);
 		try {
+			// lstat: never follow a symlink planted at our prefix in a shared tmp.
+			if (!fs.lstatSync(full).isDirectory()) continue;
 			if (fs.statSync(full).mtimeMs < cutoff) fs.rmSync(full, { recursive: true, force: true });
 		} catch {
 			// Raced with another process's sweep or deletion: nothing to do.
@@ -49,23 +51,37 @@ function sweepStale(root: string): void {
 }
 
 /** Write image blocks to a fresh staging dir under `root` (default the OS tmp
- *  dir). Returns null on any failure: the turn then runs text-only instead of
- *  failing. */
+ *  dir). Returns null on any failure (including an empty/malformed payload):
+ *  the turn then runs text-only instead of failing. */
 export function stagePromptImages(
 	images: Array<StagedImage>,
 	root?: string,
 ): { dir: string; paths: string[] } | null {
+	const base = root ?? os.tmpdir();
+	let dir: string | null = null;
 	try {
-		sweepStale(root ?? os.tmpdir());
-		const dir = fs.mkdtempSync(path.join(root ?? os.tmpdir(), STAGE_DIR_PREFIX));
+		sweepStale(base);
+		dir = fs.mkdtempSync(path.join(base, STAGE_DIR_PREFIX));
 		const paths = images.map((img, i) => {
+			const bytes = Buffer.from(img.data, "base64");
+			if (bytes.length === 0) throw new Error("empty image payload");
 			const ext = EXT_BY_MIME[img.mimeType] ?? ".bin";
-			const file = path.join(dir, `image-${i + 1}${ext}`);
-			fs.writeFileSync(file, Buffer.from(img.data, "base64"), { mode: 0o600 });
+			const file = path.join(dir!, `image-${i + 1}${ext}`);
+			fs.writeFileSync(file, bytes, { mode: 0o600 });
 			return file;
 		});
 		return { dir, paths };
 	} catch {
+		// A mid-write failure must not leak a partial dir; the 24h sweep would
+		// reap it anyway, but the next staging call in this process is likely
+		// seconds away.
+		if (dir) {
+			try {
+				fs.rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// Sweep reaps it later.
+			}
+		}
 		return null;
 	}
 }

@@ -92,10 +92,11 @@ function makeStreamSimple(
 	driver: StreamDriver,
 	rt: ToolRoundTrips,
 	engine?: "stream-json" | "acp",
+	store?: SessionStore,
 ) {
 	return createStreamSimple({
 		entries: [{ full: "gemini-3.8-flash-high", id: "gemini-flash" }],
-		store: new SessionStore(tmpStorePath()),
+		store: store ?? new SessionStore(tmpStorePath()),
 		driver,
 		// The inner engine label is by object identity (selected ===
 		// acpDriver), so an acp run needs the same stub in both slots.
@@ -147,47 +148,135 @@ test("acp: user image blocks ride request.images with no staging note", async ()
 });
 
 test("late delivery: a tombstoned image result redelivers its image", async () => {
-	const seen: { opts?: DriverTurnRequest } = {};
-	const driver = fakeDriver(seen);
-	const rt = new ToolRoundTrips(driver);
-	const settled = rt
-		.onToolCall("call-1", "read", { path: "/tmp/shot.png" }, new AbortController().signal)
-		.then(
-			() => "resolved",
-			() => "rejected",
-		);
-	rt.failAll("agy disconnected before the tool result arrived");
-	await settled;
-	const context: TranscriptContext = normalizeContext({
-		systemPrompt: undefined,
-		messages: [toolResultMessage("call-1", "Read image file [image/png]", true)],
-	});
-	const errors = await collect(makeStreamSimple(driver, rt, "acp")(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
-	assert.equal(errors.length, 0);
-	assert.ok(seen.opts);
-	assert.match(seen.opts.prompt, /Late tool delivery/);
-	assert.deepEqual(seen.opts.images, [IMG]);
+	for (const engine of ["acp", "stream-json"] as const) {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver = fakeDriver(seen);
+		const rt = new ToolRoundTrips(driver);
+		const settled = rt
+			.onToolCall("call-1", "read", { path: "/tmp/shot.png" }, new AbortController().signal)
+			.then(
+				() => "resolved",
+				() => "rejected",
+			);
+		rt.failAll("agy disconnected before the tool result arrived");
+		await settled;
+		const context: TranscriptContext = normalizeContext({
+			systemPrompt: undefined,
+			messages: [toolResultMessage("call-1", "Read image file [image/png]", true)],
+		});
+		const errors = await collect(makeStreamSimple(driver, rt, engine)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
+		assert.equal(errors.length, 0);
+		assert.ok(seen.opts);
+		assert.match(seen.opts.prompt, /Late tool delivery/);
+		// Images ride driver.run on both engines; on stream-json the prompt also
+		// names the staged file (the turn input is text-only), on ACP it must not.
+		assert.deepEqual(seen.opts.images, [IMG]);
+		assert.equal(seen.opts.prompt.includes("pi-bridge-img-"), engine === "stream-json");
+	}
 });
 
 test("stranded escalated image result redelivers via a new prompt carrying the image", async () => {
+	for (const engine of ["acp", "stream-json"] as const) {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver = fakeDriver(seen);
+		const rt = new ToolRoundTrips(driver, undefined, { escalateAfterMs: 5 });
+		const parked = rt.onToolCall("call-9", "read", { path: "/tmp/shot.png" }, new AbortController().signal);
+		await new Promise((r) => setTimeout(r, 20));
+		const ack = await parked;
+		assert.ok(typeof ack === "object" && "escalated" in ack, "call escalated");
+		// The owning turn ends without a poll: stamp the conversation, then the
+		// result settles in the registry with its image.
+		rt.stampConversation("conv-1");
+		rt.resolve("call-9", "Read image file [image/png]", false, [IMG]);
+		const context: TranscriptContext = normalizeContext({
+			systemPrompt: undefined,
+			messages: [{ role: "user", content: "also check the build", timestamp: Date.now() }],
+		});
+		const errors = await collect(makeStreamSimple(driver, rt, engine)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
+		assert.equal(errors.length, 0);
+		assert.ok(seen.opts);
+		assert.match(seen.opts.prompt, /you never received this result/);
+		assert.deepEqual(seen.opts.images, [IMG]);
+		assert.equal(seen.opts.prompt.includes("pi-bridge-img-"), engine === "stream-json");
+	}
+});
+
+test("more sweep: an image result stranded mid-turn redelivers with its image on stream-json", async () => {
+	// Live-turn reentry harness: pass 1 must go live FIRST (past its start-time
+	// claim point, with an empty registry), THEN the bridge call parks,
+	// escalates and settles — that is the production order for a result
+	// stranded inside a live turn. Pass 2 arrives with the pi toolResult as its
+	// last message (isContinuation), the driver hands back the same live
+	// handle, and the post-outcome gap closer must sweep the stranded image
+	// through a second driver.run with staged files.
 	const seen: { opts?: DriverTurnRequest } = {};
-	const driver = fakeDriver(seen);
+	const handle = {
+		id: "t1",
+		outcome: Promise.resolve({ status: "OK" as const, response: "ok", finished: true, aborted: false, conversationId: "conv-1" }),
+		next: async (): Promise<DriverActivity | null> => null,
+		pushExternal: (_a: DriverActivity) => {},
+	};
+	const driver = {
+		get activeHandle() {
+			return handle;
+		},
+		kickIdle: () => {},
+		reentry: () => handle,
+		run: async (opts: DriverTurnRequest) => {
+			seen.opts = opts;
+			return handle;
+		},
+	} as unknown as StreamDriver;
 	const rt = new ToolRoundTrips(driver, undefined, { escalateAfterMs: 5 });
+	const pass1 = collect(
+		makeStreamSimple(driver, rt, "stream-json")(model, normalizeContext({ systemPrompt: undefined, messages: [{ role: "user", content: "kick off", timestamp: Date.now() }] }), { cwd: process.cwd() } as unknown as SimpleStreamOptions),
+	);
+	await new Promise((r) => setTimeout(r, 10));
 	const parked = rt.onToolCall("call-9", "read", { path: "/tmp/shot.png" }, new AbortController().signal);
 	await new Promise((r) => setTimeout(r, 20));
 	const ack = await parked;
 	assert.ok(typeof ack === "object" && "escalated" in ack, "call escalated");
-	// The owning turn ends without a poll: stamp the conversation, then the
-	// result settles in the registry with its image.
 	rt.stampConversation("conv-1");
 	rt.resolve("call-9", "Read image file [image/png]", false, [IMG]);
-	const context: TranscriptContext = normalizeContext({
-		systemPrompt: undefined,
-		messages: [{ role: "user", content: "also check the build", timestamp: Date.now() }],
-	});
-	const errors = await collect(makeStreamSimple(driver, rt, "acp")(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
-	assert.equal(errors.length, 0);
+	const errors2 = await collect(
+		makeStreamSimple(driver, rt, "stream-json")(model, normalizeContext({ systemPrompt: undefined, messages: [toolResultMessage("call-9", "Read image file [image/png]", true)] }), { cwd: process.cwd() } as unknown as SimpleStreamOptions),
+	);
+	assert.equal(errors2.length, 0, errors2.map((e) => String(e)).join("; "));
+	await pass1;
 	assert.ok(seen.opts);
 	assert.match(seen.opts.prompt, /you never received this result/);
+	assert.match(seen.opts.prompt, /pi-bridge-img-.*image-1\.png/s);
 	assert.deepEqual(seen.opts.images, [IMG]);
+});
+
+test("stream-json: a staging failure degrades with an explicit undelivered note, not silence", async () => {
+	// The store path must exist BEFORE the override: os.tmpdir() reads TMPDIR
+	// live, and the store's mkdtemp would fail with the same bad root.
+	const store = new SessionStore(tmpStorePath());
+	const prevTmp = process.env.TMPDIR;
+	process.env.TMPDIR = path.join(os.tmpdir(), "agy-imgfail-missing-root", "subdir");
+	try {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver = fakeDriver(seen);
+		const rt = new ToolRoundTrips(driver);
+		const context: TranscriptContext = normalizeContext({
+			systemPrompt: undefined,
+			messages: [userMessageWithImage()],
+		});
+		const streamSimple = createStreamSimple({
+			entries: [{ full: "gemini-3.8-flash-high", id: "gemini-flash" }],
+			store,
+			driver,
+			roundTrips: rt,
+			engine: "stream-json",
+		});
+		const errors = await collect(streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
+		assert.equal(errors.length, 0);
+		assert.ok(seen.opts);
+		assert.match(seen.opts.prompt, /1 image\(s\) could not be delivered/);
+		assert.equal(seen.opts.prompt.includes("pi-bridge-img-"), false);
+	} finally {
+		if (prevTmp === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = prevTmp;
+	}
 });

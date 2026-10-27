@@ -105,7 +105,8 @@ function extractUserPrompt(context: TranscriptContext): string | null {
 	if (!last || last.role !== "user") return null;
 	const content = last.content;
 	if (typeof content === "string") return content;
-	// Flatten text blocks; images ride separately via extractImages (ACP only).
+	// Flatten text blocks; images ride separately via extractImages (native
+	// blocks on ACP, staged files on stream-json via prompt-images.ts).
 	return content
 		.filter((b): b is { type: "text"; text: string } => b.type === "text")
 		.map((b) => b.text)
@@ -948,7 +949,8 @@ export class ToolRoundTrips {
 	/** Complete a parked call from a pi toolResult message. Returns false when
 	 *  the id matches nothing pending. Image blocks ride the result on both
 	 *  engines (probe-verified on each); the late-delivery prompt stays
-	 *  text-only (see PI-BRIDGE-GAPS). */
+	 *  text-only and its images re-attach through driver.run (native blocks on
+	 *  ACP, staged files on stream-json). */
 	resolve(
 		toolCallId: string,
 		text: string,
@@ -1403,7 +1405,10 @@ async function runTurnDriver(
 		const staged = stagePromptImages(imgs);
 		if (!staged) {
 			deps.log?.("turn-warning", { reason: "image-staging-failed", count: imgs.length }, "warn");
-			return "";
+			// Silence would strand the pixels forever: on a redelivery the claim
+			// is already consumed, so the model must at least learn the image
+			// existed and re-request it.
+			return `\n\n[${imgs.length} image(s) could not be delivered to this turn; ask the user to re-attach or re-read the original path.]`;
 		}
 		return `\n\n${buildImageNote(staged.paths)}`;
 	};
