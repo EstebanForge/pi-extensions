@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Short-circuit observational-memory background turns instead of letting Gemini hunt the missing observer tool.** pi-observational-memory's turn-end observer falls back to the session model, and its prompt demands a private `record_observations` tool the bridge never sends; on antigravity models that spawned autonomous `find`/`grep`/`sed` shell sweeps (~500 ms per cycle) hunting the tool before reporting "observer found nothing new in this chunk". `streamSimple` now detects the observer context structurally (its `record_observations`/`record_reflections`/`drop_observations` tool names) and finalizes with a clean empty stop, which engages the observer's empty-backoff instead of erroring every turn; a one-time per-process `observational-memory-unsupported` warning explains the gap.
+
+- **Strip Antigravity's echoed `<SYSTEM_MESSAGE>` notifications and default Queued Messages to send-immediately.** The backend injects async background-task notifications wrapped in `<SYSTEM_MESSAGE>` blocks, and Gemini (notably 3.8 Flash) echoes them verbatim as assistant text; a stateful streaming sanitizer (`src/stream-sanitizer.ts`) now suppresses the exact preamble+block pattern in both engines' text paths, failing open at EOF so legitimate text is never lost. Separately, the engines' default "Queued Messages" behavior buffered user input until turn end while pi sends interactive input mid-turn; the bridge now writes `"queuedMessages": "send-immediately"` to each engine's settings.json when unset (atomic, existing config respected, corrupt files never touched).
+
+- **Deliver image pixels across all the paths that used to lose them.** Verified live 2026-10-22 (couch session): gemini-3.8-flash read a screenshot, the parked bridge call escalated, the model never polled `bridge_poll_result`, and the stranded redelivery carried text only — the image never reached it and the model fell back to hunting OCR libraries. Late/stranded redeliveries now carry image blocks via `driver.run` (ACP native prompt blocks; stream-json stages them), user-attached images on the stream-json engine stage to temp files with a prompt note pointing at the bridge read tool (the CLI turn input is text-only; `src/prompt-images.ts`), and both engines now advertise `text+image` input. The tool-priority note states outright that `read` returns visible images (models refused screenshots from priors) and mandates polling `bridge_poll_result` before other work after a STILL RUNNING ack.
+
 ## [1.8.7] - 2026-10-21
 
 ### Changed

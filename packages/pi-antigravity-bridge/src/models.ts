@@ -361,9 +361,8 @@ function thinkingLevelMapFor(efforts: readonly AgyEffort[]): ThinkingLevelMap {
 }
 
 /** Project an agy entry to pi's Model shape. `input` advertises accepted
- *  inputs: text-only (default) or text+image. The ACP engine forwards image
- *  blocks natively (probe 2026-09-03); the stream-json CLI prompt is text-only, so
- *  the extension decides by engine at load time. */
+ *  inputs; both engines accept images (ACP native content blocks,
+ *  stream-json staged files), so callers pass ["text", "image"] uniformly. */
 export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> = ["text"]): Model<Api> {
 	const effortDriven = !!entry.efforts && entry.efforts.length > 0;
 	return {
@@ -380,9 +379,8 @@ export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> =
 		// none is ever sent.
 		reasoning: effortDriven,
 		...(effortDriven ? { thinkingLevelMap: thinkingLevelMapFor(entry.efforts!) } : {}),
-		// Input advertising comes from the caller (engine-dependent): the ACP
-		// engine forwards image blocks; advertising images on the stream engine
-		// would let pi offer image attach only for them to be dropped.
+		// Input advertising comes from the caller: both engines deliver
+		// user-attached images now.
 		input,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Gemini long context. agy doesn't expose the real per-model window in

@@ -143,9 +143,13 @@ test("streamSimple forwards image blocks from the user message to the driver", a
 		{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
 	);
 	for await (const ev of stream) void ev;
-	// Text rides as the prompt; images ride separately (the stream driver
-	// ignores them, the ACP driver forwards them as typed content blocks).
-	assert.equal(seen.opts?.prompt, "What is this?");
+	// Text rides as the prompt (with the staged-file note appended on the
+	// stream-json engine, whose turn input is text-only); images still ride
+	// separately (the stream driver ignores them, the ACP driver forwards
+	// them as typed content blocks).
+	assert.match(seen.opts?.prompt ?? "", /^What is this\?/);
+	assert.match(seen.opts?.prompt ?? "", /pi-bridge-img-.*image-1\.png/s);
+	assert.match(seen.opts?.prompt ?? "", /pi read tool/i);
 	assert.deepEqual(seen.opts?.images, [{ data: "aGVsbG8=", mimeType: "image/png" }]);
 });
 

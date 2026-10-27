@@ -147,9 +147,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// kickIdle, and reentry pointing at the other engine (round-7 finding).
 	const engine: Engine = loadConfig().engine;
 	// Engine switching requires a restart, so the catalog-time engine read is
-	// authoritative for input advertising: image attach rides only when turns
-	// will run on the ACP engine (the stream-json CLI prompt is text-only).
-	const modelInput: Array<"text" | "image"> = engine === "acp" ? ["text", "image"] : ["text"];
+	// authoritative for input advertising. Both engines accept images: ACP
+	// rides native content blocks; stream-json stages user attachments to
+	// temp files and the prompt points the model at them (prompt-images.ts).
+	const modelInput: Array<"text" | "image"> = ["text", "image"];
 	const models = entries.map((e) => toPiModel(e, modelInput));
 
 	// failAll reasons the bridge treats as routine (turn end / shutdown

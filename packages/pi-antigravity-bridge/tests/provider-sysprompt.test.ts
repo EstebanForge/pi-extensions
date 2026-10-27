@@ -64,6 +64,14 @@ test("tool priority note routes subagent delegation through pi (issue #6)", () =
 	assert.match(TOOL_PRIORITY_NOTE, /for example subagent, Agent, agent_spawn/);
 });
 
+test("tool priority note makes image visibility and poll discipline explicit (2026-10-22 couch regression)", () => {
+	// gemini-3.8-flash refused screenshots from priors and, after a STILL
+	// RUNNING ack, never polled, so the pixels never arrived.
+	assert.match(TOOL_PRIORITY_NOTE, /read tool returns image files as visible images/i);
+	assert.match(TOOL_PRIORITY_NOTE, /never claim you cannot view images/i);
+	assert.match(TOOL_PRIORITY_NOTE, /STILL RUNNING[^"]*?poll bridge_poll_result before (doing )?other work/i);
+});
+
 test("empty-string system prompt is treated as absent", () => {
 	assert.equal(buildFullPrompt("", "", "hello"), "hello");
 });

@@ -45,6 +45,7 @@ import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-s
 import path from "node:path";
 import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
+import { buildImageNote, stagePromptImages } from "./prompt-images.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -113,8 +114,9 @@ function extractUserPrompt(context: TranscriptContext): string | null {
 }
 
 /** Image blocks of the latest user message (pi-ai ImageContent: base64 data
- *  + mimeType). The ACP engine forwards them as typed content blocks; the
- *  stream-json CLI prompt is text-only, so its driver simply ignores these. */
+ *  + mimeType). On the ACP engine they ride session/prompt as native
+ *  content blocks; on stream-json they are staged to temp files and the
+ *  prompt names the paths (see prompt-images.ts). */
 function extractImages(context: TranscriptContext): Array<{ data: string; mimeType: string }> {
 	const last = context.messages[context.messages.length - 1];
 	if (!last || last.role !== "user" || typeof last.content === "string") return [];
@@ -164,7 +166,7 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
  *  the user's machine must go through the bridge. Rides the systemPrompt
  *  gate: the note ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -1057,6 +1059,9 @@ export interface LateToolResult {
 	reason: string;
 	text: string;
 	isError: boolean;
+	/** Image blocks of the stranded result (read on an image file). The
+	 *  redelivery prompt is text-only, so they ride driver.run images. */
+	images?: Array<{ data: string; mimeType: string }>;
 }
 
 /** Frame late tool results so agy treats them as the results its bridge calls
@@ -1332,8 +1337,10 @@ async function runTurnDriver(
 	// Images ride tool results on BOTH engines (ACP probe 2026-09-05;
 	// stream-json probe 2026-09-07: the CLI's MCP client delivers tool-result
 	// image content to the model — two-tone PNG named from the result alone,
-	// no decoders in the frame trail). The late-delivery prompt and the
-	// stream-json prompt attachments stay text-only by design.
+	// no decoders in the frame trail). The late-delivery PROMPT stays
+	// text-only: image blocks ride driver.run images instead, so both
+	// engines deliver them (ACP native prompt blocks; stream-json staged
+	// files).
 	for (const r of results)
 		deps.roundTrips.resolve(r.toolCallId, r.text, r.isError, r.images);
 
@@ -1350,7 +1357,14 @@ async function runTurnDriver(
 	if (!isContinuation) {
 		for (const r of collectToolResults(context.messages, deps.roundTrips.deadIds)) {
 			const dead = deps.roundTrips.consumeDead(r.toolCallId);
-			if (dead) late.push({ name: dead.name, reason: dead.reason, text: r.text, isError: r.isError });
+			if (dead)
+				late.push({
+					name: dead.name,
+					reason: dead.reason,
+					text: r.text,
+					isError: r.isError,
+					images: r.images.length > 0 ? r.images : undefined,
+				});
 		}
 		if (late.length > 0) {
 			deps.log?.("late-result", { tools: late.map((l) => l.name), freshConversation: !existing?.conversationId }, "info");
@@ -1377,8 +1391,22 @@ async function runTurnDriver(
 				reason: "you never received this result: you ended your turn without calling bridge_poll_result",
 				text: view.text ?? "(no output)",
 				isError: view.isError ?? false,
+				images: view.images,
 			};
 		});
+	/** Stream-json has no image channel in the turn input: stage the blocks
+	 *  to temp files and let the note point the model at the bridge read
+	 *  tool, whose result images the CLI delivers (probe 2026-09-07). ACP
+	 *  rides native content blocks; no staging there. */
+	const stageImageNote = (imgs: Array<{ data: string; mimeType: string }>): string => {
+		if (deps.engine === "acp" || imgs.length === 0) return "";
+		const staged = stagePromptImages(imgs);
+		if (!staged) {
+			deps.log?.("turn-warning", { reason: "image-staging-failed", count: imgs.length }, "warn");
+			return "";
+		}
+		return `\n\n${buildImageNote(staged.paths)}`;
+	};
 
 	const entry = entries.find((e) => e.id === model.id) ?? null;
 	const agyModel = entry?.full ?? model.id;
@@ -1481,10 +1509,15 @@ async function runTurnDriver(
 				agent = stagedAgentByConversation.get(existing.conversationId);
 			}
 		}
+		// Late/stranded image results ride driver.run images (the redelivery
+		// prompt is text-only); user-message images ride them on ACP natively
+		// and staged files on stream-json.
+		const runImages = [...images, ...late.flatMap((l) => l.images ?? [])];
 		const fullPrompt =
-			late.length > 0
+			(late.length > 0
 				? buildLateResultPrompt(late, prompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "")) +
+			stageImageNote(runImages);
 		try {
 			handle = await deps.driver.run({
 				cwd,
@@ -1496,7 +1529,7 @@ async function runTurnDriver(
 				inactivityMin: config.inactivityTimeoutMin,
 				conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
 				prompt: fullPrompt,
-				images: images.length > 0 ? images : undefined,
+				images: runImages.length > 0 ? runImages : undefined,
 				agent,
 				contextBlock: embeddedDigest
 					? {
@@ -1593,6 +1626,7 @@ async function runTurnDriver(
 		if (more.length > 0) {
 			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
 			deps.log?.("escalated-redelivery-turn", { tools: more.map((s) => s.name), conversation: conv }, "info");
+			const moreImages = more.flatMap((s) => s.images ?? []);
 			try {
 				const lateHandle = await deps.driver.run({
 					cwd,
@@ -1603,7 +1637,8 @@ async function runTurnDriver(
 					timeoutMin: config.turnTimeoutMin,
 					inactivityMin: config.inactivityTimeoutMin,
 					conversationId: conv,
-					prompt: buildLateResultPrompt(more),
+					prompt: buildLateResultPrompt(more) + stageImageNote(moreImages),
+					images: moreImages.length > 0 ? moreImages : undefined,
 					agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
 					signal: options?.signal,
 				});
