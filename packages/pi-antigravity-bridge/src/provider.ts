@@ -20,6 +20,7 @@
 import {
 	createAssistantMessageEventStream,
 	getCurrentSystemPrompt,
+	getCurrentTools,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type JsonValue,
@@ -50,6 +51,29 @@ const DEFAULT_TIMEOUT_MIN = 10;
 /** Warned once per process: config.agent set while the system prompt needs
  *  the staged carrier agent (issue #2 inline-block fallback). */
 let warnedUserAgentConflict = false;
+
+/** Set of caller-scoped tool names declared by pi-observational-memory background workers.
+ *  Antigravity models run a closed tool loop on the backend CLI/ACP process and do not
+ *  support caller-scoped local tools. */
+export const OM_WORKER_TOOL_NAMES = new Set([
+	"record_observations",
+	"record_reflections",
+	"drop_observations",
+]);
+
+/** Detect if a turn belongs to a pi-observational-memory background worker. */
+export function isObservationalMemoryContext(context: TranscriptContext): boolean {
+	const currentTools = getCurrentTools(context.messages);
+	return currentTools.some((t) => OM_WORKER_TOOL_NAMES.has(t.name));
+}
+
+/** Track whether we have warned about observational-memory tool mismatch in this process. */
+let warnedObservationalMemoryMismatch = false;
+
+/** Reset latch for unit testing. */
+export function _resetObservationalMemoryWarnedForTesting(): void {
+	warnedObservationalMemoryMismatch = false;
+}
 
 /** conversationId -> staged carrier agent name. Gate-closed turns look the
  *  name up here so a conversation's agent field never flips: a change would
@@ -1650,6 +1674,34 @@ export function createStreamSimple(
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
+
+		// Short-circuit pi-observational-memory background workers.
+		// Observational memory workers declare caller-scoped tools (record_observations,
+		// record_reflections, drop_observations). Antigravity models run in a closed backend
+		// process with their own tool execution loop and do not support caller-scoped tools.
+		// If dispatched to agy, the model sees tool instructions without tools and enters
+		// an autonomous loop searching the disk for their implementation.
+		// Returning a clean stop with empty content triggers OM's empty-observer backoff,
+		// preventing high-frequency retries on subsequent turns.
+		if (isObservationalMemoryContext(context)) {
+			if (!warnedObservationalMemoryMismatch) {
+				warnedObservationalMemoryMismatch = true;
+				deps.log?.(
+					"turn-warning",
+					{
+						reason: "observational-memory-unsupported",
+						message:
+							"Observational memory background workers cannot run against Antigravity models (caller-scoped tools unsupported). Configure a dedicated model under 'observational-memory.model' in settings.json.",
+					},
+					"warn",
+				);
+			}
+			const partial = newAssistant(model);
+			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			finalize(stream, blocks, "stop");
+			return stream;
+		}
+
 		// Fire the async turn; return the stream synchronously per pi's contract.
 		// Engine selection: the latched load-time engine when the extension
 		// provides one, else the per-call config read (tests). One loadConfig()
