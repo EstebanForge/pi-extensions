@@ -928,7 +928,7 @@ Soft items to ship alongside the flip (not blockers):
    has no `session/cancel`). Document in README and `/agy status`.
 3. Pull soak evidence from the daily logs (warn rates per engine, 1.4.9+)
    and attach to this section.
-4. Note that `AskAntigravity` stays on `agy -p` regardless (phase 4+).
+4. `AskAntigravity` stays on `agy -p` regardless (settled 2026-10-27: permanent and engine-independent; the delegation tool is not migrated to ACP, and it gained background runs on the `-p` path).
 
 Mechanics of the flip (minutes): default in `src/config.ts` + the
 `acp-config` test default + README engine table + AGENTS.md + beta wording.

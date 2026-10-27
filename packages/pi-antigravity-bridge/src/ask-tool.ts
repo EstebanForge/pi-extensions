@@ -21,9 +21,13 @@ import { Text } from "@earendil-works/pi-tui";
 import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
+	BackgroundRunRegistry,
+	backgroundFlagText,
 	buildAgyArgs,
 	buildFinalPrompt,
 	buildTimeBudgetNotice,
+	createStopHandler,
+	createWakeSender,
 	MAX_TIMEOUT_MINUTES,
 	CONVERSATIONS_DIR,
 	CONV_ID_RE,
@@ -33,6 +37,7 @@ import {
 	parseModelLine,
 	resolveAgyModel,
 	snapshotConversations,
+	summarizePrompt,
 	type ModelEntry,
 	type Mode,
 } from "@estebanforge/pi-ask-shared";
@@ -165,6 +170,266 @@ export function stageReviewerAgent(root: string): { name: string; dir: string } 
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// --- One-shot agy run -------------------------------------------------------
+
+type AskLogFn = (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+
+/** Terminal result of one `agy -p` lifecycle. */
+interface AgyOutcome {
+	exitCode: number;
+	aborted: boolean;
+	timedOut: boolean;
+	/** Full stdout, trimmed. Empty means the headless auto-deny failure mode. */
+	answerText: string;
+}
+
+/** Tool-result shape the execute path returns; keeps the background helper's literals narrow. */
+interface AskToolResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: AgyDetails;
+}
+
+/**
+ * Spawns `agy -p` and resolves when the process tree closes. Blocking and
+ * background runs share this lifecycle. Owns the delegation-suppression
+ * window for the WHOLE run: agy watches the global mcp_config and
+ * hot-reloads it, so a mid-run re-enable pokes the live delegation
+ * (observed live 2026-09-09). Background runs outlive execute()'s return,
+ * which is why the window lives here and not in the caller's finally.
+ */
+async function runAgyProcess(o: {
+	binary: string;
+	args: string[];
+	cwd: string;
+	timeoutMin: number;
+	startAt: number;
+	/** Mutated in place: conversationId discovery, stderr, outcome fields. */
+	details: AgyDetails;
+	isContinuation: boolean;
+	snapshot: ReturnType<typeof snapshotConversations> | null;
+	background: boolean;
+	/** Blocking passes pi's per-run signal; background passes none on purpose: a later Esc must not kill a detached run. */
+	signal?: AbortSignal;
+	/** Blocking only: throttled progress partials. */
+	onPartial?: (text: string) => void;
+	/** Background only: hands over the tree-kill switch as soon as it exists. */
+	registerKill?: (kill: () => void) => void;
+	/** Background only: the child closed; discovery/classification still running. Arms the stop handler's finishing guard. */
+	onClose?: () => void;
+	log?: AskLogFn;
+}): Promise<AgyOutcome> {
+	const restoreBridge = acquireBridgeSuppression();
+	let bridgeReleased = false;
+	const releaseBridge = () => {
+		if (bridgeReleased) return;
+		bridgeReleased = true;
+		restoreBridge();
+	};
+	let out = "";
+	// Local: o.snapshot narrowing does not survive into the bind-poll closure.
+	const snapshot = o.snapshot;
+	const statusInterval = o.onPartial
+		? setInterval(() => {
+				const elapsed = Math.floor((Date.now() - o.startAt) / 1000);
+				const tail = out.slice(-STATUS_TAIL_CHARS);
+				const text = tail ? `(running ${elapsed}s)\n…${tail}` : `(running ${elapsed}s)`;
+				o.onPartial!(text);
+			}, STATUS_INTERVAL_MS)
+		: null;
+
+	try {
+		// Bind the conversation id DURING the run (agy is alive then) so the
+		// pid-based /proc FD resolver can disambiguate when a concurrent agy
+		// also drops a new .db. Awaited after the run; the post-exit loop
+		// below is the fallback for runs that exit before the poll binds.
+		let bindDuringRun: Promise<void> = Promise.resolve();
+		const outcome = await new Promise<{ exitCode: number; aborted: boolean; timedOut: boolean }>((resolveP, rejectP) => {
+			const proc = spawn(o.binary, o.args, {
+				cwd: o.cwd,
+				stdio: ["ignore", "pipe", "pipe"],
+				shell: false,
+				detached: true,
+			});
+			proc.stdout?.setEncoding("utf8");
+			proc.stderr?.setEncoding("utf8");
+			// Valve: a runaway child must not grow these without bound over a
+			// detached run's lifetime (timeouts can reach days).
+			proc.stdout?.on("data", (d: string) => {
+				if (out.length < 1_000_000) out += d;
+			});
+			proc.stderr?.on("data", (d: string) => {
+				if (o.details.stderr.length < 65_536) o.details.stderr += d;
+			});
+
+			if (!o.isContinuation && snapshot && proc.pid) {
+				bindDuringRun = (async () => {
+					for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
+						if (o.details.conversationId) return;
+						if (proc.exitCode !== null) return; // agy gone: scan useless now
+						const found = newConversationId(CONVERSATIONS_DIR, snapshot, {
+							pid: proc.pid,
+						});
+						if (found) {
+							o.details.conversationId = found;
+							return;
+						}
+						await sleep(DISCOVERY_POLL_MS);
+					}
+				})().catch(() => {
+					/* best-effort: a bind error must never fail an otherwise-OK turn */
+				});
+			}
+
+			let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+			let watchdog: ReturnType<typeof setTimeout> | undefined;
+			let settled = false;
+			let timedOut = false;
+
+			const killTree = () => {
+				try {
+					if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+				} catch {
+					/* process group already gone */
+				}
+				if (!sigkillTimer) {
+					sigkillTimer = setTimeout(() => {
+						try {
+							if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+						} catch {
+							/* give up */
+						}
+					}, GRACE_AFTER_TIMEOUT_MS);
+				}
+			};
+
+			// Hand the tree-kill switch to the background registry before the
+			// watchdog arms, so /agy-stop can land the moment the run exists.
+			o.registerKill?.(killTree);
+
+			const cleanup = () => {
+				if (watchdog) clearTimeout(watchdog);
+				if (sigkillTimer) clearTimeout(sigkillTimer);
+				if (o.signal) o.signal.removeEventListener("abort", onAbort);
+				releaseBridge();
+				o.onClose?.();
+			};
+			const onAbort = () => killTree();
+
+			watchdog = setTimeout(() => {
+				timedOut = true;
+				killTree();
+			}, o.timeoutMin * 60_000);
+
+			if (o.signal) {
+				if (o.signal.aborted) killTree();
+				else o.signal.addEventListener("abort", onAbort, { once: true });
+			}
+
+			const finish = (code: number | null) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolveP({ exitCode: code ?? 0, aborted: !!o.signal?.aborted, timedOut });
+			};
+
+			proc.on("error", (err) => {
+				cleanup();
+				rejectP(err);
+			});
+			// Settle on close, never exit: exit can strand unread stdout
+			// (truncated answer) and would clear the SIGKILL escalation while
+			// group members are still dying.
+			proc.on("close", finish);
+		});
+
+		// Let the during-run bind poll finish (it bails immediately once agy
+		// has exited, so this rarely blocks).
+		await bindDuringRun;
+
+		o.details.exitCode = outcome.exitCode;
+		o.details.aborted = outcome.aborted;
+		o.details.timedOut = outcome.timedOut;
+		// details ride the tool result and are persisted in session files;
+		// stderr can carry auth material, so it is scrubbed at this boundary.
+		o.details.stderr = redactText(o.details.stderr);
+		o.details.durationMs = Date.now() - o.startAt;
+		o.log?.(
+			"ask-end",
+			{ exitCode: outcome.exitCode, aborted: outcome.aborted, timedOut: outcome.timedOut, empty: !out.trim(), background: o.background, durationMs: o.details.durationMs, conversationId: o.details.conversationId },
+			outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut || !out.trim() ? "warn" : "info",
+		);
+
+		if (!o.isContinuation && !o.details.conversationId && snapshot) {
+			for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
+				const found = newConversationId(CONVERSATIONS_DIR, snapshot);
+				if (found) {
+					o.details.conversationId = found;
+					break;
+				}
+				await sleep(DISCOVERY_POLL_MS);
+			}
+		}
+
+		return { ...outcome, answerText: out.trim() };
+	} finally {
+		if (statusInterval) clearInterval(statusInterval);
+		// Belt and braces: cleanup() already releases on close/error; this
+		// covers paths that never reached the process (sync spawn throw).
+		releaseBridge();
+	}
+}
+
+/**
+ * Builds the model/user-facing answer text for every terminal outcome.
+ * Pure except the empty-output marker it stamps on details. Blocking and
+ * background share it so both surfaces read identically.
+ */
+function shapeFinalText(details: AgyDetails, outcome: AgyOutcome, timeoutMin: number): string {
+	const text = outcome.answerText;
+
+	if (outcome.aborted) {
+		return text ? `agy was aborted. Partial output:\n\n${text}` : "agy was aborted before producing output.";
+	}
+
+	if (outcome.timedOut) {
+		const note = `agy exceeded the ${timeoutMin}m timeout and was killed`;
+		return text ? `${text}\n\n[${note}]` : note;
+	}
+
+	if (outcome.exitCode !== 0) {
+		// stderr can carry auth material; the note is chat-visible.
+		const stderr = redactText(details.stderr.trim());
+		const note = stderr
+			? `agy exited with status ${outcome.exitCode}: ${stderr}`
+			: `agy exited with status ${outcome.exitCode}`;
+		return text ? `${text}\n\n[${note}]` : note;
+	}
+
+	// Exit 0 with nothing on stdout is still a failure for the
+	// delegator: headless agy auto-denies a permission-gated tool call
+	// (e.g. the command gate in plan mode), prints the reason only to
+	// stderr, and ends cleanly. Falling through to the success path here
+	// returned just the conversation footer, which read as an empty
+	// success (silent-failure bug found 2026-09-25).
+	if (!text) {
+		details.empty = true;
+		const stderr = redactText(details.stderr.trim());
+		const note = [
+			"agy exited cleanly but produced no output.",
+			stderr ? `stderr: ${stderr}` : null,
+			"Common cause: a tool call needed a permission that headless mode cannot prompt for (typically the command gate in plan mode), so it was auto-denied and the turn ended with no answer. Recovery: retry in plan mode with all needed content inlined in the prompt - plan runs cannot fetch it, commands are denied. Or rerun outside plan mode with skipPermissions, or add your own permissions.allow rules in ~/.gemini/antigravity-cli/settings.json.",
+		]
+			.filter(Boolean)
+			.join(" ");
+		return note;
+	}
+
+	const footer = details.conversationId
+		? `\n\n[agy conversationId: ${details.conversationId} - pass as conversationId to continue this conversation]`
+		: "";
+	return text + footer;
+}
+
 // --- Registration ----------------------------------------------------------
 
 /** Register the AskAntigravity tool. Call once from the extension entry.
@@ -184,6 +449,209 @@ export async function registerAskAntigravityTool(
 	} catch {
 		// a sweep failure must never block registration
 	}
+
+	// --- Background-run state (one set per registration/load) ----------------
+	// Pi wipes module state on /new, /resume, /fork and /reload: an in-flight
+	// background run is killed and its result is never delivered. Accepted
+	// trade-off, same as the standalone pi-ask-antigravity extension.
+	const registry = new BackgroundRunRegistry({ toolName: "ask-antigravity" });
+	const kills = new Map<string, () => void>();
+	// Staged-artifact cleanup (contextFile + reviewer agent dir), keyed by run:
+	// the session_shutdown backstop runs these when a hard exit would skip the
+	// close-path cleanup.
+	const cleanups = new Map<string, () => void>();
+	// One run per conversationId at a time: two runs resuming the same
+	// conversation interleave their turns inside agy's SQLite state.
+	const busyHandles = new Set<string>();
+	// The child closed but the answer is not settled yet (discovery +
+	// classification): a stop in this window must refuse instead of settling
+	// failed and discarding a computed answer.
+	const finishing = new Set<string>();
+	// The wake is chat-visible and persisted: run it through the bridge's
+	// secret redactor like every other reassembled-output boundary.
+	const sendWake = createWakeSender(pi, {
+		customType: "ask-antigravity-result",
+		isDisposed: () => registry.isDisposed(),
+		redact: redactText,
+	});
+	const stopBackground = createStopHandler(registry, {
+		kill: (run) => kills.get(run.runId)?.(),
+		onStopped: (run) =>
+			sendWake({
+				toolLabel: "agy",
+				runId: run.runId,
+				ok: false,
+				elapsedS: Math.round((Date.now() - run.startedAt) / 1000),
+				error: "stopped via /agy-stop",
+			}),
+		// The guard keeps /agy-stop from discarding an answer that already
+		// finished computing and is riding discovery to its wake.
+		guard: (run) =>
+			finishing.has(run.runId) ? `Run ${run.runId} already finished; its result is being delivered.` : null,
+	});
+	pi.on("session_shutdown", () => {
+		// Latch first so close-handler wakes stay silent, then kill children,
+		// then sweep staged artifacts (a hard exit would skip the close path).
+		for (const run of registry.dispose()) kills.get(run.runId)?.();
+		for (const fn of cleanups.values()) fn();
+		cleanups.clear();
+		kills.clear();
+	});
+	pi.registerCommand("agy-stop", {
+		description: "Stop a background AskAntigravity run (id prefix, or the only running one). Usage: /agy-stop [runId]",
+		handler: async (args, ctx) => {
+			const message = await stopBackground(args ?? "");
+			if (ctx.hasUI) ctx.ui.notify(message, "info");
+		},
+	});
+
+	/** Fire-and-forget background run: registry slot, detached agy, wake on
+	 *  settle. Mirrors the standalone pi-ask-antigravity extension call for
+	 *  call; only the suppression window and the redaction are bridge-local. */
+	const startBackgroundRun = (o: {
+		summary: string;
+		binary: string;
+		args: string[];
+		workdir: string;
+		timeoutMin: number;
+		startAt: number;
+		details: AgyDetails;
+		contextFile: string | null;
+		reviewerAgent: { name: string; dir: string } | null;
+		modelLabel: string;
+		isContinuation: boolean;
+		snapshot: ReturnType<typeof snapshotConversations> | null;
+		conversationId?: string;
+	}): AskToolResult => {
+		const cleanupStaging = () => {
+			// Both staged artifacts must outlive the execute() return in
+			// background mode: agy reads them mid-run.
+			if (o.contextFile) {
+				try {
+					fs.unlinkSync(o.contextFile);
+				} catch {}
+			}
+			if (o.reviewerAgent) {
+				try {
+					fs.rmSync(o.reviewerAgent.dir, { recursive: true, force: true });
+				} catch {}
+			}
+		};
+		registry.sweep();
+		if (o.conversationId && busyHandles.has(o.conversationId)) {
+			cleanupStaging();
+			return {
+				content: [
+					{
+						type: "text",
+						text: `background refused: conversation ${o.conversationId} already has a background run. Wait for its wake message, or use blocking mode.`,
+					},
+				],
+				details: { ...o.details, refused: true },
+			};
+		}
+		if (o.conversationId) busyHandles.add(o.conversationId);
+		let run;
+		try {
+			run = registry.start(summarizePrompt(o.summary));
+		} catch (err) {
+			if (o.conversationId) busyHandles.delete(o.conversationId);
+			cleanupStaging();
+			const msg = err instanceof Error ? err.message : String(err);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `background refused: ${msg}. Use blocking (omit background) or free a slot with /agy-stop.`,
+					},
+				],
+				details: { ...o.details, refused: true },
+			};
+		}
+		const runId = run.runId;
+		cleanups.set(runId, cleanupStaging);
+		log?.(
+			"ask-start",
+			{ model: o.details.resolvedModel, thinking: o.details.thinking, mode: o.details.mode, digest: o.details.digest, continue: o.isContinuation, timeoutMin: o.timeoutMin, background: true },
+			"info",
+		);
+		void runAgyProcess({
+			binary: o.binary,
+			args: o.args,
+			cwd: o.workdir,
+			timeoutMin: o.timeoutMin,
+			startAt: o.startAt,
+			details: o.details,
+			isContinuation: o.isContinuation,
+			snapshot: o.snapshot,
+			background: true,
+			registerKill: (kill) => {
+				kills.set(runId, kill);
+			},
+			onClose: () => finishing.add(runId),
+			log,
+		})
+			.then((outcome) => {
+				kills.delete(runId);
+				const finalText = shapeFinalText(o.details, outcome, o.timeoutMin);
+				const elapsedS = Math.round((Date.now() - o.startAt) / 1000);
+				const handle = o.details.conversationId ? `conversationId=${o.details.conversationId}` : undefined;
+				const failed = outcome.timedOut || outcome.exitCode !== 0 || !outcome.answerText;
+				// The settle latch makes /agy-stop and shutdown win races
+				// against this handler: a false return means their wake went out.
+				const settled = registry.settle(runId, {
+					status: failed ? "failed" : "done",
+					output: finalText,
+					handle,
+					error: outcome.timedOut
+						? `timeout after ${o.timeoutMin}m`
+						: outcome.exitCode !== 0
+							? `exit status ${outcome.exitCode}`
+							: !outcome.answerText
+								? "agy exited cleanly but produced no output"
+								: undefined,
+				});
+				if (!settled) return;
+				if (outcome.timedOut) {
+					const partial = outcome.answerText
+						? ` Partial output: ${redactText(outcome.answerText).slice(0, 400)}`
+						: "";
+					sendWake({ toolLabel: "agy", runId, ok: false, elapsedS, error: `timeout after ${o.timeoutMin}m.${partial}`, handle });
+				} else if (outcome.exitCode !== 0) {
+					// stderr can carry auth material; the reason is chat-visible.
+					const reason = redactText(o.details.stderr.trim()).slice(0, 400) || `exit status ${outcome.exitCode}`;
+					sendWake({ toolLabel: "agy", runId, ok: false, elapsedS, error: reason, handle });
+				} else if (!outcome.answerText) {
+					sendWake({ toolLabel: "agy", runId, ok: false, elapsedS, error: "agy exited cleanly but produced no output (headless auto-deny?)", handle });
+				} else {
+					sendWake({ toolLabel: "agy", runId, ok: true, elapsedS, handle }, finalText);
+				}
+			})
+			.catch((err) => {
+				kills.delete(runId);
+				const msg = err instanceof Error ? err.message : String(err);
+				// Settle first: an /agy-stop that won the race owns the wake.
+				const settled = registry.settle(runId, { status: "failed", error: msg });
+				if (!settled) return;
+				sendWake({ toolLabel: "agy", runId, ok: false, error: `failed to run agy: ${msg}` });
+			})
+			.finally(() => {
+				cleanups.delete(runId);
+				finishing.delete(runId);
+				cleanupStaging();
+				if (o.conversationId) busyHandles.delete(o.conversationId);
+			});
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Background run ${runId} started (model=${o.modelLabel}). The result arrives as a message when agy finishes; the resume handle (conversationId) comes with it when agy reports one. Do not poll. Continue with other work or end the turn.`,
+				},
+			],
+			details: { ...o.details },
+		};
+	};
+
 	pi.registerTool({
 		name: "AskAntigravity",
 		label: "Ask Antigravity",
@@ -245,8 +713,8 @@ export async function registerAskAntigravityTool(
 			),
 			background: Type.Optional(
 				Type.Boolean({
-					description:
-						"NOT supported by this tool. The bridge runs agy through its own delegated flow and the answer must return synchronously to the caller. For background runs use the standalone @estebanforge/pi-ask-antigravity extension. Calls with background=true are refused.",
+					description: backgroundFlagText("conversationId"),
+					default: false,
 				}),
 			),
 		}),
@@ -277,6 +745,7 @@ export async function registerAskAntigravityTool(
 			if (useDigest) tags.push("digest");
 			if (isContinue) tags.push("continue");
 			if (args.includeContext) tags.push("context=full");
+			if (args.background) tags.push("bg");
 
 			let text = theme.fg("mdLink", theme.bold("AskAntigravity "));
 			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
@@ -299,7 +768,7 @@ export async function registerAskAntigravityTool(
 
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
 			const errored =
-		d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut || !!d?.empty;
+			!!d?.refused || d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut || !!d?.empty;
 
 			let text = errored
 				? theme.fg("error", "✗ AskAntigravity error")
@@ -351,22 +820,6 @@ export async function registerAskAntigravityTool(
 						{
 							type: "text",
 							text: 'readOnly is on: AskAntigravity is refused (fail-closed; the agy CLI has no review-only enforcement, google-antigravity/antigravity-cli#1181). Run /agy readonly off to use this tool.',
-						},
-					],
-					details: emptyDetails(),
-				};
-			}
-			// Background refusal (fail-closed): a wake from this tool would land in
-			// the pi session even when the CALLER is agy (nested delegation via the
-			// bridge catalog), and the bridge already owns an async delegation flow
-			// (early-ack + bridge_poll_result). The standalone pi-ask-antigravity
-			// extension is the background-capable tool.
-			if (params.background) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: 'background is not supported by the bridge\'s AskAntigravity: the answer must return synchronously to the caller. Long delegations are already covered by the bridge\'s own async flow (early-ack + bridge_poll_result); for an unattended peer run, launch agy directly in a terminal instead. Call again without background.',
 						},
 					],
 					details: emptyDetails(),
@@ -496,7 +949,7 @@ export async function registerAskAntigravityTool(
 
 			log?.(
 				"ask-start",
-				{ model: resolved.model, thinking: resolved.effort ?? config.defaultThinking, mode, digest: useDigest, continue: isContinuation, timeoutMin },
+				{ model: resolved.model, thinking: resolved.effort ?? config.defaultThinking, mode, digest: useDigest, continue: isContinuation, timeoutMin, background: false },
 				"info",
 			);
 			// Build argv via the shared peer adapter (see buildAgyArgs there for
@@ -532,236 +985,8 @@ export async function registerAskAntigravityTool(
 			};
 
 			const binary = process.env.AGY_BIN || "agy";
-			let out = "";
 
-			// Delegation isolation: any agy on this machine discovers MCP servers
-			// from the global mcp_config.json, so this spawned `agy -p` would find
-			// live pi-bridge-* entries and call tools the host bridge cannot serve
-			// outside a live provider turn ("no active antigravity turn"). agy also
-			// WATCHES that file (ReloadMcpConfig): re-enabling mid-run pokes the live
-			// delegation to reconnect. The old 5s grace timer did exactly that -
-			// observed live 2026-09-09 as a call-tool-fail ~50s into a delegation -
-			// so the entries now stay hidden for the WHOLE delegated run. The release
-			// fires only on process close/error (cleanup + finally below); if pi
-			// itself dies first, session start heals the file
-			// (healBridgeSuppression in extensions/index.ts, marker-aware). Cross-
-			// process coordination rides the suppression marker in mcp-registration.
-			// Refcounted, so overlapping delegations in this process cannot release
-			// each other's window early. A refused config fail-opens to the status quo.
-			const restoreBridge = acquireBridgeSuppression();
-
-			const statusInterval = onUpdate
-				? setInterval(() => {
-						const elapsed = Math.floor((Date.now() - start) / 1000);
-						const tail = out.slice(-STATUS_TAIL_CHARS);
-						const text = tail ? `(running ${elapsed}s)\n…${tail}` : `(running ${elapsed}s)`;
-						onUpdate({
-							content: [{ type: "text", text }],
-							details: { ...details, durationMs: Date.now() - start },
-						});
-					}, STATUS_INTERVAL_MS)
-				: null;
-
-			try {
-				// Bind the conversation id DURING the run (agy is alive then) so the
-				// pid-based /proc FD resolver can disambiguate when a concurrent agy
-				// also drops a new .db. Awaited after the run; the post-exit loop
-				// below is the fallback for runs that exit before the poll binds.
-				let bindDuringRun: Promise<void> = Promise.resolve();
-				const outcome = await new Promise<{
-					exitCode: number;
-					aborted: boolean;
-					timedOut: boolean;
-				}>((resolveP, rejectP) => {
-					const proc = spawn(binary, args, {
-						cwd,
-						stdio: ["ignore", "pipe", "pipe"],
-						shell: false,
-						detached: true,
-					});
-					proc.stdout?.setEncoding("utf8");
-					proc.stderr?.setEncoding("utf8");
-					proc.stdout?.on("data", (d: string) => (out += d));
-					proc.stderr?.on("data", (d: string) => (details.stderr += d));
-
-					// Concurrent bind: poll for the new id while agy is alive. The FD
-					// resolver needs a live process tree, so this stops (and the post-
-					// exit fallback below takes over) once agy has exited.
-					if (!isContinuation && snapshot && proc.pid) {
-						bindDuringRun = (async () => {
-							for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
-								if (details.conversationId) return;
-								if (proc.exitCode !== null) return; // agy gone: scan useless now
-								const found = newConversationId(CONVERSATIONS_DIR, snapshot, {
-									pid: proc.pid,
-								});
-								if (found) {
-									details.conversationId = found;
-									return;
-								}
-								await sleep(DISCOVERY_POLL_MS);
-							}
-						})().catch(() => {
-							/* best-effort: a bind error must never fail an otherwise-OK turn */
-						});
-					}
-
-					let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-					let watchdog: ReturnType<typeof setTimeout> | undefined;
-					let settled = false;
-					let timedOut = false;
-
-					const killTree = () => {
-						try {
-							if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-						} catch {
-							/* process group already gone */
-						}
-						if (!sigkillTimer) {
-							sigkillTimer = setTimeout(() => {
-								try {
-									if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-								} catch {
-									/* give up */
-								}
-							}, GRACE_AFTER_TIMEOUT_MS);
-						}
-					};
-
-					const cleanup = () => {
-						if (watchdog) clearTimeout(watchdog);
-						if (sigkillTimer) clearTimeout(sigkillTimer);
-						if (signal) signal.removeEventListener("abort", onAbort);
-						restoreBridge();
-					};
-					const onAbort = () => killTree();
-
-					watchdog = setTimeout(() => {
-						timedOut = true;
-						killTree();
-					}, timeoutMin * 60_000);
-
-					if (signal) {
-						if (signal.aborted) killTree();
-						else signal.addEventListener("abort", onAbort, { once: true });
-					}
-
-					const finish = (code: number | null) => {
-						if (settled) return;
-						settled = true;
-						cleanup();
-						resolveP({
-							exitCode: code ?? 0,
-							aborted: !!signal?.aborted,
-							timedOut,
-						});
-					};
-
-					proc.on("error", (err) => {
-						cleanup();
-						rejectP(err);
-					});
-					proc.on("close", finish);
-					proc.on("exit", finish);
-				});
-
-				if (statusInterval) clearInterval(statusInterval);
-
-				// Let the during-run bind poll finish (it bails immediately once agy
-				// has exited, so this rarely blocks).
-				await bindDuringRun;
-
-				details.exitCode = outcome.exitCode;
-				details.aborted = outcome.aborted;
-				details.timedOut = outcome.timedOut;
-				details.durationMs = Date.now() - start;
-				const text = out.trim();
-				log?.(
-					"ask-end",
-					{ exitCode: outcome.exitCode, aborted: outcome.aborted, timedOut: outcome.timedOut, empty: !text, durationMs: details.durationMs, conversationId: details.conversationId },
-					outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut || !text ? "warn" : "info",
-				);
-
-				if (!isContinuation && !details.conversationId && snapshot) {
-					for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
-						const found = newConversationId(CONVERSATIONS_DIR, snapshot);
-						if (found) {
-							details.conversationId = found;
-							break;
-						}
-						await sleep(DISCOVERY_POLL_MS);
-					}
-				}
-
-				if (outcome.aborted) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: text
-									? `agy was aborted. Partial output:\n\n${text}`
-									: "agy was aborted before producing output.",
-							},
-						],
-						details,
-					};
-				}
-
-				if (outcome.timedOut) {
-					const note = `agy exceeded the ${timeoutMin}m timeout and was killed`;
-					return {
-						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
-						details,
-					};
-				}
-
-				if (outcome.exitCode !== 0) {
-					// stderr can carry auth material; the note is chat-visible.
-					const stderr = redactText(details.stderr.trim());
-					const note = stderr
-						? `agy exited with status ${outcome.exitCode}: ${stderr}`
-						: `agy exited with status ${outcome.exitCode}`;
-					return {
-						content: [{ type: "text", text: text ? `${text}\n\n[${note}]` : note }],
-						details,
-					};
-				}
-
-				// Exit 0 with nothing on stdout is still a failure for the
-				// delegator: headless agy auto-denies a permission-gated tool call
-				// (e.g. the command gate in plan mode), prints the reason only to
-				// stderr, and ends cleanly. Falling through to the success path here
-				// returned just the conversation footer, which read as an empty
-				// success (silent-failure bug found 2026-09-25).
-				if (!text) {
-					details.empty = true;
-					const stderr = redactText(details.stderr.trim());
-					const note = [
-						"agy exited cleanly but produced no output.",
-						stderr ? `stderr: ${stderr}` : null,
-						"Common cause: a tool call needed a permission that headless mode cannot prompt for (typically the command gate in plan mode), so it was auto-denied and the turn ended with no answer. Recovery: retry in plan mode with all needed content inlined in the prompt - plan runs cannot fetch it, commands are denied. Or rerun outside plan mode with skipPermissions, or add your own permissions.allow rules in ~/.gemini/antigravity-cli/settings.json.",
-					]
-						.filter(Boolean)
-						.join(" ");
-					return { content: [{ type: "text", text: note }], details };
-				}
-
-				onUpdate?.({ content: [{ type: "text", text: "" }], details: { ...details } });
-				const footer = details.conversationId
-					? `\n\n[agy conversationId: ${details.conversationId} - pass as conversationId to continue this conversation]`
-					: "";
-				return { content: [{ type: "text", text: text + footer }], details };
-			} catch (err) {
-				if (statusInterval) clearInterval(statusInterval);
-				details.durationMs = Date.now() - start;
-				const msg = err instanceof Error ? err.message : String(err);
-				log?.("ask-fail", { error: msg, durationMs: details.durationMs }, "error");
-				return { content: [{ type: "text", text: `failed to run agy: ${msg}` }], details };
-			}
-			finally {
-				// Belt and braces: cleanup() already restores on close/error; this
-				// covers paths that never reached the process (sync spawn throw).
-				restoreBridge();
+			const cleanupStaging = () => {
 				if (contextFile) {
 					try {
 						fs.unlinkSync(contextFile);
@@ -772,6 +997,114 @@ export async function registerAskAntigravityTool(
 						fs.rmSync(reviewerAgent.dir, { recursive: true, force: true });
 					} catch {}
 				}
+			};
+
+			// Background: hand the run to the registry and return at once. The
+			// result travels back through sendMessage (wake), not this call.
+			if (params.background) {
+				if (ctx.mode === "print" || ctx.mode === "json") {
+					cleanupStaging();
+					return {
+						content: [
+							{
+								type: "text",
+								text: "background is not available in print/json mode: the process exits before the result message can arrive. Call again without background.",
+							},
+						],
+						details: { ...details, refused: true },
+					};
+				}
+				return startBackgroundRun({
+					summary: params.prompt,
+					binary,
+					args,
+					workdir: cwd,
+					timeoutMin,
+					startAt: start,
+					details,
+					contextFile,
+					reviewerAgent,
+					modelLabel: resolved.model ?? requestedModel,
+					isContinuation,
+					snapshot,
+					conversationId: isContinuation ? (rawConvId as string) : undefined,
+				});
+			}
+
+			// One run per conversationId at a time, blocking included: a blocking
+			// resume and a background resume of the same conversation would
+			// interleave turns inside agy's session state. Declared out here so
+			// the finally can see it; set only when THIS call takes the lock.
+			let lockAcquired = false;
+			try {
+				if (isContinuation && busyHandles.has(rawConvId as string)) {
+					cleanupStaging();
+					return {
+						content: [
+							{
+								type: "text",
+								text: `conversation ${rawConvId} already has a run in flight. Wait for its result; if it is a background run, /agy-stop can stop it.`,
+							},
+						],
+						details: emptyDetails(requestedModel, resolved.model),
+					};
+				}
+				lockAcquired = isContinuation;
+				if (lockAcquired) busyHandles.add(rawConvId as string);
+
+				const outcome = await runAgyProcess({
+					binary,
+					args,
+					cwd,
+					timeoutMin,
+					startAt: start,
+					details,
+					isContinuation,
+					snapshot,
+					background: false,
+					signal,
+					onPartial: onUpdate
+						? (text) => {
+								onUpdate({
+									content: [{ type: "text", text }],
+									details: { ...details, durationMs: Date.now() - start },
+								});
+							}
+						: undefined,
+					log,
+				});
+
+				const finalText = shapeFinalText(details, outcome, timeoutMin);
+
+				if (outcome.aborted || outcome.timedOut || outcome.exitCode !== 0) {
+					return { content: [{ type: "text", text: finalText }], details };
+				}
+
+				// Exit 0 with no output keeps its dedicated failure result
+				// (headless auto-deny); see shapeFinalText for the note.
+				if (!outcome.answerText) {
+					return { content: [{ type: "text", text: finalText }], details };
+				}
+
+				// Clear the last partial status line (claude-bridge idiom) so the
+				// running-tail preview doesn't linger under the final answer.
+				onUpdate?.({
+					content: [{ type: "text", text: "" }],
+					details: { ...details },
+				});
+
+				return {
+					content: [{ type: "text", text: finalText }],
+					details,
+				};
+			} catch (err) {
+				details.durationMs = Date.now() - start;
+				const msg = err instanceof Error ? err.message : String(err);
+				log?.("ask-fail", { error: msg, durationMs: details.durationMs }, "error");
+				return { content: [{ type: "text", text: `failed to run agy: ${msg}` }], details };
+			} finally {
+				if (lockAcquired) busyHandles.delete(rawConvId as string);
+				cleanupStaging();
 			}
 		},
 	});
@@ -857,6 +1190,9 @@ interface AgyDetails {
 	// Exit 0 with no answer on stdout (the empty-output failure branch).
 	// renderResult flips to the error glyph on it.
 	empty?: boolean;
+	// The call was refused before any spawn (validation, lock, cap, kill
+	// switch). renderResult flips to the error glyph on it.
+	refused?: boolean;
 	durationMs: number;
 	stderr: string;
 }
@@ -880,5 +1216,7 @@ function emptyDetails(
 		timedOut: false,
 		durationMs: 0,
 		stderr: "",
+		// Every emptyDetails caller is a refusal path.
+		refused: true,
 	};
 }

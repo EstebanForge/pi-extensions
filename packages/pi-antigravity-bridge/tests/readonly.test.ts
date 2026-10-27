@@ -230,6 +230,9 @@ async function registerTool(): Promise<RegisteredTool> {
 	const tools: RegisteredTool[] = [];
 	const fakePi = {
 		registerTool: (tool: RegisteredTool) => tools.push(tool),
+		registerCommand: () => {},
+		on: () => {},
+		sendMessage: () => {},
 	} as unknown as ExtensionAPI;
 	const { registerAskAntigravityTool } = await import("../src/ask-tool.js");
 	await registerAskAntigravityTool(fakePi, []);

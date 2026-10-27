@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import {
 	acquireBridgeSuppression,
 	bridgeServerName,
@@ -203,6 +203,33 @@ test("acquireBridgeSuppression refcounts: first acquire disables, last release r
 
 	// Double release is a no-op.
 	releaseA();
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, false);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("suppression refcount survives a runtime replacement (/reload)", async () => {
+	const home = tmpHome();
+	const file = cfgFile(home);
+	const marker = markerFile(home);
+	reg(home, ENTRY);
+
+	// Runtime A acquires, as a live delegation would.
+	const { acquireBridgeSuppression: acquireA } = await import("../src/mcp-registration.js");
+	const releaseA = acquireA({ configPath: file, markerPath: marker, pid: 4242 });
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, true);
+
+	// pi replaces the runtime on /new,/resume,/fork,/reload: fresh module
+	// instances, same process. Runtime B acquires for its own delegation.
+	vi.resetModules();
+	const { acquireBridgeSuppression: acquireB } = await import("../src/mcp-registration.js");
+	const releaseB = acquireB({ configPath: file, markerPath: marker, pid: 4242 });
+
+	// Runtime A's late release (its kill path is async) must not re-enable
+	// entries under runtime B's live delegation.
+	releaseA();
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, true);
+
+	releaseB();
 	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, false);
 	fs.rmSync(home, { recursive: true, force: true });
 });

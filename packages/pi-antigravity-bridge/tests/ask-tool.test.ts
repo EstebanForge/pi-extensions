@@ -293,7 +293,12 @@ type RegisteredTool = {
 		signal?: unknown,
 		onUpdate?: unknown,
 		ctx?: Record<string, unknown>,
-	) => Promise<{ content: Array<{ type: string; text: string }> }>;
+	) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
+	renderResult?: (
+		result: { content: Array<{ type: string; text: string }>; details?: unknown },
+		opts: { expanded: boolean; isPartial: boolean },
+		theme: { fg: (style: string, s: string) => string },
+	) => { text?: string } | object;
 };
 
 // The binary resolves at SPAWN time, so AGY_BIN must stay pointed at the
@@ -303,6 +308,9 @@ async function registerTool(): Promise<RegisteredTool> {
 	const tools: RegisteredTool[] = [];
 	const fakePi = {
 		registerTool: (tool: RegisteredTool) => tools.push(tool),
+		registerCommand: () => {},
+		on: () => {},
+		sendMessage: () => {},
 	} as unknown as ExtensionAPI;
 	const { registerAskAntigravityTool } = await import("../src/ask-tool.js");
 	await registerAskAntigravityTool(fakePi, []);
@@ -413,13 +421,19 @@ test("execute: plan run with agent staging failed falls back to no agent, no ski
 		},
 	));
 
-test("execute: background=true is refused (no wake into the pi session from a nested delegation)", async () => {
+test("execute: background=true is refused in print mode (the process exits before the wake)", async () => {
 	const tool = await registerTool();
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ask-cwd-bg-"));
-	// No AGY_BIN needed: the refusal fires before any spawn.
-	const result = await tool.execute("tbg", { prompt: "x", background: true, cwd }, undefined, undefined, { cwd });
-	assert.match(result.content[0].text, /background is not supported by the bridge's AskAntigravity/);
-	assert.match(result.content[0].text, /without background/);
+	// No AGY_BIN needed: the refusal fires before any spawn. Full background
+	// coverage (TUI mode) lives in ask-tool-background.test.ts.
+	const result = await tool.execute(
+		"tbg",
+		{ prompt: "x", background: true, cwd },
+		undefined,
+		undefined,
+		{ cwd, mode: "print" },
+	);
+	assert.match(result.content[0].text, /not available in print\/json mode/);
 });
 
 test("execute: prompt carries the time-budget notice before the plan guard, guard stays final", () =>
@@ -474,3 +488,18 @@ test("execute: rejects non-positive timeoutMinutes without spawning", () =>
 			);
 		},
 	));
+
+test("refusal results carry details.refused and render with the error glyph", async () => {
+	const tool = await registerTool();
+	assert.ok(tool.renderResult, "renderResult must exist on the tool");
+	const result = await tool.execute("r1", { prompt: "x", timeoutMinutes: 0 }, undefined, undefined, {
+		cwd: process.cwd(),
+	});
+	assert.equal((result.details as { refused?: boolean }).refused, true);
+	const rendered = tool.renderResult(
+		result,
+		{ expanded: false, isPartial: false },
+		{ fg: (_style: string, s: string) => s },
+	);
+	assert.match(String((rendered as { text?: string }).text ?? rendered), /✗/);
+});

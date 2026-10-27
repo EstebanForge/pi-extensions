@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0] - 2026-10-27
+
+### Fixed
+
+- **`/agy-stop` no longer discards an answer that already finished computing.** Between the agy process closing and the run settling (conversation discovery + classification, up to ~500ms), a stop settled the run failed and silently dropped the computed answer. The stop handler now consults a finishing guard (the new opt-in `guard` option on pi-ask-shared's `createStopHandler`) and refuses with "already finished; its result is being delivered" while that window is open; the wake then delivers normally.
+
+- **`details.stderr` is redacted at the boundary.** Tool-result details are persisted in session files, and raw stderr can carry auth material; the stored field now passes through the bridge's redactor. The blocking answer text stays raw, like every other ask tool. This rides the same change as the background feature, which introduced the background-run stderr wake path that made the asymmetry visible.
+
+- **The suppression refcount survives `/reload`.** It lived in module state, so a runtime replacement reset it to zero and the old runtime's late release (its kill path is async) could re-enable the bridge's global entries while the new runtime's delegation was still live. It now lives in a `Symbol.for`-keyed `globalThis` slot, shared by every runtime instance in the process.
+
+### Changed
+
+- **Refusal results render with the error glyph.** Refusal paths returned `exitCode: 0`, so pi showed "✓ AskAntigravity" for calls that never ran. They now carry `details.refused`, and `renderResult` flips to ✗. Details only; refusal text is unchanged.
+
+### Added
+
+- **`AskAntigravity` supports background runs, 1:1 with the standalone pi-ask-antigravity extension.** The old `background: true` refusal is gone: the call returns a `bg_` runId at once and the full answer arrives as an UNTRUSTED-tagged wake message (customType `ask-antigravity-result`, secret-redacted through the bridge's redactor) when the detached `agy -p` tree settles, carrying the conversationId resume handle. New `/agy-stop [runId]` command kills a run by id prefix, or the only running one with no argument. Shared `pi-ask-shared` machinery gives the same semantics as every other ask tool: concurrency cap 4 with a visible refusal, settle-once so a stop and a natural close can never double-wake, TTL sweep, and `session_shutdown` killing in-flight runs silently (pi's `/new`, `/resume`, `/fork`, `/reload` wipe module state and take the runs with them). Background is refused in print/json mode, where the process exits before the wake could arrive. Two behavior fixes ride along: the MCP-suppression window now spans background runs too (execute() returns while agy is still alive, so the release moved into the run lifecycle and fires exactly once per run), and the per-conversation lock (one run per conversationId, since two runs resuming the same conversation interleave turns inside agy's SQLite state) now also covers blocking calls. The delegation path itself is unchanged and engine-independent: always a fresh one-shot `agy -p`, never the ACP or stream-json turn engine. Review hardening riding in the same change: the detached run now settles on stream close instead of process exit (an exit-time settle could truncate the answer and disarmed the SIGKILL escalation while group members were still dying), stdout/stderr buffers carry valves (1M/64k) so a runaway child cannot grow memory over a days-long timeout, the timeout wake's partial-output slice is redacted before cutting (a sliced secret can fall under the redactor's length thresholds), and the suppression release is exactly-once at the call site, not just inside the callee's refcount guard.
+
 ## [1.8.8] - 2026-10-27
 
 ### Fixed

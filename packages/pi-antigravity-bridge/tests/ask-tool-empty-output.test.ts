@@ -70,6 +70,9 @@ async function registerTool(bin: string): Promise<RegisteredTool> {
 		const tools: RegisteredTool[] = [];
 		const fakePi = {
 			registerTool: (tool: RegisteredTool) => tools.push(tool),
+			registerCommand: () => {},
+			on: () => {},
+			sendMessage: () => {},
 		} as unknown as ExtensionAPI;
 		await registerAskAntigravityTool(fakePi, []);
 		expect(tools).toHaveLength(1);

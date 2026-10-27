@@ -150,6 +150,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy engine acp|stream-json   switch the turn engine (restart to apply; default acp, stream-json is the fallback; acp runs self-service setup: binary install + auth bootstrap). No arguments opens the engine picker modal (TUI)
 /agy auth-manual             manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
 /agy clear                drop all session bindings (force fresh conversations)
+/agy-stop [runId]         stop a background AskAntigravity run (id prefix, or the only running one with no argument)
 ```
 
 ### Permissions
@@ -226,9 +227,9 @@ pi-antigravity-bridge practical risk is low, near zero. But not zero: the "in co
 
 This is engineering analysis, not legal advice. Use against your own Antigravity account at your own risk; I am not responsible for any consequence to your account.
 
-## Delegation tool: background is refused
+## Delegation tool: background runs
 
-The `AskAntigravity` delegation tool rejects `background: true` by design: a background wake would land in the pi session even when the caller is a nested delegation through the bridge catalog, and long delegations already have the bridge's own async flow (early-ack plus `bridge_poll_result`). Call without `background`; for unattended peer runs launch the CLI directly in a terminal.
+`AskAntigravity` accepts `background: true` (1:1 with the standalone pi-ask-antigravity extension): the call returns a `bg_` runId at once and the full answer arrives later as an UNTRUSTED-tagged message (secret-redacted) carrying the resume handle. `/agy-stop [runId]` stops a run by id prefix, or the only running one with no argument; the concurrency cap is 4. A stop landing after agy already closed but before the result settles (the discovery window) is refused with "already finished; its result is being delivered" instead of dropping the answer. Background is refused in pi's print/json modes (the process exits before the message could arrive), and `/new`, `/resume`, `/fork`, `/reload` kill in-flight runs. Delegation always spawns a one-shot `agy -p` process - never the ACP or stream-json turn engine.
 
 ## License
 

@@ -221,7 +221,12 @@ function bestEffortWriteMarker(file: string, marker: SuppressionMarker): void {
 	}
 }
 
-const suppressionRefs = new Map<string, number>();
+// Pi replaces the runtime on /new,/resume,/fork,/reload: module state dies
+// but globalThis survives within the process. The refcount must live there,
+// or an old runtime's late release re-enables entries under a new runtime's
+// live delegation.
+const SUPPRESSION_REFS_KEY = Symbol.for("pi-antigravity-bridge.suppression-refs");
+const suppressionRefs: Map<string, number> = ((globalThis as Record<symbol, unknown>)[SUPPRESSION_REFS_KEY] ??= new Map()) as Map<string, number>;
 
 /** Reference-counted suppression for a self-spawned agy process (AskAntigravity
  *  delegation). First acquire disables every pi-bridge-* entry AND records

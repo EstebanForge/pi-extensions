@@ -60,6 +60,9 @@ test(
 			const fakePi = {
 				registerTool: (tool: { execute: (id: string, params: Record<string, unknown>, signal?: unknown, onUpdate?: unknown, ctx?: Record<string, unknown>) => Promise<unknown> }) =>
 					tools.push(tool),
+				registerCommand: () => {},
+				on: () => {},
+				sendMessage: () => {},
 			} as unknown as ExtensionAPI;
 			await registerAskAntigravityTool(fakePi, []);
 			expect(tools).toHaveLength(1);
@@ -106,6 +109,9 @@ test(
 			const fakePi = {
 				registerTool: (tool: { execute: (id: string, params: Record<string, unknown>, signal?: unknown, onUpdate?: unknown, ctx?: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }> }) =>
 					tools.push(tool),
+				registerCommand: () => {},
+				on: () => {},
+				sendMessage: () => {},
 			} as unknown as ExtensionAPI;
 			await registerAskAntigravityTool(fakePi, []);
 
