@@ -205,4 +205,34 @@ describe("AskAntigravity background mode", () => {
 		await new Promise((r) => setTimeout(r, 400));
 		expect(state.sendMessage).not.toHaveBeenCalled();
 	});
+
+	it("/agy-stop during the finishing window refuses and the answer still wakes", async () => {
+		// No conversation is ever found, so discovery sweeps its full 5×100ms
+		// budget after close: the run stays finishing for ~500ms. A stop at
+		// ~250ms (past close, inside the sweep) must refuse, and the answer
+		// must still arrive as a wake instead of being discarded.
+		writeFake(150);
+		const { pi, state } = makePi();
+		await factory(pi);
+		const tool = state.tools.find((t) => t.name === "AskAntigravity");
+		const stop = state.commands.get("agy-stop");
+		expect(stop).toBeDefined();
+
+		const result = await tool.execute("t7", { prompt: "answer on the way", background: true }, undefined, undefined, runCtx());
+		expect(result.content[0].text).toMatch(/Background run bg_[0-9a-f]+ started/);
+
+		await new Promise((r) => setTimeout(r, 250));
+		const notify = vi.fn();
+		await stop!("", runCtx({ ui: { notify } }));
+		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/already finished/), "info");
+		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/being delivered/), "info");
+
+		await waitFor(() => state.sendMessage.mock.calls.length > 0, "wake");
+		const [msg] = state.sendMessage.mock.calls[0];
+		expect(msg.content).toContain("finished");
+		expect(msg.content).toContain("FAKE AGY OUTPUT");
+		expect(msg.content).toMatch(/[Nn]o resume handle/);
+		expect(msg.content).not.toContain("FAILED");
+		expect(state.sendMessage.mock.calls.length).toBe(1);
+	});
 });

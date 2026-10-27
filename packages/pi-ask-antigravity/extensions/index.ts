@@ -513,6 +513,8 @@ interface ProcessRunOptions {
 	/** Background only: hands over the tree-kill switch plus the live child
 	 *  handle (pid for the FD-disambiguation poll) as soon as the child exists. */
 	onSpawn?: (kill: () => void, proc: ChildProcess) => void;
+	/** Background only: the child closed; discovery/classification still running. Arms the stop handler's finishing guard. */
+	onClose?: () => void;
 }
 
 interface ProcessRunOutcome {
@@ -535,7 +537,7 @@ interface AskToolResult {
  * resolves when the process tree closes.
  */
 async function runAgyProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome> {
-	const { binary, args, workdir, timeoutMin, startAt, details, isContinuation, snapshot, signal, onPartial, onSpawn } = opts;
+	const { binary, args, workdir, timeoutMin, startAt, details, isContinuation, snapshot, signal, onPartial, onSpawn, onClose } = opts;
 	let out = "";
 
 	const statusInterval = onPartial
@@ -596,6 +598,9 @@ async function runAgyProcess(opts: ProcessRunOptions): Promise<ProcessRunOutcome
 		});
 
 		if (statusInterval) clearInterval(statusInterval);
+		// runProcess resolves only on stream close: the child is gone, output
+		// drained; discovery/classification still runs below.
+		onClose?.();
 
 		// Let the during-run bind poll finish (it bails immediately once agy
 		// has exited, so this rarely blocks).
@@ -723,6 +728,10 @@ export default async function (pi: ExtensionAPI) {
 	// One background run per conversationId at a time: two runs resuming the
 	// same conversation interleave their turns inside agy's SQLite state.
 	const busyHandles = new Set<string>();
+	// The child closed but the answer is not settled yet (discovery +
+	// classification): a stop in this window must refuse instead of settling
+	// failed and discarding a computed answer.
+	const finishing = new Set<string>();
 	const sendWake = createWakeSender(pi, {
 		customType: "ask-antigravity-result",
 		isDisposed: () => registry.isDisposed(),
@@ -737,6 +746,10 @@ export default async function (pi: ExtensionAPI) {
 				elapsedS: Math.round((Date.now() - run.startedAt) / 1000),
 				error: "stopped via /agy-stop",
 			}),
+		// The guard keeps /agy-stop from discarding an answer that already
+		// finished computing and is riding discovery to its wake.
+		guard: (run) =>
+			finishing.has(run.runId) ? `Run ${run.runId} already finished; its result is being delivered.` : null,
 	});
 	pi.on("session_shutdown", () => {
 		// Latch first so close-handler wakes stay silent, then kill children,
@@ -1457,6 +1470,7 @@ export default async function (pi: ExtensionAPI) {
 			onSpawn: (kill) => {
 				kills.set(runId, kill);
 			},
+			onClose: () => finishing.add(runId),
 		})
 			.then((outcome) => {
 				kills.delete(runId);
@@ -1501,6 +1515,7 @@ export default async function (pi: ExtensionAPI) {
 			})
 			.finally(() => {
 				cleanups.delete(runId);
+				finishing.delete(runId);
 				cleanupStaging();
 				if (o.conversationId) busyHandles.delete(o.conversationId);
 			});

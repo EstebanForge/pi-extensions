@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-10-27
+
+### Fixed
+
+- **`/agy-stop` no longer discards an answer that already finished computing.** Between the agy process closing and the run settling (conversation discovery + classification, up to ~500ms), a stop settled the run failed and silently dropped the computed answer. The stop handler now consults a finishing guard (the new opt-in `guard` option on pi-ask-shared's `createStopHandler`, dependency floor raised to ^0.1.3) and refuses with "already finished; its result is being delivered" while that window is open; the wake then delivers normally.
+
 ## [1.3.1] - 2026-10-21
 
 ### Added
