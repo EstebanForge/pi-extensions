@@ -21,7 +21,9 @@ import { isKnownNoiseLine, MAX_FRAME_BYTES, stripGluedNoise } from "./frame-guar
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
 import { gateHooksStaged } from "./approval-hook.js";
 import { parkedTurnAnswer } from "./parked-turn.js";
+import { defaultCliSettingsPath, ensureQueuedMessagesInFile } from "./queued-messages.js";
 import { redactText } from "./redact.js";
+import { StreamSanitizer, sanitizeSystemMessage } from "./stream-sanitizer.js";
 import type {
 	AgyUsage,
 	DriverActivity,
@@ -44,6 +46,8 @@ export type {
 	TurnOutcome,
 } from "./driver-types.js";
 
+export { StreamSanitizer, sanitizeSystemMessage };
+
 const LIFECYCLE_LIMIT = 24;
 const THINKING_TOKEN_FLOOR = 64;
 
@@ -61,6 +65,8 @@ interface ActiveTurn {
 	idleTimer?: NodeJS.Timeout;
 	onAbort?: () => void;
 	response: string;
+	rawResponse: string;
+	sanitizer: StreamSanitizer;
 	usage?: AgyUsage;
 	conversationId?: string;
 	/** Wall clock at turn creation; the parked-turn probe filters
@@ -305,6 +311,8 @@ export class StreamDriver implements TurnDriver {
 			resolve,
 			outcome,
 			response: "",
+			rawResponse: "",
+			sanitizer: new StreamSanitizer(),
 			sawResult: false,
 			sawModelStep: false,
 			cumulativeText: undefined,
@@ -369,6 +377,8 @@ export class StreamDriver implements TurnDriver {
 		};
 		this.#boundConversation = request.conversationId ?? undefined;
 		this.#stderrTail = "";
+
+		ensureQueuedMessagesInFile(defaultCliSettingsPath());
 
 		const args: string[] = ["--add-dir", request.cwd];
 		// The bridge dir carries .agents/mcp_config.json (tool bridge) and, when
@@ -571,7 +581,11 @@ export class StreamDriver implements TurnDriver {
 				const ok = r.status === "OK" || r.status === "SUCCESS";
 				const status = ok ? "OK" : "ERROR";
 				// Prefer the streamed accumulation, fall back to the result body.
-				const response = turn.response || (typeof r.response === "string" ? r.response : "");
+				const fallback = typeof r.response === "string" ? sanitizeSystemMessage(r.response) : "";
+				const response = turn.response || fallback;
+				if (!turn.response && fallback) {
+					turn.sanitizer.reset();
+				}
 				turn.response = response;
 				this.#settle(turn, {
 					conversationId: turn.conversationId,
@@ -596,36 +610,54 @@ export class StreamDriver implements TurnDriver {
 		// misflips (round-7 review): short accumulations never flip, and a
 		// cumulative frame that no longer extends the accumulator is evidence
 		// of a misflip - fall back to append mode.
+		let rawDelta = "";
 		if (turn.cumulativeText === undefined) {
 			turn.cumulativeText = false;
 		} else if (
 			!turn.cumulativeText &&
-			shouldFlipToCumulative(turn.response, text)
+			shouldFlipToCumulative(turn.rawResponse, text)
 		) {
 			turn.cumulativeText = true;
 		}
 		if (turn.cumulativeText) {
-			if (!text.startsWith(turn.response)) {
+			if (!text.startsWith(turn.rawResponse)) {
 				// Misflip evidence: back to deltas.
 				turn.cumulativeText = false;
-				turn.response += text;
-				emit(turn, { type: "text", delta: text });
+				turn.rawResponse += text;
+				rawDelta = text;
+			} else if (text.length > turn.rawResponse.length) {
+				rawDelta = text.slice(turn.rawResponse.length);
+				turn.rawResponse = text;
+			} else {
 				return;
 			}
-			if (text.length > turn.response.length) {
-				const delta = text.slice(turn.response.length);
-				turn.response = text;
-				emit(turn, { type: "text", delta });
-			}
-			return;
+		} else {
+			turn.rawResponse += text;
+			rawDelta = text;
 		}
-		turn.response += text;
-		emit(turn, { type: "text", delta: text });
+
+		if (rawDelta.length > 0) {
+			const sanitizedDelta = turn.sanitizer.push(rawDelta);
+			if (sanitizedDelta.length > 0) {
+				turn.response += sanitizedDelta;
+				emit(turn, { type: "text", delta: sanitizedDelta });
+			}
+		}
 	}
 
 	#settle(turn: ActiveTurn, outcome: TurnOutcome): void {
 		if (turn.closed) return;
 		turn.closed = true;
+		const flushed = turn.sanitizer.flush();
+		if (flushed.length > 0) {
+			turn.response += flushed;
+			emit(turn, { type: "text", delta: flushed });
+		}
+		if (outcome.deadline && outcome.status === "OK") {
+			outcome.response = outcome.response || turn.response;
+		} else {
+			outcome.response = turn.response || outcome.response;
+		}
 		if (turn.overallTimer) clearTimeout(turn.overallTimer);
 		if (turn.idleTimer) clearTimeout(turn.idleTimer);
 		if (turn.onAbort && turn.request.signal) {
@@ -680,7 +712,7 @@ export class StreamDriver implements TurnDriver {
 			this.#settle(turn, {
 				conversationId: turn.conversationId,
 				status: "OK",
-				response: parked,
+				response: sanitizeSystemMessage(parked),
 				usage: turn.usage,
 				finished: true,
 				aborted: false,

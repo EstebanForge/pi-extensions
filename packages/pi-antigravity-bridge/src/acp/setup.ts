@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ensureQueuedMessagesInFile, QUEUED_MESSAGES_SEND_IMMEDIATELY } from "../queued-messages.js";
 
 export const REGISTRY_URL =
 	"https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json";
@@ -312,7 +313,11 @@ export function writeAuthType(type: "gemini-api-key" | "oauth-personal", dir?: s
 		/* fresh file */
 	}
 	const prevAuth = (typeof settings.auth === "object" && settings.auth !== null ? settings.auth : {}) as Record<string, unknown>;
-	fs.writeFileSync(file, `${JSON.stringify({ ...settings, auth: { ...prevAuth, type } }, null, 2)}\n`, { mode: 0o600 });
+	const nextSettings: Record<string, unknown> = { ...settings, auth: { ...prevAuth, type } };
+	if (typeof nextSettings.queuedMessages !== "string" || !nextSettings.queuedMessages.trim()) {
+		nextSettings.queuedMessages = QUEUED_MESSAGES_SEND_IMMEDIATELY;
+	}
+	fs.writeFileSync(file, `${JSON.stringify(nextSettings, null, 2)}\n`, { mode: 0o600 });
 }
 
 export interface BinaryResolution {
@@ -386,6 +391,7 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 	// plan as the agy CLI login). gemini-api-key (metered paid API) stays a
 	// manual option for headless boxes (/agy auth-manual); never the default.
 	const gdir = defaultGeminiDir(opts);
+	ensureQueuedMessagesInFile(path.join(gdir, "settings.json"));
 	const auth = readAuthState(gdir);
 	if (!auth.configured) {
 		try {

@@ -14,6 +14,15 @@ case "$_line" in
     sleep 0.1
     exit 0
     ;;
+  *SYSTEM-MESSAGE*)
+    printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-sysmsg"}}'
+    sleep 0.1
+    printf '%s\n' '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"The following is a <SYSTEM_MESSAGE>task-123 ok</SYSTEM_MESSAGE>\nReal reply"}}'
+    sleep 0.1
+    printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"RESULT-BODY"}}'
+    sleep 0.1
+    exit 0
+    ;;
   *STDERR-LEAK*)
     # Secret-bearing stderr crash (redaction tests): the exit path feeds
     # stderrTail straight into the turn-failure message.

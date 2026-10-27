@@ -736,6 +736,13 @@ export class AcpDriver implements TurnDriver {
 
 	#settle(turn: ActiveTurn, outcome: TurnOutcome): void {
 		if (turn.closed) return;
+		const flushed = turn.response.flush();
+		if (flushed) {
+			turn.textDeltas += 1;
+			turn.textTokens += estimateTokens(flushed);
+			this.#emit(turn, { type: "text", delta: flushed });
+		}
+		outcome.response = turn.response.text;
 		// Gate B stopgap: synthesize usage on clean turns while the server sends
 		// none. Runs BEFORE close so the usage activity drains through the
 		// normal #nextActivity loop (provider maps it onto partial.usage).

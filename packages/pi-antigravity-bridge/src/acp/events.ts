@@ -14,6 +14,10 @@
 //   - available_commands_update { availableCommands: [...] }
 // Usage: ABSENT on RC01 (Gate B) — mapped defensively should a future build add it.
 
+import { StreamSanitizer, sanitizeSystemMessage } from "../stream-sanitizer.js";
+
+export { StreamSanitizer, sanitizeSystemMessage };
+
 /** Map one `update` object to a driver-level event, or null when the update
  *  carries nothing the driver consumes (plan/commands are doctor/phase-2
  *  material; user_message_chunk is load replay and must never reach pi as
@@ -218,38 +222,60 @@ export function mapStopReason(stopReason: unknown): {
 const FLIP_MIN_CHARS = 32;
 
 export class TextAccumulator {
-	#acc = "";
+	#rawAcc = "";
+	#sanitizedAcc = "";
 	#cumulative: boolean | undefined;
+	#sanitizer = new StreamSanitizer();
 
 	/** Returns the delta to emit, or null when nothing new should be emitted. */
 	append(delta: string): string | null {
+		let rawEmit: string | null = null;
 		if (this.#cumulative === undefined) this.#cumulative = false;
 		else if (
 			!this.#cumulative &&
-			this.#acc.length >= FLIP_MIN_CHARS &&
-			delta.length > this.#acc.length &&
-			delta.startsWith(this.#acc)
+			this.#rawAcc.length >= FLIP_MIN_CHARS &&
+			delta.length > this.#rawAcc.length &&
+			delta.startsWith(this.#rawAcc)
 		) {
 			this.#cumulative = true;
 		}
 		if (this.#cumulative) {
-			if (!delta.startsWith(this.#acc)) {
+			if (!delta.startsWith(this.#rawAcc)) {
 				// Misflip evidence: back to deltas.
 				this.#cumulative = false;
-				this.#acc += delta;
-				return delta;
+				this.#rawAcc += delta;
+				rawEmit = delta;
+			} else if (delta.length <= this.#rawAcc.length) {
+				return null; // duplicate frame
+			} else {
+				rawEmit = delta.slice(this.#rawAcc.length);
+				this.#rawAcc = delta;
 			}
-			if (delta.length <= this.#acc.length) return null; // duplicate frame
-			const emit = delta.slice(this.#acc.length);
-			this.#acc = delta;
-			return emit;
+		} else {
+			this.#rawAcc += delta;
+			rawEmit = delta;
 		}
-		this.#acc += delta;
-		return delta;
+
+		if (rawEmit === null) return null;
+		const sanitized = this.#sanitizer.push(rawEmit);
+		if (sanitized.length > 0) {
+			this.#sanitizedAcc += sanitized;
+			return sanitized;
+		}
+		return null;
+	}
+
+	flush(): string | null {
+		const flushed = this.#sanitizer.flush();
+		if (flushed.length > 0) {
+			this.#sanitizedAcc += flushed;
+			return flushed;
+		}
+		return null;
 	}
 
 	get text(): string {
-		return this.#acc;
+		return this.#sanitizedAcc;
 	}
 }
 

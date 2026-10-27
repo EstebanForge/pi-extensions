@@ -310,4 +310,37 @@ describe("stream-json driver plan-mode skip-permission gating", () => {
 		assert.equal(stats.recycles, 0, "raw knob flip stays invisible in plan mode (effective unchanged)");
 		await driver.close("shutdown");
 	});
+
+	test("StreamDriver strips <SYSTEM_MESSAGE> blocks from streamed deltas", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "SYSTEM-MESSAGE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const activities: DriverActivity[] = [];
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "Real reply");
+		const text = activities
+			.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
+			.map((a) => a.delta)
+			.join("");
+		assert.equal(text, "Real reply");
+		await driver.close("shutdown");
+	});
 });

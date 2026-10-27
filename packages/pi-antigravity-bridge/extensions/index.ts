@@ -63,6 +63,7 @@ import { runAcpAuth } from "../src/acp/auth.js";
 import { setAuthInvalidatedHook } from "../src/acp/connection.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
+import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
@@ -117,6 +118,8 @@ function resolveAgyBinary(): string {
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
+	ensureQueuedMessagesDefaults({ onlyIfDirExists: true });
+
 	// Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
 	// installed) checks this in-process flag OR the bridge's package.json on disk
 	// and defers. See that extension's isBridgeInstalled().

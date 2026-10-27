@@ -313,4 +313,24 @@ describe("acp/events TextAccumulator", () => {
 		assert.deepEqual(emitted, ["\n39\n40\n4", "1\n42\n43"]);
 		assert.equal(acc.text, "\n39\n40\n41\n42\n43");
 	});
+
+	test("strips <SYSTEM_MESSAGE> blocks across streamed chunks", () => {
+		const acc = new TextAccumulator();
+		const emitted: string[] = [];
+		const chunks = [
+			"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n\n",
+			"<SYSTEM_MESSAGE>\n[Message] timestamp=... content=Task id \"task-123\" finished with result: 0\n",
+			"</SYSTEM_MESSAGE>\n",
+			"Here is the real answer.",
+		];
+		for (const chunk of chunks) {
+			const e = acc.append(chunk);
+			if (e !== null) emitted.push(e);
+		}
+		const flushed = acc.flush();
+		if (flushed !== null) emitted.push(flushed);
+
+		assert.equal(emitted.join(""), "Here is the real answer.");
+		assert.equal(acc.text, "Here is the real answer.");
+	});
 });
