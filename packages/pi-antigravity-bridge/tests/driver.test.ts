@@ -41,7 +41,10 @@ describe("stream-json driver stdout framing (H1)", () => {
 		assert.equal(outcome.conversationId, "conv-777");
 		assert.equal(outcome.response, "HALF-ONE-HALF-TWO");
 		const text = activities
-			.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
+			.filter(
+				(a): a is Extract<DriverActivity, { type: "text" }> =>
+					a.type === "text",
+			)
 			.map((a) => a.delta)
 			.join("");
 		assert.equal(text, "HALF-ONE-HALF-TWO");
@@ -129,7 +132,11 @@ describe("stream-json driver shutdown latch", () => {
 		for (let i = 0; i < 80 && driver.state !== "running"; i++) {
 			await new Promise((r) => setTimeout(r, 25));
 		}
-		assert.equal(driver.state, "running", "turn should be running before the recycle");
+		assert.equal(
+			driver.state,
+			"running",
+			"turn should be running before the recycle",
+		);
 		driver.close("recycle", "session switch");
 		const outcome = await handle.outcome;
 		assert.equal(outcome.status, "ERROR");
@@ -222,6 +229,105 @@ describe("stream-json driver issue-#2 evidence fields", () => {
 	}, 30_000);
 });
 
+describe("stream-json driver overall-cap pause on parks", () => {
+	// The overall cap (timeoutMin) is a turn deadline, not an inactivity
+	// guard: pi-tool time (G9 parks) and human-gated time must not consume
+	// it, matching the ACP driver's remaining-budget semantics. Pre-fix the
+	// timer was armed once and cleared only at settle, so a parked call ate
+	// the turn cap.
+	test("a park suspends the overall cap and the remaining budget resumes on unpark", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "please HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.03, // ~1.8s cap
+			inactivityMin: 0, // only the overall cap can fire
+		});
+		for (let i = 0; i < 80 && driver.state !== "running"; i++) {
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		assert.equal(driver.state, "running");
+		driver.activeHandle?.pushExternal({
+			type: "bridge_call",
+			callId: "c1",
+			name: "AskClaude",
+			args: {},
+		});
+		// Outlive the cap while parked: pre-fix this fires "timeout".
+		await new Promise((r) => setTimeout(r, 2500));
+		const raced = await Promise.race([
+			handle.outcome.then((o) => o.status),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 500)),
+		]);
+		assert.equal(
+			raced,
+			"running",
+			"the overall cap must not fire while parked",
+		);
+		driver.kickIdle();
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.equal(outcome.deadline, "timeout");
+		assert.match(outcome.error ?? "", /turn timeout/);
+		await driver.close("shutdown");
+	}, 30_000);
+
+	test("without a park the overall cap still fires", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "please HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.02, // ~1.2s cap
+			inactivityMin: 0,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.equal(outcome.deadline, "timeout");
+		await driver.close("shutdown");
+	}, 30_000);
+
+	test("a disabled cap (0) stays disabled across a park cycle", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "please HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0,
+			inactivityMin: 0,
+		});
+		for (let i = 0; i < 80 && driver.state !== "running"; i++) {
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		driver.activeHandle?.pushExternal({
+			type: "bridge_call",
+			callId: "c1",
+			name: "AskClaude",
+			args: {},
+		});
+		await new Promise((r) => setTimeout(r, 400));
+		driver.kickIdle();
+		await new Promise((r) => setTimeout(r, 400));
+		const raced = await Promise.race([
+			handle.outcome.then((o) => o.status),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 100)),
+		]);
+		assert.equal(raced, "running");
+		await driver.close("shutdown");
+		assert.equal((await handle.outcome).status, "ERROR"); // shutdown close, not a cap
+	}, 30_000);
+});
+
 describe("stream-json driver stderr redaction", () => {
 	// Regression (peer review 2026-09): the raw stderr tail rode verbatim into
 	// the turn-failure message (user transcript + daily log). A secret agy
@@ -307,7 +413,11 @@ describe("stream-json driver plan-mode skip-permission gating", () => {
 		});
 		await second.outcome;
 		const stats = driver.snapshot().stats;
-		assert.equal(stats.recycles, 0, "raw knob flip stays invisible in plan mode (effective unchanged)");
+		assert.equal(
+			stats.recycles,
+			0,
+			"raw knob flip stays invisible in plan mode (effective unchanged)",
+		);
 		await driver.close("shutdown");
 	});
 
@@ -337,7 +447,10 @@ describe("stream-json driver plan-mode skip-permission gating", () => {
 		assert.equal(outcome.status, "OK");
 		assert.equal(outcome.response, "Real reply");
 		const text = activities
-			.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
+			.filter(
+				(a): a is Extract<DriverActivity, { type: "text" }> =>
+					a.type === "text",
+			)
 			.map((a) => a.delta)
 			.join("");
 		assert.equal(text, "Real reply");

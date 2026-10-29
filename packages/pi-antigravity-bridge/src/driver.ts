@@ -62,6 +62,12 @@ interface ActiveTurn {
 	resolve: (o: TurnOutcome) => void;
 	outcome: Promise<TurnOutcome>;
 	overallTimer?: NodeJS.Timeout;
+	/** Overall-cap bookkeeping for park pauses: a wall-clock deadline while
+	 *  the timer runs, null while parked (parked time must not consume the
+	 *  budget), mirroring the ACP driver's remaining-budget semantics. */
+	overallDeadline: number | null;
+	/** Remaining budget captured at park time; null while the timer runs. */
+	overallRemainingMs: number | null;
 	idleTimer?: NodeJS.Timeout;
 	onAbort?: () => void;
 	response: string;
@@ -117,6 +123,17 @@ function makeHandle(turn: ActiveTurn): TurnHandle {
 		pushExternal: (activity) => {
 			if (activity.type === "bridge_call") {
 				turn.parks += 1;
+				// A park suspends both caps: agy is blocked waiting on the MCP
+				// HTTP response, so parked time consumes neither the stall guard
+				// nor the turn deadline (pi-tool and human-gated time stay free).
+				if (turn.overallTimer) {
+					clearTimeout(turn.overallTimer);
+					turn.overallTimer = undefined;
+				}
+				if (turn.overallDeadline !== null) {
+					turn.overallRemainingMs = Math.max(0, turn.overallDeadline - Date.now());
+					turn.overallDeadline = null;
+				}
 				if (turn.idleTimer) {
 					clearTimeout(turn.idleTimer);
 					turn.idleTimer = undefined;
@@ -204,13 +221,20 @@ export class StreamDriver implements TurnDriver {
 		const turn = this.#active;
 		if (!turn || turn.closed) return;
 		if (turn.parks > 0) turn.parks -= 1;
-		if (turn.parks === 0 && !turn.idleTimer) {
-			const idleMin = turn.request.inactivityMin ?? 5;
-			// 0 disables the stall guard (config inactivityTimeoutMin: 0).
-			if (idleMin > 0) {
-				turn.idleTimer = setTimeout(() => {
-					void this.#turnDeadlineGuard(turn, "stall", `agy stalled for ${idleMin}m with no output`);
-				}, idleMin * 60_000);
+		if (turn.parks === 0) {
+			if (turn.overallRemainingMs !== null) {
+				const remaining = turn.overallRemainingMs;
+				turn.overallRemainingMs = null;
+				this.#startOverallTimer(turn, remaining);
+			}
+			if (!turn.idleTimer) {
+				const idleMin = turn.request.inactivityMin ?? 5;
+				// 0 disables the stall guard (config inactivityTimeoutMin: 0).
+				if (idleMin > 0) {
+					turn.idleTimer = setTimeout(() => {
+						void this.#turnDeadlineGuard(turn, "stall", `agy stalled for ${idleMin}m with no output`);
+					}, idleMin * 60_000);
+				}
 			}
 		}
 	}
@@ -312,6 +336,8 @@ export class StreamDriver implements TurnDriver {
 			outcome,
 			response: "",
 			rawResponse: "",
+			overallDeadline: null,
+			overallRemainingMs: null,
 			sanitizer: new StreamSanitizer(),
 			sawResult: false,
 			sawModelStep: false,
@@ -343,17 +369,25 @@ export class StreamDriver implements TurnDriver {
 		// 0 disables a cap (config turnTimeoutMin / inactivityTimeoutMin: 0):
 		// setTimeout(fn, 0) would fire instantly and kill every turn.
 		const totalMin = turn.request.timeoutMin ?? 10;
-		if (totalMin > 0) {
-			turn.overallTimer = setTimeout(() => {
-				void this.#turnDeadlineGuard(turn, "timeout", `agy exceeded the ${totalMin}m turn timeout`);
-			}, totalMin * 60_000);
-		}
+		if (totalMin > 0) this.#startOverallTimer(turn, totalMin * 60_000);
 		const idleMin = turn.request.inactivityMin ?? 5;
 		if (idleMin > 0) {
 			turn.idleTimer = setTimeout(() => {
 				void this.#turnDeadlineGuard(turn, "stall", `agy stalled for ${idleMin}m with no output`);
 			}, idleMin * 60_000);
 		}
+	}
+
+	/** Arm the overall turn cap. A deadline is a wall-clock instant while
+	 *  running; parks capture the remainder and clear it (see
+	 *  ActiveTurn.overallDeadline). A 0ms remainder fires on the next tick,
+	 *  which is correct: the budget is spent. */
+	#startOverallTimer(turn: ActiveTurn, ms: number): void {
+		const totalMin = turn.request.timeoutMin ?? 10;
+		turn.overallDeadline = Date.now() + ms;
+		turn.overallTimer = setTimeout(() => {
+			void this.#turnDeadlineGuard(turn, "timeout", `agy exceeded the ${totalMin}m turn timeout`);
+		}, ms);
 	}
 
 	#start(request: DriverTurnRequest): void {

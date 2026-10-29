@@ -138,7 +138,18 @@ function extractImages(context: TranscriptContext): Array<{ data: string; mimeTy
 
 const COMPACTION_MARKER = "compacted into the following summary";
 
-const DIGEST_PREAMBLE =
+/** Synthetic prompt for a resume turn (issue #8): pi's retry dropped the
+ *  failed attempt from the projected context (_omitRecoveryAttempt), leaving
+ *  a toolResult or assistant tail with no live agy turn. The bound
+ *  conversation already holds the task history, so re-open it with this
+ *  instead of the unretryable "no user message" hard error (which stalled
+ *  an unattended session for ~6 hours). The wording must stress not
+ *  repeating actions: the discarded attempt may have half-run with side
+ *  effects agy saw but pi never recorded. */
+export const RESUME_PROMPT =
+	"[The previous attempt of this turn failed and was discarded. Check your conversation history for the last step you completed, then continue the task from there. Do not repeat completed actions.]";
+
+export const DIGEST_PREAMBLE =
 	"[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]";
 
 // --- pi system prompt (G10) ----------------------------------------------------
@@ -1453,20 +1464,40 @@ async function runTurnDriver(
 			return;
 		}
 		// Fresh pass, or a stranded escalated result being re-delivered.
-		const prompt = extractUserPrompt(context);
+		const userPrompt = extractUserPrompt(context);
 		const images = extractImages(context);
+		// Resume pass (issue #8): pi's retry dropped the failed attempt from the
+		// projected context, so the transcript ends in a toolResult or assistant
+		// message and there is no user prompt, no pending park, and nothing
+		// late. With a bound conversation, agy holds the task history: re-open
+		// it with a synthetic resume prompt instead of the hard error below
+		// (pi does not retry that error; it stalls unattended sessions). The
+		// binding is required: "continue" into a brand-new conversation has no
+		// task to continue. Restricted to the two retry tails: an empty
+		// transcript (lastRole undefined) and a user tail both keep their
+		// existing behavior.
+		const lastRole = context.messages[context.messages.length - 1]?.role;
+		const resume =
+			!userPrompt &&
+			images.length === 0 &&
+			late.length === 0 &&
+			Boolean(existing?.conversationId) &&
+			(lastRole === "toolResult" || lastRole === "assistant");
+		const prompt = resume ? RESUME_PROMPT : userPrompt;
+		if (resume) deps.log?.("resume-turn", { conversation: existing?.conversationId }, "error");
 		// An image-only message (no text) is valid on the ACP engine; only fail
 		// when there is nothing at all to send (no text, no images, no late
 		// tool results to deliver).
 		if (!prompt && images.length === 0 && late.length === 0) {
-			deps.log?.("turn-error", { reason: "no-user-message" }, "debug");
+			deps.log?.("turn-error", { reason: "no-user-message" }, "error");
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
 		const watermark = existing?.lastMessageCount ?? 0;
-		// Late turns re-open the conversation with a synthetic prompt; the digest
-		// would re-send context agy already holds, so skip it.
-		const digest = config.digest && late.length === 0 ? buildContextDigest(context.messages, watermark) : "";
+		// Late and resume turns re-open the conversation with a synthetic
+		// prompt; the digest would re-send context agy already holds (against a
+		// stale watermark: a failed pass never advances it), so skip it.
+		const digest = config.digest && late.length === 0 && !resume ? buildContextDigest(context.messages, watermark) : "";
 		// G1 delivery per engine. stream-json: digest rides inline in the prompt
 		// (the CLI has no context channel). ACP: the server advertises
 		// `embeddedContext`, so the digest ships as a native resource block
@@ -1575,7 +1606,24 @@ async function runTurnDriver(
 			if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return "parked";
 		}
 	};
-	if ((await drainTurn(handle)) === "parked") return;
+	if ((await drainTurn(handle)) === "parked") {
+		// A park proves agy got the prompt and is working in this conversation.
+		// Persist a first-turn binding now: otherwise a first-ever turn that
+		// parks and then dies (failed continuation, process restart) leaves no
+		// record, and the retry-dropped tail (issue #8) has nothing to resume
+		// into. Only when no record exists: an unbound run() cannot have
+		// recreated a conversation, so the snapshot id is the real one, and
+		// the staged agent must move with the binding or a stream-json resume
+		// re-runs without its carrier-agent profile.
+		if (!existing) {
+			const parkedConv = deps.driver.snapshot().conversationId;
+			if (parkedConv) {
+				store.set(key, { conversationId: parkedConv, lastStepIdx: -1, lastMessageCount: messageCount });
+				if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
+			}
+		}
+		return;
+	}
 
 	let outcome = await handle.outcome;
 	// Issue #2 recovery paths. agy's stream-json prompt path silently drops an
@@ -1585,12 +1633,17 @@ async function runTurnDriver(
 	// settling OK here would persist a dead conversation for every later turn
 	// (probe 2026-09-30: resume of a dropped-turn conversation never returns
 	// a result frame). stream-json only: the ACP driver leaves the evidence
-	// fields undefined.
+	// fields undefined. modelOutputSeen === false keeps deadline kills of a
+	// turn that demonstrably worked (it parked, so a model step arrived) on
+	// the plain retryable error path: "conversation is dead" would be wrong
+	// for a first turn, and deleting a park-time binding (issue #8) would
+	// strip the retry of its conversation.
 	const silentDrop = outcome.status === "OK" && outcome.modelOutputSeen === false;
 	const poisonedResume =
 		outcome.status === "ERROR" &&
 		outcome.deadline !== undefined &&
 		outcome.sawResult === false &&
+		outcome.modelOutputSeen === false &&
 		Boolean(existing?.conversationId);
 	if (silentDrop || poisonedResume) {
 		if (existing?.conversationId || outcome.conversationId) {

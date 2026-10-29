@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.1] - 2026-10-29
+
+### Fixed
+
+- **A retry-dropped attempt no longer stalls the session with "No user message to send to agy."** When pi retries after a failed turn, pi core drops the failed attempt from the projected context (`_omitRecoveryAttempt`), leaving a `toolResult` or assistant tail with no user prompt, no pending park, and nothing late. The fresh-pass guard used to hard-error there, and pi does not retry that error, so an unattended session stalled for ~6 hours on it (issue #8). With a bound conversation, the provider now re-opens it with a synthetic resume prompt (telling agy the previous attempt was discarded and not to repeat completed actions) instead of erroring. The digest is skipped on resume turns, the guard stays for unbound conversations and empty transcripts, and the `no-user-message` turn error now logs at error level (it was debug, so the failure left no trace in the error-only daily log).
+
+- **A first-ever turn that parks now binds its conversation immediately.** The binding used to be written only on a completed OK pass, so a first turn that parked a bridge call and then died (failed continuation, process restart) left no record, and the retry-dropped tail above still hit the hard error. A park is positive evidence that agy received the prompt, so the provider persists the snapshot's conversation id at park time (first binding only, staged agent moving with it). A later ERROR keeps the park-time binding, except the issue #2 signatures that prove the conversation dead (silent drop / deadline kill with no model output seen), which still clear it by design.
+
+### Changed
+
+- **The stream-json overall cap now pauses on parks, matching the ACP engine.** `turnTimeoutMin` used to be armed once and cleared only at settle on stream-json, so parked pi-tool time and human-gated escalations consumed the turn cap (with a 15m cap, a 16m escalation died mid-turn). The cap now carries a wall-clock deadline plus a remaining-budget capture, pauses at the first park, and resumes with the remainder on unpark; a 0 cap stays disabled across park cycles. Turn durations on stream-json can now exceed `turnTimeoutMin` by the parked span. This makes the documented "escalated calls get their own 30-minute budget" claim true on both engines.
+
+### Known limits
+
+- **A tool result whose tombstone died with the process is lost, not delivered.** Tombstones are in-memory. After a process restart, a retry-dropped tail whose tool result never reached agy resumes the conversation without that output; agy may repeat the call or proceed without it.
+
 ## [1.9.0] - 2026-10-27
 
 ### Fixed

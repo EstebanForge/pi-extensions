@@ -15,7 +15,7 @@ Shared infrastructure: session binding (`sessions.json`), runtime config, the `A
 ```
 extensions/index.ts   pi extension entry: provider registration, model discovery, /agy command, lifecycle notices
 src/provider.ts       streamSimple: pi Context -> agy turn -> pi event stream; owns the G9 round-trip store and the G1 digest
-src/driver.ts         stream-json driver: persistent agy process, turn serialization, conversation binding, idle/abort timers
+src/driver.ts         stream-json driver: persistent agy process, turn serialization, conversation binding, park-paused caps (the overall cap resumes its remaining budget on unpark; the idle cap re-arms a fresh window)
 src/stream-events.ts  agy NDJSON event parser (init / step_update / result) + usage mapping onto pi's Usage
 src/native-tools.ts   maps agy read-only tool steps to real pi builtins (read/ls/grep/find) for native re-execution
 src/skills.ts         activate_skill bridge: exposes the pi Agent Skills catalog to agy, answered by the bridge directly
@@ -38,7 +38,7 @@ src/frame-guard.ts    stdout frame ceiling + known-noise line filtering shared b
 src/acp/jsonrpc.ts    NDJSON JSON-RPC 2.0 framing with line buffering, a 32 MiB frame ceiling, noise filtering, and typed error results
 src/acp/connection.ts ACP server process + protocol (initialize, session/new+load, prompt with image/resource blocks, config options, cancel probing, parked permission answering)
 src/acp/events.ts     session/update -> DriverActivity mapping (pure; probe-frame regressions pinned)
-src/acp/driver.ts     AcpDriver: serialized turns, remaining-budget timer pause, Gate D abort, connection-scoped exit handling, reconnect/agentInfo snapshots
+src/acp/driver.ts     AcpDriver: serialized turns, park-paused caps (same semantics as stream-json), Gate D abort, connection-scoped exit handling, reconnect/agentInfo snapshots
 ```
 
 No generated protobuf code, no SQLite dependency.
@@ -64,6 +64,10 @@ Usage maps onto pi's `Usage` (input/output/thinking/cache-read tokens); cost sta
 The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. Public APIs only.
 
 Display follows the same split: agy read-only steps (`view_file`, `list_dir`, `grep_search`, `find_by_name`) re-run as real pi builtins via `native-tools.ts`, so their cards render with pi's own renderers. Mutating and agy-specialty steps replay through a display-only `antigravity` wrapper tool - recorded output only, nothing re-executes. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
+
+### Retry recovery (issue #8)
+
+When pi retries a failed turn, pi core drops the failed attempt from the projected context (`_omitRecoveryAttempt`), which can leave a `toolResult` or assistant message as the transcript tail: no user prompt, no pending park, nothing late. The fresh pass used to hard-error "No user message to send to agy.", an error pi does not retry (one report stalled ~6h on it). With a bound conversation, the provider instead re-opens it with a synthetic resume prompt ("the previous attempt failed and was discarded... do not repeat completed actions"); the digest is skipped on resume turns, and the guard stays for unbound conversations and empty transcripts. The binding is written at the first park, not only on a completed OK pass, so a first-ever turn that parks and then dies still leaves a conversation the retry can resume into. Tombstones stay in-memory: after a process restart a tool result that never reached agy is lost (agy may repeat the call or proceed without it); persisting tombstones cannot help the crash case anyway, since a crash never runs the tombstone write.
 
 ### Context digest (G1)
 
@@ -91,10 +95,10 @@ the interface only and is otherwise unchanged.
 Phase-2/3 additions (all ACP-only, verified live):
 
 - **Images**: pi image attachments ride as typed content blocks in the
-  prompt array; models advertise `input: ["text","image"]` only when the
-  engine is `acp` (decided at extension load). stream-json prompt input
-  stays text-only (tool-RESULT images ride both engines; see
-  PI-BRIDGE-GAPS).
+  prompt array on ACP; on stream-json they stage to per-turn temp files and
+  arrive through the bridge read tool result (`src/prompt-images.ts`), so
+  both engines accept image attaches. Tool-RESULT images ride both engines;
+  see PI-BRIDGE-GAPS.
 - **Digest delivery**: with `config.digest` on, ACP ships the G1 digest as
   a native `embeddedContext` resource block (images → resource → text);
   stream-json keeps it inline. Same cache churn either way.

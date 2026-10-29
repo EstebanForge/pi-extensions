@@ -17,7 +17,7 @@ Picking **acp** starts the server download immediately (progress in the status b
 | --- | --- | --- |
 | Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
 | Live token usage | Yes (live metrics from CLI step events) | Live client-side estimates (absent in RC01; `acp.usageEstimate`, default `estimate`, streamed per delta, superseded automatically by real per-turn usage when the server starts sending it) |
-| Image prompt input | No (CLI prompt is text-only; images dropped) | Yes (native image blocks forwarded to server) |
+| Image prompt input | No native blocks (the CLI prompt is text-only); user-attached images stage to per-turn temp files with a prompt note and arrive through the bridge read tool (`src/prompt-images.ts`) | Yes (native image blocks forwarded to server) |
 | Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
 | Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |
 | Review-only plan mode | Refused on provider turns; the CLI does not gate writes under plan (upstream [#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181), probed 2026-10-07: the write executes in the same turn with `permission_mode: "request-review"` reported). The ask tool's plan runs add a restricted agent as a damper. | No (RC01 modes are permission levels; plan mode refused) |
@@ -39,7 +39,7 @@ Picking **acp** starts the server download immediately (progress in the status b
 
 ## Engine-dependent features
 
-pi image attachments ride natively only on the ACP engine (the picker offers image attach automatically when `config.engine` is `acp`; the stream-json CLI prompt is text-only). With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text. The G10 system prompt likewise splits: stream-json stages it as an agent file passed via `--agent` because the CLI silently drops any single prompt past a ~25KB input cap (a dropped turn answers empty and the conversation never responds again), while ACP prepends it to the first prompt of the conversation. The `AskAntigravity` delegation tool is unaffected by `config.engine` and runs the `stream-json` CLI (`agy -p`) across both configurations.
+pi image attachments ride natively only on the ACP engine; on stream-json they stage to per-turn temp files (mode 0600, 24h sweep) and the pixels arrive through the bridge read tool result, so both engines accept image attaches. With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text. The G10 system prompt likewise splits: stream-json stages it as an agent file passed via `--agent` because the CLI silently drops any single prompt past a ~25KB input cap (a dropped turn answers empty and the conversation never responds again), while ACP prepends it to the first prompt of the conversation. The `AskAntigravity` delegation tool is unaffected by `config.engine` and runs the `stream-json` CLI (`agy -p`) across both configurations.
 
 ## Switching and setup
 
