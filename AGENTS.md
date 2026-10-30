@@ -17,14 +17,14 @@ Root owns the toolchain: one `tsconfig.json`, one `vitest.config.ts`, one devDep
 
 ## Commands
 
-| Action | Command |
-|---|---|
-| Install | `npm install` (root only) |
-| Typecheck | `npm run typecheck` |
-| Test | `npm run test` |
-| Both | `npm run check` |
-| Release | `npm run release:patch` / `minor` / `major` |
-| Publish | `npm run pub <name>` (the only publish path; runs the release gates first) |
+| Action | `just` recipe | Direct Command |
+|---|---|---|
+| Typecheck | `just typecheck` | `npm run typecheck` |
+| Test | `just test` | `env -u RTK_DB_PATH npm test` |
+| Both / CI | `just check` or `just ci` | `npm run check` |
+| Install | — | `npm install` (root only) |
+| Release | — | `npm run release:patch` / `minor` / `major` |
+| Publish | — | `npm run pub <name>` (the only publish path; runs the release gates first) |
 
 ## Rules
 
