@@ -37,7 +37,6 @@ export default function (pi: ExtensionAPI) {
       // session-scoped; injected followUp messages die in print mode), so the
       // fleet pattern is prefilling the editor for the user to submit.
       handler: async (args, ctx) => {
-        arm();
         const request = args.trim();
         const prompt = [
           `Run the Elephant-Goldfish Model skill \`${name}\`: read ${skillPath} and follow it exactly, including the Pi notes it points to.`,
@@ -49,6 +48,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(`EGM commands need an interactive session. Headless: read ${skillPath} directly.`, "warning");
           return;
         }
+        arm();
         ctx.ui.setEditorText(prompt);
       },
     });

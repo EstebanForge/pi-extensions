@@ -1,6 +1,6 @@
 import { runProcess, MAX_TIMEOUT_MINUTES } from "@estebanforge/pi-agents-shared";
-import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 /** Role -> persona file, relative to the package root. Roles are the names
  * upstream skills dispatch under; the map is enforced here in code so a skill
@@ -37,7 +37,8 @@ export interface GoldfishParams {
 }
 
 export interface RunOutcome {
-	exitCode: number;
+	exitCode: number | null;
+	signal: NodeJS.Signals | null;
 	aborted: boolean;
 	timedOut: boolean;
 	stderr: string;
@@ -49,7 +50,7 @@ export type Runner = (task: string, opts: { signal?: AbortSignal; modelArgs?: st
 export const MAX_CONCURRENT_GOLDFISH = 3;
 const DEFAULT_TIMEOUT_MINUTES = 15;
 
-const Params = Type.Object({
+export const Params = Type.Object({
 	role: Type.Union(
 		Object.keys(ROLE_TO_PERSONA).map((r) => Type.Literal(r)),
 		{ description: "Which EGM persona the fresh reviewer adopts." },
@@ -59,20 +60,26 @@ const Params = Type.Object({
 		description: "Absolute path where the reviewer writes its full report before replying.",
 	}),
 	standards: Type.Optional(
-		Type.Array(Type.String(), {
+		Type.Array(Type.String({ maxLength: 1024 }), {
+			maxItems: 20,
 			description: "Absolute paths of EGM document standards the reviewer must apply.",
 		}),
 	),
 	goldfishContext: Type.Optional(
-		Type.Array(Type.String(), {
+		Type.Array(Type.String({ maxLength: 1024 }), {
+			maxItems: 20,
 			description: "Absolute paths of baseline files to read before reviewing.",
 		}),
 	),
 	focus: Type.Optional(
-		Type.String({ description: "Optional narrowing instruction for this review." }),
+		Type.String({
+			maxLength: 2000,
+			description: "Optional narrowing instruction for this review.",
+		}),
 	),
 	timeout_minutes: Type.Optional(
 		Type.Number({
+			minimum: 1,
 			description: `Hard ceiling for the child review session. Default ${DEFAULT_TIMEOUT_MINUTES}, max ${MAX_TIMEOUT_MINUTES}.`,
 		}),
 	),
@@ -85,7 +92,7 @@ const Params = Type.Object({
 	model: Type.Optional(
 		Type.String({
 			description:
-				"pi model pattern the reviewer child runs on (e.g. 'zai/glm-5.3-flash'). Use a provider-qualified pattern when several authenticated providers carry the same name; bare names are rejected as ambiguous. Unset: the session default model. Reviewers rarely need a flagship model.",
+				"pi model pattern the reviewer child runs on (e.g. 'zai/glm-5.3-flash'). Use a provider-qualified pattern when several authenticated providers carry the same name; bare names are rejected as ambiguous. Unset: the pi settings default model. Reviewers rarely need a flagship model.",
 		}),
 	),
 });
@@ -95,10 +102,17 @@ interface GoldfishDetails {
 	tail?: string;
 }
 
-export type GoldfishToolArgs = Static<typeof Params>;
-
 export function buildGoldfishArgv(task: string, modelArgs?: string[]): string[] {
-	const base = ["--no-extensions", "--no-context-files", "--no-session", "--no-mcp", "--exclude-tools", "edit"];
+	const base = [
+		"--no-extensions",
+		"--no-context-files",
+		"--no-session",
+		"--no-mcp",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--exclude-tools",
+		"edit",
+	];
 	if (modelArgs?.length) base.push(...modelArgs);
 	base.push("-p", task);
 	return base;
@@ -142,11 +156,14 @@ export async function verifyReport(reportPath: string): Promise<string> {
 	return reportPath;
 }
 
-/** --model argv for the child, empty when no model was requested. pi takes
- *  the thinking level as a ':level' suffix on the model pattern. */
+/** Model selection argv for the child, empty when neither is set. pi takes
+ *  the thinking level as a separate --thinking flag; bare model names are
+ *  rejected as ambiguous when several providers carry the same model. */
 export function buildModelArgs(model?: string, thinkingLevel?: GoldfishThinkingLevel): string[] {
-	if (!model) return [];
-	return ["--model", thinkingLevel ? `${model}:${thinkingLevel}` : model];
+	const args: string[] = [];
+	if (model) args.push("--model", model);
+	if (thinkingLevel) args.push("--thinking", thinkingLevel);
+	return args;
 }
 
 /** Run one Goldfish review in a fresh headless child. The child process is the
@@ -161,17 +178,20 @@ export async function runGoldfish(
 		signal?: AbortSignal;
 		cwd?: string;
 		onSpawn?: (killTree: () => void) => void;
+		onSettle?: (killTree: () => void) => void;
 		onChunk?: (chunk: string) => void;
 	},
 ): Promise<{ report_path: string; summary: string }> {
 	if (!(params.role in ROLE_TO_PERSONA)) {
 		throw new Error(`unknown role: ${params.role}`);
 	}
-	if (params.thinking_level && !params.model) {
-		throw new Error("thinking_level requires model");
+	if (params.timeout_minutes !== undefined && !(params.timeout_minutes > 0)) {
+		throw new Error(`timeout_minutes must be positive (got ${params.timeout_minutes})`);
 	}
+	if (opts.signal?.aborted) throw new Error("goldfish review aborted");
 	const modelArgs = buildModelArgs(params.model, params.thinking_level);
 	const timeoutMinutes = Math.min(params.timeout_minutes ?? DEFAULT_TIMEOUT_MINUTES, MAX_TIMEOUT_MINUTES);
+	let runKill: (() => void) | undefined;
 	const runner: Runner =
 		opts.runner ??
 		(async (task, runOpts) =>
@@ -181,25 +201,31 @@ export async function runGoldfish(
 				cwd: opts.cwd,
 				timeoutMs: timeoutMinutes * 60_000,
 				signal: runOpts.signal,
-				onSpawn: opts.onSpawn,
+				onSpawn: (killTree) => {
+					runKill = killTree;
+					opts.onSpawn?.(killTree);
+				},
 				onChunk: opts.onChunk,
 			}));
 	const task = buildGoldfishTask(params, opts.root);
 	await acquire();
 	let outcome: RunOutcome;
 	try {
+		if (opts.signal?.aborted) throw new Error("goldfish review aborted");
 		outcome = await runner(task, { signal: opts.signal, modelArgs });
 	} finally {
 		release();
 	}
+	if (runKill) opts.onSettle?.(runKill);
 	if (outcome.timedOut) {
 		throw new Error(
 			`goldfish review timed out after ${timeoutMinutes} minutes; no report accepted`,
 		);
 	}
 	if (outcome.aborted) throw new Error("goldfish review aborted");
-	if (outcome.exitCode !== 0) {
-		throw new Error(`goldfish review exited ${outcome.exitCode}: ${outcome.stderr.slice(-500)}`);
+	if (outcome.exitCode !== 0 || outcome.signal) {
+		const tail = outcome.signal ? `killed by ${outcome.signal}` : outcome.stderr.slice(-500);
+		throw new Error(`goldfish review failed: ${tail}`);
 	}
 	const reportPath = await verifyReport(params.report_path);
 	return { report_path: reportPath, summary: outcome.stdoutRaw.trim().slice(-2_000) };
@@ -223,13 +249,17 @@ export function isSpawnShaped(toolName: string): boolean {
 	return SPAWN_SHAPED.test(toolName);
 }
 
-export function isEgmInvocation(text: string): boolean {
-	return /^\/(egm-|skill:egm-)/.test(text.trim());
+/** True when a serialized tool-call input touches an EGM artifact inside the
+ *  package (skills, personas, standards, PI.md). Reading these is what an
+ *  EGM flow looks like from outside, so it is what arms the guard. */
+export function isEgmArtifactTouch(serializedInput: string, root: string): boolean {
+	const markers = [`${root}/skills/egm-`, `${root}/PI.md`, `${root}/agents/`, `${root}/resources/`];
+	return markers.some((marker) => serializedInput.includes(marker));
 }
 
-// Guard window: armed by /egm-* commands, /skill:egm-* invocations, and
-// egm_goldfish calls; disarmed by the next non-EGM user input. A session-long
-// arm would block the user's own subagent tools for unrelated work.
+// Guard arm state is session-wide: once EGM artifacts are touched it stays
+// armed until the session ends. EGM flows are multi-turn with interleaved
+// plain answers, so input-based disarming drops the guard mid-flow.
 let guardArmed = false;
 export function armGuard(): void {
 	guardArmed = true;
@@ -278,7 +308,10 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 				root,
 				signal,
 				onSpawn: (killTree) => {
-					killHandles.push(killTree);
+					killHandles.add(killTree);
+				},
+				onSettle: (killTree) => {
+					killHandles.delete(killTree);
 				},
 				onChunk: (chunk) => {
 					tail = (tail + chunk).slice(-500);
@@ -301,29 +334,25 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 	};
 	pi.registerTool(goldfishTool);
 
-	const killHandles: Array<() => void> = [];
+	const killHandles = new Set<() => void>();
 
 	// Once an EGM flow starts, denylist spawn-shaped tools so a partially
 	// compatible subagent extension cannot silently fork context into a
-	// Goldfish. Denylist, not allowlist: oddly named tools can still slip
-	// through, which the README records as residual risk.
-	pi.on("input", (event) => {
-		if (isEgmInvocation(event.text)) {
-			armGuard();
-			return undefined;
-		}
-		if (event.source === "extension") return undefined;
-		if (isGuardArmed()) disarmGuard();
-		return undefined;
-	});
-
-	// Once an EGM flow starts, denylist spawn-shaped tools so a partially
-	// compatible subagent extension cannot silently fork context into a
-	// Goldfish. Best-effort backstop: scoped to the guard window and blind to
-	// oddly named tools (README records the residual risk). The tool's own
+	// Goldfish. Best-effort backstop, armed for the rest of the session once
+	// EGM artifacts are touched (reads of skills/PI.md/agents/resources, an
+	// egm_goldfish call, or an /egm-* command): EGM flows are multi-turn with
+	// interleaved plain answers, so input-based disarming would drop the
+	// guard mid-flow, and anything narrower is theater. Oddly named tools can
+	// still slip through; README records that residual risk. The tool's own
 	// description is the primary control.
 	pi.on("tool_call", (event) => {
-		if (!isGuardArmed()) return undefined;
+		if (!isGuardArmed()) {
+			if (isEgmArtifactTouch(JSON.stringify(event.input ?? {}), root)) {
+				armGuard();
+				return undefined;
+			}
+			return undefined;
+		}
 		if (event.toolName === "egm_goldfish") return undefined;
 		if (isSpawnShaped(event.toolName)) {
 			return {
@@ -335,7 +364,7 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 	});
 
 	pi.on("session_shutdown", () => {
-		killAll(killHandles);
+		killAll([...killHandles]);
 	});
 
 	return {

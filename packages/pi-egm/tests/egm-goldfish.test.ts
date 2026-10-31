@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	buildGoldfishArgv,
 	buildGoldfishTask,
-	isEgmInvocation,
+	buildModelArgs,
+	disarmGuard,
+	isGuardArmed,
 	isSpawnShaped,
 	killAll,
+	MAX_CONCURRENT_GOLDFISH,
+	Params,
+	registerGoldfish,
 	ROLE_TO_PERSONA,
 	runGoldfish,
 	THINKING_LEVELS,
@@ -13,6 +18,7 @@ import {
 	type RunOutcome,
 	type Runner,
 } from "../extensions/goldfish.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const ROOT = "/pkg/root";
 
@@ -41,13 +47,15 @@ describe("ROLE_TO_PERSONA", () => {
 });
 
 describe("buildGoldfishArgv", () => {
-	it("carries every isolation flag, the review tool policy, and passes the task via -p", () => {
+	it("carries every isolation and discovery-suppression flag, the review tool policy, and passes the task via -p", () => {
 		const argv = buildGoldfishArgv("do the review");
 		expect(argv).toEqual([
 			"--no-extensions",
 			"--no-context-files",
 			"--no-session",
 			"--no-mcp",
+			"--no-skills",
+			"--no-prompt-templates",
 			"--exclude-tools",
 			"edit",
 			"-p",
@@ -56,25 +64,61 @@ describe("buildGoldfishArgv", () => {
 	});
 
 	it("appends the model pattern before the task when a model is requested", () => {
-		const argv = buildGoldfishArgv("do the review", ["--model", "flash"]);
-		expect(argv).toEqual([
-			"--no-extensions",
-			"--no-context-files",
-			"--no-session",
-			"--no-mcp",
-			"--exclude-tools",
-			"edit",
-			"--model",
-			"flash",
-			"-p",
-			"do the review",
-		]);
+		const argv = buildGoldfishArgv("do the review", ["--model", "zai/glm-5.3-flash"]);
+		expect(argv.slice(0, -2)).toContain("--model");
+		expect(argv.at(-1)).toBe("do the review");
+		expect(argv.at(-2)).toBe("-p");
 	});
 });
 
-describe("THINKING_LEVELS", () => {
-	it("exposes exactly the pi thinking ladder", () => {
-		expect(THINKING_LEVELS).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+describe("buildModelArgs", () => {
+	it("emits nothing without a model or level", () => {
+		expect(buildModelArgs()).toEqual([]);
+	});
+
+	it("emits --model alone for a model without a level", () => {
+		expect(buildModelArgs("zai/glm-5.3-flash")).toEqual(["--model", "zai/glm-5.3-flash"]);
+	});
+
+	it("emits independent --model and --thinking flags", () => {
+		expect(buildModelArgs("zai/glm-5.3-flash", "high")).toEqual([
+			"--model",
+			"zai/glm-5.3-flash",
+			"--thinking",
+			"high",
+		]);
+	});
+
+	it("emits --thinking alone, pi accepts it without a model", () => {
+		expect(buildModelArgs(undefined, "low")).toEqual(["--thinking", "low"]);
+	});
+});
+
+describe("goldfish tool schema parity", () => {
+	it("schema properties match the GoldfishParams keys", () => {
+		expect(Object.keys(Params.properties).sort()).toEqual(
+			[
+				"role",
+				"target",
+				"report_path",
+				"standards",
+				"goldfishContext",
+				"focus",
+				"timeout_minutes",
+				"model",
+				"thinking_level",
+			].sort(),
+		);
+	});
+
+	it("role union covers exactly the persona roles", () => {
+		const literals = Params.properties.role.anyOf.map((s: { const: string }) => s.const);
+		expect(literals.sort()).toEqual(Object.keys(ROLE_TO_PERSONA).sort());
+	});
+
+	it("thinking_level union matches the pi thinking ladder", () => {
+		const literals = Params.properties.thinking_level.anyOf.map((s: { const: string }) => s.const);
+		expect(literals).toEqual([...THINKING_LEVELS]);
 	});
 });
 
@@ -146,6 +190,7 @@ function fakeRunner(delayMs: number, outcome?: Partial<RunOutcome>): {
 		inFlight -= 1;
 		return {
 			exitCode: 0,
+			signal: null,
 			aborted: false,
 			timedOut: false,
 			stderr: "",
@@ -199,25 +244,76 @@ describe("runGoldfish", () => {
 		await fs.unlink(report);
 	});
 
-	it("passes the caller's abort signal through to the runner", async () => {
-		const runner = vi.fn(async (_task: string, opts: { signal?: AbortSignal }) => {
-			opts.signal?.throwIfAborted();
-			return { exitCode: 0, aborted: false, timedOut: false, stderr: "", stdoutRaw: "" };
+	it("accepts a thinking level without a model, passing --thinking alone", async () => {
+		const seen: Array<string[] | undefined> = [];
+		const os = await import("node:os");
+		const fs = await import("node:fs/promises");
+		const path = await import("node:path");
+		const report = path.join(os.tmpdir(), `egm-think-${Date.now()}-${process.pid}.md`);
+		await fs.writeFile(report, "# Zoom Out Review\n");
+		const runner: Runner = async (_task, opts) => {
+			seen.push(opts.modelArgs);
+			return { exitCode: 0, signal: null, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
+		};
+		await runGoldfish(spawnParams({ thinking_level: "high", report_path: report }), {
+			runner,
+			root: ROOT,
 		});
+		expect(seen).toEqual([["--thinking", "high"]]);
+		await fs.unlink(report);
+	});
+
+	it("rejects a non-positive timeout before spawning", async () => {
+		const { runner, stats } = fakeRunner(1);
+		await expect(
+			runGoldfish(spawnParams({ timeout_minutes: 0 }), { runner, root: ROOT }),
+		).rejects.toThrow(/timeout/i);
+		expect(stats().calls).toBe(0);
+	});
+
+	it("rejects an already-aborted signal before acquiring a slot", async () => {
+		const { runner, stats } = fakeRunner(1);
 		const controller = new AbortController();
 		controller.abort();
 		await expect(
 			runGoldfish(spawnParams(), { runner, root: ROOT, signal: controller.signal }),
-		).rejects.toThrow();
-		expect(runner).toHaveBeenCalledTimes(1);
+		).rejects.toThrow(/aborted/i);
+		expect(stats().calls).toBe(0);
 	});
 
-	it("rejects a thinking level without a model before spawning", async () => {
-		const { runner, stats } = fakeRunner(1);
+	it("releases slots after failing runs so later reviews still proceed", async () => {
+		const os = await import("node:os");
+		const fs = await import("node:fs/promises");
+		const path = await import("node:path");
+		const report = path.join(os.tmpdir(), `egm-release-${Date.now()}-${process.pid}.md`);
+		await fs.writeFile(report, "# Zoom Out Review\n");
+		const { runner, stats } = fakeRunner(1, { exitCode: 1, stderr: "boom" });
+		for (let i = 0; i < MAX_CONCURRENT_GOLDFISH; i++) {
+			await expect(
+				runGoldfish(spawnParams({ report_path: report }), { runner, root: ROOT }),
+			).rejects.toThrow();
+		}
+		const fresh = fakeRunner(1);
 		await expect(
-			runGoldfish(spawnParams({ thinking_level: "high" }), { runner, root: ROOT }),
-		).rejects.toThrow(/thinking_level requires model/i);
-		expect(stats().calls).toBe(0);
+			runGoldfish(spawnParams({ report_path: report }), { runner: fresh.runner, root: ROOT }),
+		).resolves.toMatchObject({ report_path: report });
+		expect(stats().calls).toBe(MAX_CONCURRENT_GOLDFISH);
+		expect(fresh.stats().calls).toBe(1);
+		await fs.unlink(report);
+	});
+
+	it("passes the caller's abort signal through to the runner", async () => {
+		const runner = vi.fn(async (_task: string, opts: { signal?: AbortSignal }) => {
+			await new Promise((r) => setTimeout(r, 50));
+			opts.signal?.throwIfAborted();
+			return { exitCode: 0, signal: null, aborted: false, timedOut: false, stderr: "", stdoutRaw: "" };
+		});
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(), 20);
+		await expect(
+			runGoldfish(spawnParams(), { runner, root: ROOT, signal: controller.signal }),
+		).rejects.toThrow();
+		expect(runner).toHaveBeenCalledTimes(1);
 	});
 
 	it("hands model arguments to the runner so children run on the requested model", async () => {
@@ -229,13 +325,13 @@ describe("runGoldfish", () => {
 		await fs.writeFile(report, "# Critic Review\n");
 		const runner: Runner = async (_task, opts) => {
 			seen.push(opts.modelArgs);
-			return { exitCode: 0, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
+			return { exitCode: 0, signal: null, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
 		};
 		await runGoldfish(spawnParams({ model: "flash", thinking_level: "high", report_path: report }), {
 			runner,
 			root: ROOT,
 		});
-		expect(seen).toEqual([["--model", "flash:high"]]);
+		expect(seen).toEqual([["--model", "flash", "--thinking", "high"]]);
 		await fs.unlink(report);
 	});
 
@@ -248,11 +344,64 @@ describe("runGoldfish", () => {
 		await fs.writeFile(report, "# Critic Review\n");
 		const runner: Runner = async (_task, opts) => {
 			seen.push(opts.modelArgs);
-			return { exitCode: 0, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
+			return { exitCode: 0, signal: null, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
 		};
 		await runGoldfish(spawnParams({ report_path: report }), { runner, root: ROOT });
 		expect(seen).toEqual([[]]);
 		await fs.unlink(report);
+	});
+});
+
+describe("default runner", () => {
+	it("invokes pi with the isolation, discovery, policy, and model flags", async () => {
+		const os = await import("node:os");
+		const fs = await import("node:fs/promises");
+		const path = await import("node:path");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "egm-fake-pi-"));
+		const argvFile = path.join(dir, "argv.txt");
+		const report = path.join(dir, "report.md");
+		await fs.writeFile(report, "# Zoom Out Review\n");
+		const fakePi = [
+			"#!/usr/bin/env bash",
+			`printf '%s\n' "$@" > ${JSON.stringify(argvFile)}`,
+			"exit 0",
+			"",
+		].join("\n");
+		await fs.writeFile(path.join(dir, "pi"), fakePi, { mode: 0o755 });
+		const savedPath = process.env.PATH;
+		process.env.PATH = `${dir}:${savedPath}`;
+		try {
+			const result = await runGoldfish(
+				spawnParams({
+					report_path: report,
+					model: "zai/glm-5.3-flash",
+					thinking_level: "high",
+				}),
+				{ root: ROOT },
+			);
+			expect(result.report_path).toBe(report);
+		} finally {
+			process.env.PATH = savedPath;
+		}
+		const argv = (await fs.readFile(argvFile, "utf8")).split("\n");
+		// The task is multiline, so assert the flag block positionally: exactly
+		// the 12 builder args precede -p, then the task.
+		expect(argv.slice(0, 12)).toEqual([
+			"--no-extensions",
+			"--no-context-files",
+			"--no-session",
+			"--no-mcp",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--exclude-tools",
+			"edit",
+			"--model",
+			"zai/glm-5.3-flash",
+			"--thinking",
+			"high",
+		]);
+		expect(argv[12]).toBe("-p");
+		expect(argv[13]).toContain("Goldfish reviewer");
 	});
 });
 
@@ -277,13 +426,63 @@ describe("isSpawnShaped", () => {
 	});
 });
 
-describe("isEgmInvocation", () => {
-	it("recognizes EGM commands and skill invocations only", () => {
-		expect(isEgmInvocation("/egm-review docs/design.md")).toBe(true);
-		expect(isEgmInvocation("/egm-drift-report")).toBe(true);
-		expect(isEgmInvocation("/skill:egm-brainstorm")).toBe(true);
-		expect(isEgmInvocation("/egx")).toBe(false);
-		expect(isEgmInvocation("hello")).toBe(false);
-		expect(isEgmInvocation("review the /egm-review docs")).toBe(false);
+describe("registerGoldfish guard wiring", () => {
+	type Handler = (event: unknown) => unknown;
+	function stubPi() {
+		const handlers: Record<string, Handler> = {};
+		let registeredTool: { execute: Function } | undefined;
+		const pi = {
+			registerTool: (tool: { execute: Function }) => {
+				registeredTool = tool;
+			},
+			on: (event: string, handler: Handler) => {
+				handlers[event] = handler;
+			},
+		};
+		return { pi, handlers, tool: () => registeredTool! };
+	}
+
+	it("arms on any tool call touching EGM artifacts under the package root", () => {
+		const { pi, handlers } = stubPi();
+		registerGoldfish(pi as unknown as ExtensionAPI, ROOT);
+		handlers["tool_call"]({ toolName: "read", input: { path: `${ROOT}/skills/egm-review/SKILL.md` } });
+		expect(isGuardArmed()).toBe(true);
+		disarmGuard();
+	});
+
+	it("stays armed across unrelated user input for the rest of the session", () => {
+		const { pi, handlers } = stubPi();
+		registerGoldfish(pi as unknown as ExtensionAPI, ROOT);
+		handlers["tool_call"]({ toolName: "read", input: { path: `${ROOT}/PI.md` } });
+		// The old input-disarm logic killed the guard here; EGM flows are
+		// multi-turn and interleaved gate answers are not flow exits.
+		handlers["input"]?.({ text: "answer to an EGM gate question", source: "interactive" });
+		expect(isGuardArmed()).toBe(true);
+		disarmGuard();
+	});
+
+	it("blocks spawn-shaped tools while armed and exempts egm_goldfish", () => {
+		const { pi, handlers } = stubPi();
+		registerGoldfish(pi as unknown as ExtensionAPI, ROOT);
+		handlers["tool_call"]({ toolName: "read", input: { path: `${ROOT}/agents/zoom_out.md` } });
+		expect(handlers["tool_call"]({ toolName: "agent_spawn", input: {} })).toEqual({
+			block: true,
+			reason: expect.stringMatching(/egm_goldfish/),
+		});
+		expect(handlers["tool_call"]({ toolName: "egm_goldfish", input: {} })).toBeUndefined();
+		disarmGuard();
+	});
+
+	it("does not arm on unrelated reads", () => {
+		const { pi, handlers } = stubPi();
+		registerGoldfish(pi as unknown as ExtensionAPI, ROOT);
+		handlers["tool_call"]({ toolName: "read", input: { path: "/repo/AGENTS.md" } });
+		expect(isGuardArmed()).toBe(false);
+	});
+
+	it("registers no input-disarm handler", () => {
+		const { pi, handlers } = stubPi();
+		registerGoldfish(pi as unknown as ExtensionAPI, ROOT);
+		expect(handlers["input"]).toBeUndefined();
 	});
 });

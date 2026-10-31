@@ -126,4 +126,51 @@ describe("pi-egm package surface", () => {
   it("ships the command extension", () => {
     expect(existsSync(join(pkg, "extensions", "index.ts"))).toBe(true);
   });
+
+  it("depends on pi-agents-shared, never on the frozen pi-ask-shared", () => {
+    const manifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+    expect(Object.keys(manifest.dependencies ?? {})).toEqual(["@estebanforge/pi-agents-shared"]);
+    expect(manifest.dependencies["@estebanforge/pi-agents-shared"]).toMatch(/^\^0\.1\.0$/);
+  });
+
+  it("PI.md documents every persona the role map resolves", async () => {
+    const piMd = readFileSync(join(pkg, "PI.md"), "utf8");
+    const { ROLE_TO_PERSONA } = await import("../extensions/goldfish.js");
+    for (const file of Object.values(ROLE_TO_PERSONA)) {
+      expect(piMd, file).toContain(file.split("/").at(-1));
+    }
+  });
+
+  it("registers one command per skill that arms the guard only in TUI mode", async () => {
+    const factory = (await import("../extensions/index.js")).default;
+    const commands: Array<{ name: string; opts: { handler: Function } }> = [];
+    let notified = false;
+    let editorText: string | undefined;
+    const pi = {
+      registerCommand: (name: string, opts: { handler: Function }) => commands.push({ name, opts }),
+      registerTool: () => {},
+      on: () => {},
+    } as never;
+    factory(pi);
+    expect(commands.map((c) => c.name).sort()).toEqual(EXPECTED_SKILLS);
+
+    const { isGuardArmed, disarmGuard } = await import("../extensions/goldfish.js");
+    const handler = commands.find((c) => c.name === "egm-drift-report")!.opts.handler;
+    await handler("smoke", {
+      mode: "print",
+      ui: { notify: () => (notified = true), setEditorText: (t: string) => (editorText = t) },
+    });
+    expect(notified).toBe(true);
+    expect(editorText).toBeUndefined();
+    expect(isGuardArmed()).toBe(false);
+
+    await handler("smoke", {
+      mode: "tui",
+      ui: { notify: () => (notified = true), setEditorText: (t: string) => (editorText = t) },
+    });
+    expect(editorText).toContain("Run the Elephant-Goldfish Model skill");
+    expect(editorText).toContain("User request: smoke");
+    expect(isGuardArmed()).toBe(true);
+    disarmGuard();
+  });
 });
