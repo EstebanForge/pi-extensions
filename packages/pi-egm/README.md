@@ -1,8 +1,8 @@
 # @estebanforge/pi-egm
 
-The [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM) on Pi: Google's open-source spec-driven development workflow, packaged as Pi skills with real `/egm-*` commands.
+The [Elephant-Goldfish Model](https://egm.dev) (EGM) on Pi: Google's open-source spec-driven development workflow — the same plugin thousands of Google engineers use to draft specs with deep-context agents and stress-test them with zero-context reviewers before writing code. Upstream source: [google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model).
 
-An **Elephant** (your Pi session, holding project context) drafts specifications. **Goldfish** reviewers — fresh subagents with zero conversation history — stress-test each draft against only the document and its referenced sources, exposing unstated assumptions and blind spots. You make the trade-offs and approve the design before any code is written.
+An **Elephant** (your Pi session, holding project context) drafts the specification through structured brainstorming and probing questions. **Goldfish** reviewers — fresh subagents with zero conversation history — read only the draft and the live source, stress-testing the design from conflicting perspectives to expose unstated assumptions and blind spots while changes are still cheap. You make the trade-offs and approve the spec; only then does a coding agent build it.
 
 Vendored verbatim from `google/elephant-goldfish-model` (Apache-2.0). The only content changes are one harness pointer per skill and the Pi tool name in the reviewer-dispatch enumerations. `PI.md` carries the Pi dispatch notes; `PI.md`-related concerns live there, not in the skill text.
 
@@ -18,7 +18,7 @@ Vendored verbatim from `google/elephant-goldfish-model` (Apache-2.0). The only c
 | `/egm-bootstrap` | egm-bootstrap | Generate a README context hierarchy for an existing codebase. |
 | `/egm-drift-report` | egm-drift-report | Compare checked-in designs with the current source for drift. |
 
-Every skill also loads as a Pi skill (`/skill:egm-<name>`); the commands exist for parity with the upstream Antigravity and Claude Code UX. The full workflow and philosophy live in the [upstream docs](https://github.com/google/elephant-goldfish-model/tree/main/docs).
+Every skill also loads as a Pi skill (`/skill:egm-<name>`); the commands exist for parity with the upstream Antigravity and Claude Code UX. The philosophy behind the model is explained at [egm.dev](https://egm.dev) and in Dave Rensin's article; the full workflow docs live in the [upstream repo](https://github.com/google/elephant-goldfish-model/tree/main/docs).
 
 ## Requirements
 
@@ -45,7 +45,7 @@ Optional: add `EGM artifact directory: .dev/docs` to your `AGENTS.md` to keep br
 
 ## Provenance and license
 
-- Skill, persona, and standards text: [google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model), Apache-2.0, Copyright Google LLC. Upstream is the canonical home for content changes.
+- Skill, persona, and standards text: [google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model) ([egm.dev](https://egm.dev)), Apache-2.0, Copyright Google LLC. Upstream is the canonical home for content changes.
 - Pi integration (`PI.md`, `extensions/`, packaging): EstebanForge, Apache-2.0.
 - Not an officially supported Google product.
 
