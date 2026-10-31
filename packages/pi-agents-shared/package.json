@@ -1,0 +1,35 @@
+{
+  "name": "@estebanforge/pi-agents-shared",
+  "version": "0.1.0",
+  "description": "Child-process lifecycle shared by @estebanforge agent packages: detached spawn with process-group kill, abort and hard-timeout enforcement, close-settled output (line and raw modes), stdin transport, and stderr capping. Plain library, no Pi entrypoint: consumers depend on it and Pi installs it transitively.",
+  "keywords": [
+    "pi",
+    "subagents",
+    "process"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@attitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-agents-shared"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "sideEffects": "false"
+}

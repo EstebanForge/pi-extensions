@@ -11,4 +11,4 @@
 - `extensions/index.ts` registering one `/egm-<skill>` command per skill, derived from the vendored frontmatter. Commands prefill the editor (fleet pattern; handlers cannot start runs), matching the upstream Antigravity/Claude Code slash UX.
 - Skill-line divergence from upstream, sanctioned and recorded: the four reviewer-dispatch paragraphs name `egm_goldfish` where other harnesses name their own spawn tool.
 - Structure tests: skill/persona/standards parity with upstream, frontmatter validity, referential integrity of `agents/` and `resources/` references, license markers, Pi pointers, plus `egm_goldfish` unit tests (isolation flags, timeout/empty-report hard failures, abort propagation, concurrency cap).
-- Dependency: `@estebanforge/pi-ask-shared ^0.1.3` for the child-process lifecycle (`runProcess`: detached process-group kill, abort, timeout, close-settled output).
+- Dependency: `@estebanforge/pi-agents-shared ^0.1.0` for the child-process lifecycle (`runProcess`: detached process-group kill, abort, timeout, close-settled output). Publish order when releasing: pi-agents-shared first, then this package.

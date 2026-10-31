@@ -1,4 +1,4 @@
-import { runProcess, MAX_TIMEOUT_MINUTES } from "@estebanforge/pi-ask-shared";
+import { runProcess, MAX_TIMEOUT_MINUTES } from "@estebanforge/pi-agents-shared";
 import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
