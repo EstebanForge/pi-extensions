@@ -130,7 +130,7 @@ describe("pi-egm package surface", () => {
   it("depends on pi-agents-shared, never on the frozen pi-ask-shared", () => {
     const manifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
     expect(Object.keys(manifest.dependencies ?? {})).toEqual(["@estebanforge/pi-agents-shared"]);
-    expect(manifest.dependencies["@estebanforge/pi-agents-shared"]).toMatch(/^\^0\.1\.0$/);
+    expect(manifest.dependencies["@estebanforge/pi-agents-shared"]).toMatch(/^\^0\.1\.1$/);
   });
 
   it("PI.md documents every persona the role map resolves", async () => {
