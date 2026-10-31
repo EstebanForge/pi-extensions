@@ -48,7 +48,12 @@ export interface RunProcessOptions {
 }
 
 export interface RunProcessOutcome {
-	exitCode: number;
+	exitCode: number | null;
+	/** Termination signal when the child was killed externally (OOM
+	 *  supervisor, manual kill); null on a normal exit. Callers that accept
+	 *  only completed work must treat this as failure even though exitCode is
+	 *  null, not 0. */
+	signal: NodeJS.Signals | null;
 	aborted: boolean;
 	timedOut: boolean;
 	stderr: string;
@@ -182,14 +187,15 @@ export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> 
 			else signal.addEventListener("abort", onAbort, { once: true });
 		}
 
-		const finish = (code: number | null) => {
+		const finish = (code: number | null, termSignal: NodeJS.Signals | null) => {
 			if (settled) return;
 			settled = true;
 			cleanup();
 			// Flush any trailing line without a newline.
 			if (onLine && lineBuf.trim()) onLine(lineBuf);
 			resolveP({
-				exitCode: code ?? 0,
+				exitCode: code,
+				signal: termSignal,
 				aborted: !!signal?.aborted,
 				timedOut,
 				stderr: stderrBuf,

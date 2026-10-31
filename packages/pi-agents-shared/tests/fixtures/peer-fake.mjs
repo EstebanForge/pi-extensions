@@ -52,6 +52,10 @@ switch (mode) {
 	}
 	case "exit-code":
 		process.exit(Number(process.argv[3] ?? 3));
+	case "self-sigkill":
+		process.kill(process.pid, "SIGKILL");
+		await sleep(10_000);
+		process.exit(0);
 	// Emits the real claude stream-json event grammar (init, assistant text,
 	// result) with ANSI noise around the answer, reading the prompt from stdin.
 	case "claude-consult": {

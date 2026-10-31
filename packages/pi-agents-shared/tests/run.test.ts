@@ -94,6 +94,17 @@ describe("runProcess — lifecycle", () => {
 		expect(out.aborted).toBe(false);
 	});
 
+	it("surfaces death-by-signal instead of masking it as exit 0", async () => {
+		// An externally killed child (OOM supervisor, manual kill) closes with
+		// code null and a signal. Callers hard-fail on this; exit 0 would let a
+		// half-written artifact pass verification.
+		const out = await runProcess({ ...peer("self-sigkill"), timeoutMs: 10_000 });
+		expect(out.exitCode).toBeNull();
+		expect(out.signal).toBe("SIGKILL");
+		expect(out.timedOut).toBe(false);
+		expect(out.aborted).toBe(false);
+	});
+
 	it("kills the tree on timeout and reports timedOut", async () => {
 		const out = await runProcess({ ...peer("hang", 10_000), timeoutMs: 200 });
 		expect(out.timedOut).toBe(true);
