@@ -1,6 +1,6 @@
 # pi-extensions
 
-Sixteen [Pi Coding Agent](https://github.com/earendil-works/pi) extensions in one npm workspace. Install only what you need; each package publishes and installs on its own under the `@estebanforge` scope.
+Twenty-one [Pi Coding Agent](https://github.com/earendil-works/pi) extensions in one npm workspace. Install only what you need; each package publishes and installs on its own under the `@estebanforge` scope.
 
 ## Extensions
 
@@ -66,6 +66,14 @@ DeepWiki repository research.
 
 ```bash
 pi install npm:@estebanforge/pi-deepwiki
+```
+
+### [pi-egm](packages/pi-egm)
+
+Elephant-Goldfish Model spec-driven development: draft the spec in this session, then fresh zero-context child sessions stress-test it from conflicting perspectives. `/egm-brainstorm`, `/egm-draft`, `/egm-review`, plus resolve, bootstrap, and drift-report.
+
+```bash
+pi install npm:@estebanforge/pi-egm
 ```
 
 ### [pi-git-me](packages/pi-git-me)
