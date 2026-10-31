@@ -7,6 +7,7 @@ import {
 	killAll,
 	ROLE_TO_PERSONA,
 	runGoldfish,
+	THINKING_LEVELS,
 	verifyReport,
 	type GoldfishParams,
 	type RunOutcome,
@@ -40,16 +41,40 @@ describe("ROLE_TO_PERSONA", () => {
 });
 
 describe("buildGoldfishArgv", () => {
-	it("carries every isolation flag and passes the task via -p", () => {
+	it("carries every isolation flag, the review tool policy, and passes the task via -p", () => {
 		const argv = buildGoldfishArgv("do the review");
 		expect(argv).toEqual([
 			"--no-extensions",
 			"--no-context-files",
 			"--no-session",
 			"--no-mcp",
+			"--exclude-tools",
+			"edit",
 			"-p",
 			"do the review",
 		]);
+	});
+
+	it("appends the model pattern before the task when a model is requested", () => {
+		const argv = buildGoldfishArgv("do the review", ["--model", "flash"]);
+		expect(argv).toEqual([
+			"--no-extensions",
+			"--no-context-files",
+			"--no-session",
+			"--no-mcp",
+			"--exclude-tools",
+			"edit",
+			"--model",
+			"flash",
+			"-p",
+			"do the review",
+		]);
+	});
+});
+
+describe("THINKING_LEVELS", () => {
+	it("exposes exactly the pi thinking ladder", () => {
+		expect(THINKING_LEVELS).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 	});
 });
 
@@ -137,7 +162,6 @@ const spawnParams = (overrides: Partial<GoldfishParams> = {}): GoldfishParams =>
 	report_path: "/repo/critic_report.md",
 	...overrides,
 });
-
 describe("runGoldfish", () => {
 	it("rejects unknown roles before spawning anything", async () => {
 		const { runner, stats } = fakeRunner(1);
@@ -186,6 +210,49 @@ describe("runGoldfish", () => {
 			runGoldfish(spawnParams(), { runner, root: ROOT, signal: controller.signal }),
 		).rejects.toThrow();
 		expect(runner).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a thinking level without a model before spawning", async () => {
+		const { runner, stats } = fakeRunner(1);
+		await expect(
+			runGoldfish(spawnParams({ thinking_level: "high" }), { runner, root: ROOT }),
+		).rejects.toThrow(/thinking_level requires model/i);
+		expect(stats().calls).toBe(0);
+	});
+
+	it("hands model arguments to the runner so children run on the requested model", async () => {
+		const seen: Array<string[] | undefined> = [];
+		const os = await import("node:os");
+		const fs = await import("node:fs/promises");
+		const path = await import("node:path");
+		const report = path.join(os.tmpdir(), `egm-model-${Date.now()}-${process.pid}.md`);
+		await fs.writeFile(report, "# Critic Review\n");
+		const runner: Runner = async (_task, opts) => {
+			seen.push(opts.modelArgs);
+			return { exitCode: 0, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
+		};
+		await runGoldfish(spawnParams({ model: "flash", thinking_level: "high", report_path: report }), {
+			runner,
+			root: ROOT,
+		});
+		expect(seen).toEqual([["--model", "flash:high"]]);
+		await fs.unlink(report);
+	});
+
+	it("omits model arguments when no model is requested", async () => {
+		const seen: Array<string[] | undefined> = [];
+		const os = await import("node:os");
+		const fs = await import("node:fs/promises");
+		const path = await import("node:path");
+		const report = path.join(os.tmpdir(), `egm-nomodel-${Date.now()}-${process.pid}.md`);
+		await fs.writeFile(report, "# Critic Review\n");
+		const runner: Runner = async (_task, opts) => {
+			seen.push(opts.modelArgs);
+			return { exitCode: 0, aborted: false, timedOut: false, stderr: "", stdoutRaw: "done" };
+		};
+		await runGoldfish(spawnParams({ report_path: report }), { runner, root: ROOT });
+		expect(seen).toEqual([[]]);
+		await fs.unlink(report);
 	});
 });
 

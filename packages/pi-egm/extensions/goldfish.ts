@@ -19,6 +19,9 @@ export const ROLE_TO_PERSONA = {
 
 export type GoldfishRole = keyof typeof ROLE_TO_PERSONA;
 
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type GoldfishThinkingLevel = (typeof THINKING_LEVELS)[number];
+
 export interface GoldfishParams {
 	role: GoldfishRole;
 	target: string;
@@ -27,6 +30,10 @@ export interface GoldfishParams {
 	goldfishContext?: string[];
 	focus?: string;
 	timeout_minutes?: number;
+	/** pi model pattern the child session runs on; unset uses the session default. */
+	model?: string;
+	/** pi thinking level for the child; requires model. */
+	thinking_level?: GoldfishThinkingLevel;
 }
 
 export interface RunOutcome {
@@ -37,7 +44,7 @@ export interface RunOutcome {
 	stdoutRaw: string;
 }
 
-export type Runner = (task: string, opts: { signal?: AbortSignal }) => Promise<RunOutcome>;
+export type Runner = (task: string, opts: { signal?: AbortSignal; modelArgs?: string[] }) => Promise<RunOutcome>;
 
 export const MAX_CONCURRENT_GOLDFISH = 3;
 const DEFAULT_TIMEOUT_MINUTES = 15;
@@ -69,6 +76,18 @@ const Params = Type.Object({
 			description: `Hard ceiling for the child review session. Default ${DEFAULT_TIMEOUT_MINUTES}, max ${MAX_TIMEOUT_MINUTES}.`,
 		}),
 	),
+	thinking_level: Type.Optional(
+		Type.Union(
+			THINKING_LEVELS.map((l) => Type.Literal(l)),
+			{ description: "pi thinking level for the reviewer child. Requires model." },
+		),
+	),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"pi model pattern the reviewer child runs on (e.g. 'zai/glm-5.3-flash'). Use a provider-qualified pattern when several authenticated providers carry the same name; bare names are rejected as ambiguous. Unset: the session default model. Reviewers rarely need a flagship model.",
+		}),
+	),
 });
 
 interface GoldfishDetails {
@@ -78,8 +97,11 @@ interface GoldfishDetails {
 
 export type GoldfishToolArgs = Static<typeof Params>;
 
-export function buildGoldfishArgv(task: string): string[] {
-	return ["--no-extensions", "--no-context-files", "--no-session", "--no-mcp", "-p", task];
+export function buildGoldfishArgv(task: string, modelArgs?: string[]): string[] {
+	const base = ["--no-extensions", "--no-context-files", "--no-session", "--no-mcp", "--exclude-tools", "edit"];
+	if (modelArgs?.length) base.push(...modelArgs);
+	base.push("-p", task);
+	return base;
 }
 
 export function buildGoldfishTask(params: GoldfishParams, root: string): string {
@@ -120,9 +142,17 @@ export async function verifyReport(reportPath: string): Promise<string> {
 	return reportPath;
 }
 
+/** --model argv for the child, empty when no model was requested. pi takes
+ *  the thinking level as a ':level' suffix on the model pattern. */
+export function buildModelArgs(model?: string, thinkingLevel?: GoldfishThinkingLevel): string[] {
+	if (!model) return [];
+	return ["--model", thinkingLevel ? `${model}:${thinkingLevel}` : model];
+}
+
 /** Run one Goldfish review in a fresh headless child. The child process is the
  * isolation boundary: no extensions (no memory injection, no other spawn
- * tools), no context files, no persisted session, no MCP. */
+ * tools), no context files, no persisted session, no MCP, and the edit tool disabled
+ * (reviewers produce reports via write, never in-place edits). */
 export async function runGoldfish(
 	params: GoldfishParams,
 	opts: {
@@ -137,13 +167,17 @@ export async function runGoldfish(
 	if (!(params.role in ROLE_TO_PERSONA)) {
 		throw new Error(`unknown role: ${params.role}`);
 	}
+	if (params.thinking_level && !params.model) {
+		throw new Error("thinking_level requires model");
+	}
+	const modelArgs = buildModelArgs(params.model, params.thinking_level);
 	const timeoutMinutes = Math.min(params.timeout_minutes ?? DEFAULT_TIMEOUT_MINUTES, MAX_TIMEOUT_MINUTES);
 	const runner: Runner =
 		opts.runner ??
 		(async (task, runOpts) =>
 			runProcess({
 				binary: "pi",
-				args: buildGoldfishArgv(task),
+				args: buildGoldfishArgv(task, runOpts.modelArgs),
 				cwd: opts.cwd,
 				timeoutMs: timeoutMinutes * 60_000,
 				signal: runOpts.signal,
@@ -154,7 +188,7 @@ export async function runGoldfish(
 	await acquire();
 	let outcome: RunOutcome;
 	try {
-		outcome = await runner(task, { signal: opts.signal });
+		outcome = await runner(task, { signal: opts.signal, modelArgs });
 	} finally {
 		release();
 	}
@@ -233,7 +267,7 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 		name: "egm_goldfish",
 		label: "EGM Goldfish review",
 		description:
-			"Run one Elephant-Goldfish Model review in a fresh zero-context child session (own process: no extensions, no memory, no context files). The only valid way to run an EGM Goldfish reviewer; never substitute a generic subagent tool, forked context breaks the methodology.",
+			"Run one Elephant-Goldfish Model review in a fresh zero-context child session (own process: no extensions, no memory, no context files; the edit tool is disabled in the child). The only valid way to run an EGM Goldfish reviewer; never substitute a generic subagent tool, forked context breaks the methodology. Set model (and optionally thinking_level) to run the reviewer on a cheaper model; reviewers rarely need the flagship.",
 		promptSnippet:
 			"egm_goldfish: run one EGM Goldfish reviewer in a fresh isolated child session (fresh context by construction).",
 		parameters: Params,
