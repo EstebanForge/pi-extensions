@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-egm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Elephant-Goldfish Model (egm.dev) for Pi: Google's spec-driven development workflow. Design with an elephant — your deep-context Pi session drafts the spec — review with goldfish: fresh zero-context child sessions that stress-test the design from conflicting perspectives before code exists. /egm-brainstorm, /egm-draft, /egm-review, plus resolve, bootstrap, and drift-report. Vendored from google/elephant-goldfish-model (Apache-2.0); reviewers run in isolated child sessions spawned by the bundled egm_goldfish tool.",
   "keywords": [
     "pi-package",
