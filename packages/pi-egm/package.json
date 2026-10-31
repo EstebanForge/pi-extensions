@@ -56,6 +56,6 @@
     }
   },
   "dependencies": {
-    "@estebanforge/pi-agents-shared": "^0.1.0"
+    "@estebanforge/pi-agents-shared": "^0.1.1"
   }
 }
