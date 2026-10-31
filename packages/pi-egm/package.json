@@ -1,0 +1,58 @@
+{
+  "name": "@estebanforge/pi-egm",
+  "version": "0.1.0",
+  "description": "Elephant-Goldfish Model (EGM) for Pi: Google's spec-driven development skills. /egm-brainstorm stress-tests ideas with zero-context Goldfish reviewers, /egm-draft turns the brief into a design doc, /egm-review runs the five-stage Goldfish review, plus resolve, bootstrap, and drift-report. Vendored from google/elephant-goldfish-model (Apache-2.0) with Pi dispatch notes; reviewers spawn through Pi subagents.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "egm",
+    "elephant-goldfish",
+    "elephant-goldfish-model",
+    "spec-driven-development",
+    "design-docs",
+    "goldfish-review",
+    "skills",
+    "google"
+  ],
+  "license": "Apache-2.0",
+  "author": {
+    "name": "EstebanForge",
+    "email": "esteban@attitude.cl",
+    "url": "https://actitud.xyz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
+    "directory": "packages/pi-egm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "extensions",
+    "skills",
+    "agents",
+    "resources",
+    "PI.md",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
