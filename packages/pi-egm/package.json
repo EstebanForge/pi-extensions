@@ -1,7 +1,7 @@
 {
   "name": "@estebanforge/pi-egm",
   "version": "0.1.0",
-  "description": "Elephant-Goldfish Model (EGM) for Pi: Google's spec-driven development skills. /egm-brainstorm stress-tests ideas with zero-context Goldfish reviewers, /egm-draft turns the brief into a design doc, /egm-review runs the five-stage Goldfish review, plus resolve, bootstrap, and drift-report. Vendored from google/elephant-goldfish-model (Apache-2.0) with Pi dispatch notes; reviewers spawn through Pi subagents.",
+  "description": "Elephant-Goldfish Model (EGM) for Pi: Google's spec-driven development skills. /egm-brainstorm stress-tests ideas with zero-context Goldfish reviewers, /egm-draft turns the brief into a design doc, /egm-review runs the five-stage Goldfish review, plus resolve, bootstrap, and drift-report. Vendored from google/elephant-goldfish-model (Apache-2.0) with Pi dispatch notes; Goldfish reviewers run in fresh isolated child sessions spawned by the bundled egm_goldfish tool.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -54,5 +54,8 @@
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@estebanforge/pi-ask-shared": "^0.1.3"
   }
 }

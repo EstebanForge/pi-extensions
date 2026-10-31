@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerGoldfish } from "./goldfish.js";
 
 const SKILL_MD = /^---\r?\n([\s\S]*?)\r?\n---/;
 
@@ -21,7 +22,9 @@ function scalarField(frontmatter: string, field: string): string | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
-  const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const { arm } = registerGoldfish(pi, root);
+  const skillsDir = join(root, "skills");
   for (const entry of readdirSync(skillsDir).sort()) {
     const skillPath = join(skillsDir, entry, "SKILL.md");
     if (!existsSync(skillPath)) continue;
@@ -34,6 +37,7 @@ export default function (pi: ExtensionAPI) {
       // session-scoped; injected followUp messages die in print mode), so the
       // fleet pattern is prefilling the editor for the user to submit.
       handler: async (args, ctx) => {
+        arm();
         const request = args.trim();
         const prompt = [
           `Run the Elephant-Goldfish Model skill \`${name}\`: read ${skillPath} and follow it exactly, including the Pi notes it points to.`,

@@ -17,17 +17,16 @@ Read this first when running EGM on Pi. It maps the harness-agnostic wording in 
 
 ## Fresh-context Goldfish reviewers (CRITICAL)
 
-A Goldfish runs in a subagent with no conversation history.
+A Goldfish runs in a child session with no conversation history. On Pi this is the `egm_goldfish` tool: it starts a fresh headless process with no extensions, no context files, and no persisted session, so freshness holds by construction — the child has no memory tools, no injected context, and no other spawn tools to misuse. Never substitute a generic subagent tool: a forked-context spawn is not a Goldfish review, and during EGM flows this package blocks spawn-shaped tools other than `egm_goldfish`.
 
-- Spawn with the `agent_spawn` tool using a task path WITHOUT the `/root` prefix (for example `/goldfish-zoom-out`). `/root/...` paths fork this conversation and are not Goldfish reviews. If `agent_spawn` is not available in this session, stop and tell the user: a review in the same context is not a Goldfish review.
-- The task text must be self-contained: first instruction = read the persona file (absolute path under the plugin root's `agents/`) and adopt it as the governing instructions; then the review prompt, the target document's absolute path, the standards' absolute paths, and any `GoldfishContext` reading list. Never pass this transcript, private reasoning, or answers the document is supposed to explain.
-- Wait for actual completion (`agent_wait` on the spawned path). A launched reviewer is not a completed review. Propagate failures and timeouts.
-- Fresh conversation context does not isolate the filesystem or memory services. Instruct every reviewer not to search agentmemory, session history, or any memory store to fill missing design context.
-- Pi has no persona registry; reviewers read their persona from a file. This is the same dispatch pattern EGM upstream ships for Codex. Role to file map: `egm-design` → `agents/design_critic.md`, `egm-zoom-out` → `agents/zoom_out.md`, `egm-comprehension` → `agents/comprehension.md`, `egm-structural` → `agents/structural.md`, `egm-style` → `agents/style.md`, `egm-codebase-details` → `agents/codebase_details.md`, `egm-implementation-readiness` → `agents/implementation_readiness.md`, `egm-synthesizer` → `agents/synthesizer.md`.
+- Dispatch one `egm_goldfish` call per reviewer. Parameters: `role` (the persona, resolved to a bundled file in code — `egm-design` → `design_critic.md`, `egm-zoom-out` → `zoom_out.md`, `egm-comprehension` → `comprehension.md`, `egm-structural` → `structural.md`, `egm-style` → `style.md`, `egm-codebase-details` → `codebase_details.md`, `egm-implementation-readiness` → `implementation_readiness.md`, `egm-synthesizer` → `synthesizer.md`, `egm-bootstrap-orchestrator` → `bootstrap_orchestrator.md`), `target`, `report_path`, optional `standards`, `goldfishContext`, `focus`, `timeout_minutes` (default 15).
+- The tool builds the self-contained task text itself: persona first, standards and baseline reading, target document, and the artifact-first instruction to write the full report to `report_path` before replying. Never pass this transcript, private reasoning, or answers the document is supposed to explain.
+- The tool waits for actual completion and hard-fails on timeout, nonzero exit, or a missing/empty report; it returns the report path plus a two-line summary. A launched reviewer is not a completed review — propagate failures.
+- Reviews are capped at three concurrent child sessions; extra dispatches queue.
 
 ## Nesting: use direct dispatch
 
-Pi caps subagent nesting at two levels (this session plus one subagent level). A synthesizer subagent cannot itself spawn reviewers. Wherever a skill says the synthesizer spawns reviewers, dispatch each reviewer directly from this (Elephant) context with the same isolation, then synthesize the findings in-thread. This is the upstream-sanctioned fallback for harnesses without nesting.
+Wherever a skill says the synthesizer spawns reviewers, dispatch each reviewer directly from this (Elephant) context with the same isolation, then synthesize the findings in-thread. This is the upstream-sanctioned fallback for harnesses without nesting; on Pi it is also structural, because a Goldfish child runs without extension tools and cannot spawn anything itself.
 
 ## Structured question gates
 
