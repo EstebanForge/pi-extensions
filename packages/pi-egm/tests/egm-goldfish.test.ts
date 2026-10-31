@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	buildGoldfishArgv,
 	buildGoldfishTask,
+	isEgmInvocation,
 	isSpawnShaped,
 	killAll,
 	ROLE_TO_PERSONA,
@@ -206,5 +207,16 @@ describe("isSpawnShaped", () => {
 		expect(isSpawnShaped("asana_get_tasks")).toBe(false);
 		expect(isSpawnShaped("todo")).toBe(false);
 		expect(isSpawnShaped("read")).toBe(false);
+	});
+});
+
+describe("isEgmInvocation", () => {
+	it("recognizes EGM commands and skill invocations only", () => {
+		expect(isEgmInvocation("/egm-review docs/design.md")).toBe(true);
+		expect(isEgmInvocation("/egm-drift-report")).toBe(true);
+		expect(isEgmInvocation("/skill:egm-brainstorm")).toBe(true);
+		expect(isEgmInvocation("/egx")).toBe(false);
+		expect(isEgmInvocation("hello")).toBe(false);
+		expect(isEgmInvocation("review the /egm-review docs")).toBe(false);
 	});
 });

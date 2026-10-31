@@ -23,7 +23,7 @@ Every skill also loads as a Pi skill (`/skill:egm-<name>`); the commands exist f
 ## Requirements
 
 - None beyond Pi. `egm_goldfish` ships in this package: each reviewer runs in a fresh headless child process with no extensions, no context files, and no persisted session, so the zero-context guarantee does not depend on any subagent extension. Reviews run on the child session's default model config (provider and keys come from your Pi settings).
-- During EGM flows the extension blocks spawn-shaped tools other than `egm_goldfish`, so a partially compatible subagent extension cannot silently fork context into a reviewer. The block is a name-based denylist; a tool with an unusual name could still be called by the model — that is residual risk we accept rather than chase per-extension compatibility.
+- During EGM flows the extension blocks spawn-shaped tools other than `egm_goldfish`, so a partially compatible subagent extension cannot silently fork context into a reviewer. The guard is a best-effort backstop: armed by `/egm-*` commands and `egm_goldfish` calls, disarmed by your next non-EGM input, and name-based, so a tool with an unusual name could still be called — residual risk we accept rather than chase per-extension compatibility.
 - If you run [pi-subagent-manager](https://www.npmjs.com/package/pi-subagent-manager) you will notice EGM does not use it: its spawned sessions load your personal package stack, which can inject memory context into a reviewer.
 
 ## Install

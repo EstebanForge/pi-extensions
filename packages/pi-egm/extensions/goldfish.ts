@@ -189,6 +189,24 @@ export function isSpawnShaped(toolName: string): boolean {
 	return SPAWN_SHAPED.test(toolName);
 }
 
+export function isEgmInvocation(text: string): boolean {
+	return /^\/(egm-|skill:egm-)/.test(text.trim());
+}
+
+// Guard window: armed by /egm-* commands, /skill:egm-* invocations, and
+// egm_goldfish calls; disarmed by the next non-EGM user input. A session-long
+// arm would block the user's own subagent tools for unrelated work.
+let guardArmed = false;
+export function armGuard(): void {
+	guardArmed = true;
+}
+export function disarmGuard(): void {
+	guardArmed = false;
+}
+export function isGuardArmed(): boolean {
+	return guardArmed;
+}
+
 // Counting semaphore: a freed slot is handed to exactly one waiter, and the
 // waiter's permit is taken inside release() so no caller can slip past.
 let active = 0;
@@ -211,9 +229,6 @@ const release = (): void => {
 };
 
 export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => void } {
-	let armed = false;
-	const killHandles: Array<() => void> = [];
-
 	const goldfishTool: ToolDefinition<typeof Params, GoldfishDetails> = {
 		name: "egm_goldfish",
 		label: "EGM Goldfish review",
@@ -223,7 +238,7 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 			"egm_goldfish: run one EGM Goldfish reviewer in a fresh isolated child session (fresh context by construction).",
 		parameters: Params,
 		async execute(_toolCallId, params, signal, onUpdate) {
-			armed = true;
+			armGuard();
 			let tail = "";
 			const result = await runGoldfish(params, {
 				root,
@@ -252,12 +267,29 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 	};
 	pi.registerTool(goldfishTool);
 
+	const killHandles: Array<() => void> = [];
+
 	// Once an EGM flow starts, denylist spawn-shaped tools so a partially
 	// compatible subagent extension cannot silently fork context into a
 	// Goldfish. Denylist, not allowlist: oddly named tools can still slip
 	// through, which the README records as residual risk.
+	pi.on("input", (event) => {
+		if (isEgmInvocation(event.text)) {
+			armGuard();
+			return undefined;
+		}
+		if (event.source === "extension") return undefined;
+		if (isGuardArmed()) disarmGuard();
+		return undefined;
+	});
+
+	// Once an EGM flow starts, denylist spawn-shaped tools so a partially
+	// compatible subagent extension cannot silently fork context into a
+	// Goldfish. Best-effort backstop: scoped to the guard window and blind to
+	// oddly named tools (README records the residual risk). The tool's own
+	// description is the primary control.
 	pi.on("tool_call", (event) => {
-		if (!armed) return undefined;
+		if (!isGuardArmed()) return undefined;
 		if (event.toolName === "egm_goldfish") return undefined;
 		if (isSpawnShaped(event.toolName)) {
 			return {
@@ -273,8 +305,6 @@ export function registerGoldfish(pi: ExtensionAPI, root: string): { arm: () => v
 	});
 
 	return {
-		arm: () => {
-			armed = true;
-		},
+		arm: armGuard,
 	};
 }
