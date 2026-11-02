@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Cross-repo targeting: `repo` param on every remote-surface write tool** — `git_issue_create`, `git_issue_comment`, `git_issue_comment_edit`, `git_pr_comment_edit`, `git_pr_comment`, `git_pr_review`, `git_discussion_create`, `git_discussion_comment`. Accepts `owner/name` or a github.com URL (https, ssh, scp-like; `.git` and trailing paths stripped). Posts there with NO local checkout: `gh -R owner/name` for issues/PRs, slug-addressed `gh repo view` for discussions. Fixes the wrong-repo failure mode where an agent standing in repo A filed an upstream bug and it landed in repo A because targeting defaulted to cwd's remotes. `repo` and `cwd` are mutually exclusive (refused before any subprocess runs), and `requireGitRepo` is skipped when `repo` is set. `git_pr_comment` / `git_pr_review` with `repo` require an explicit `pr` number (a current-branch PR only resolves in your own checkout). New `lib/repo-target.ts` carries the parser (`normalizeRepoSlug`) and the shared refusal texts.
+- **Every write dialog now names the repo it will touch.** Titles carry " in owner/name" from the `repo` param when given, else from a `gh repo view` in cwd (`git_issue_create`, `git_issue_comment`, `git_discussion_comment`, `git_pr_comment`, `git_pr_review`, both comment-edit flavors; `git_discussion_create` already named owner/repo); `git_commit` names the working tree root (`git rev-parse --show-toplevel`) and `git_pr_upsert` the gh-resolved repo — wrong-repo writes are visible at the gate even when the agent omits `repo`.
+
+### Changed
+
+- Tool descriptions: every remote-surface write description carries the canonical TARGET-REPO RULE (post where the subject lives; pass `repo` for upstream dependencies, never silently default to the repo pi was started in). The read tools (`git_status`, `git_diff`, `git_log`, `git_current_branch`, `git_pr_info`) state the cwd-targeting rule (inspect sibling checkouts, e.g. an upstream clone when filing upstream issues), and `CWD_DESCRIPTION` points at `repo` instead of inventing a stub checkout. `git_commit` / `git_pr_upsert` descriptions state they are checkout-bound (no `repo` param) and why.
+- `ghRepoView(cwd, explicitSlug?)` resolves a named repo without a checkout; `ghPrUrlByNumber(number, cwd, slug?)` resolves foreign-repo PR urls; `gitToplevel(cwd)` is new.
+
+### Tests
+
+- 170 -> 207 in this package. New `tests/repo-target.test.ts` (slug/URL parser matrix, param-parse + conflict text), cross-repo wiring cases in `tests/tools.test.ts` (-R/--repo argv, no-git-probe, repo+cwd refusal, gate titles naming the target, pr-without-number refusal), and a slug-path edit case in `tests/comment-edit.test.ts` (PATCH against the named repo with rev-parse failing).
 ## 1.5.0 — 2026-10-12
 
 ### Changed

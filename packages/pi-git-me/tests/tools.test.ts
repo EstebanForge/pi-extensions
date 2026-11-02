@@ -1079,3 +1079,176 @@ describe("cwd routing: write tools", () => {
     expect(findCall("gh", ["api", "graphql"])?.cwd).toBe(TARGET_CWD);
   });
 });
+
+// -------------------------------------------------- cross-repo targeting ---
+// The `repo` param posts into a repository WITHOUT a local checkout (gh -R /
+// gh repo view <slug>): an agent filing an upstream issue from its own
+// checkout names the target explicitly instead of inventing a stub clone.
+// Contract pinned here: repo and cwd are mutually exclusive (refused before
+// ANY subprocess), requireGitRepo is skipped when repo is set, the -R / --repo
+// flag reaches the apply argv, and EVERY gate title names the target repo
+// (from the param when given, from `gh repo view` in cwd otherwise). Tools
+// that are checkout-bound by nature (commit, pr-upsert) get no repo param;
+// their titles name the repo via toplevel / gh repo view instead.
+
+describe("cross-repo targeting (repo param)", () => {
+  const upstreamCreateRoute = (): Route => ({
+    match: (c, a) => c === "gh" && a[0] === "issue" && a[1] === "create",
+    result: () => ({ stdout: "https://github.com/foo/bar/issues/1\n", stderr: "", status: 0 }),
+  });
+  const upstreamViewRoute = (): Route => ({
+    match: (c, a) => c === "gh" && a[0] === "repo" && a[1] === "view",
+    result: () => ({ stdout: JSON.stringify({ id: "R_UP", nameWithOwner: "foo/bar" }), stderr: "", status: 0 }),
+  });
+
+  it("git_issue_create: repo URL -> -R owner/name on the apply argv, no git probe, title names the repo", async () => {
+    setupRoutes([upstreamCreateRoute()]);
+    const ui = makeStubUI({ editorResponse: "T\n\n---\n\nB" });
+    const result = await invokeWithCtx(
+      issueCreateTool,
+      { title: "T", body: "B", repo: "https://github.com/foo/bar/issues/12" },
+      makeCtx(ui),
+    );
+    const call = findCall("gh", ["issue", "create"]);
+    expect(call).toBeDefined();
+    expect(call!.args).toEqual(["issue", "create", "-R", "foo/bar", "--title", "T", "--body", "B"]);
+    // No local checkout is needed: requireGitRepo must have been skipped.
+    expect(cpMock.state.calls.some((c) => c.cmd === "git")).toBe(false);
+    expect(ui.prompts[0].title).toContain("in foo/bar");
+    expect(firstText(result)).toContain("Created issue");
+  });
+
+  it("git_issue_create: repo + cwd together -> refused before any subprocess", async () => {
+    setupRoutes();
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(
+      issueCreateTool,
+      { title: "T", body: "B", repo: "foo/bar", cwd: TARGET_CWD },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("not both");
+    expect(ui.prompts).toHaveLength(0);
+    expect(cpMock.state.calls).toHaveLength(0);
+  });
+
+  it("git_issue_create: unparseable repo -> refused with guidance, before the gate", async () => {
+    setupRoutes();
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(
+      issueCreateTool,
+      { title: "T", body: "B", repo: "not-a-repo-ref" },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("owner/name");
+    expect(firstText(result)).toContain("not-a-repo-ref");
+    expect(ui.prompts).toHaveLength(0);
+    expect(cpMock.state.calls).toHaveLength(0);
+  });
+
+  it("git_issue_create: no repo param -> gate title names the cwd-resolved repo", async () => {
+    setupRoutes([REPO_VIEW_ROUTE, upstreamCreateRoute()]);
+    const ui = makeStubUI({ editorResponse: undefined });
+    await invokeWithCtx(issueCreateTool, { title: "T", body: "B" }, makeCtx(ui));
+    expect(ui.prompts[0].title).toContain("in octo/repo");
+  });
+
+  it("git_issue_comment: repo slug -> --repo on the apply argv", async () => {
+    const ui = makeStubUI({ editorResponse: "triaged" });
+    await invokeWithCtx(
+      issueCommentTool,
+      { number: 7, body: "triaged", repo: "foo/bar" },
+      makeCtx(ui),
+    );
+    const call = findCall("gh", ["issue", "comment"]);
+    expect(call).toBeDefined();
+    expect(call!.args).toEqual(["issue", "comment", "7", "--repo", "foo/bar", "--body", "triaged"]);
+    expect(ui.prompts[0].title).toContain("in foo/bar");
+  });
+
+  it("git_pr_comment: repo without pr -> refused before the gate (a branch-PR only resolves in your own checkout)", async () => {
+    setupRoutes();
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prCommentTool, { body: "b", repo: "foo/bar" }, makeCtx(ui));
+    expect(firstText(result)).toContain("pr number is required");
+    expect(ui.prompts).toHaveLength(0);
+  });
+
+  it("git_pr_comment: repo + pr -> -R on the apply argv, no branch lookup", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "comment", result: () => ({ stdout: "https://github.com/foo/bar/pull/5#issuecomment-1\n", stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "note" });
+    await invokeWithCtx(prCommentTool, { body: "note", pr: 5, repo: "foo/bar" }, makeCtx(ui));
+    const call = findCall("gh", ["pr", "comment"]);
+    expect(call).toBeDefined();
+    expect(call!.args).toEqual(["pr", "comment", "5", "-R", "foo/bar", "--body", "note"]);
+    expect(cpMock.state.calls.some((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "view")).toBe(false);
+  });
+
+  it("git_commit: gate title names the working tree toplevel", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "git" && a.includes("--show-toplevel"), result: () => ({ stdout: "/repos/upstream/lib\n", stderr: "", status: 0 }) },
+      { match: (c, a) => c === "git" && a[0] === "diff" && a.includes("--cached") && a.includes("--quiet"), result: () => ({ stdout: "", stderr: "", status: 1 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: undefined });
+    await invokeWithCtx(commitTool, { subject: "feat: x" }, makeCtx(ui));
+    expect(ui.prompts[0].title).toContain("(repo: /repos/upstream/lib)");
+  });
+
+  it("git_pr_upsert: gate title names the repo gh resolves for cwd", async () => {
+    setupRoutes([REPO_VIEW_ROUTE]);
+    const ui = makeStubUI({ editorResponse: undefined });
+    await invokeWithCtx(prUpsertTool, { title: "t", body: "b" }, makeCtx(ui));
+    expect(ui.prompts[0].title).toContain("octo/repo");
+  });
+
+  it("git_discussion_create: repo URL -> gh repo view with the slug, no git probe", async () => {
+    setupRoutes([
+      upstreamViewRoute(),
+      graphqlRoute("discussionCategories", { repository: { discussionCategories: { nodes: [{ id: "CAT-GEN", name: "General" }] } } }),
+    ]);
+    const ui = makeStubUI({ editorResponse: undefined });
+    await invokeWithCtx(
+      discussionCreateTool,
+      { title: "T", body: "B", category: "General", repo: "https://github.com/foo/bar" },
+      makeCtx(ui),
+    );
+    const call = findCall("gh", ["repo", "view"]);
+    expect(call).toBeDefined();
+    expect(call!.args).toEqual(["repo", "view", "foo/bar", "--json", "id,nameWithOwner"]);
+    expect(cpMock.state.calls.some((c) => c.cmd === "git")).toBe(false);
+    expect(ui.prompts[0].title).toContain("foo/bar / General");
+  });
+
+  it("git_pr_review: repo + pr -> -R after the number on the review argv, title names the repo", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "review", result: () => ({ stdout: "", stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: "https://github.com/foo/bar/pull/5\n", stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "lgtm" });
+    await invokeWithCtx(prReviewTool, { body: "lgtm", pr: 5, repo: "foo/bar" }, makeCtx(ui));
+    const call = findCall("gh", ["pr", "review"]);
+    expect(call).toBeDefined();
+    expect(call!.args).toEqual(["pr", "review", "5", "-R", "foo/bar", "--comment", "--body", "lgtm"]);
+    expect(ui.prompts[0].title).toContain("in foo/bar");
+  });
+
+  it("git_discussion_comment: repo URL -> slug-addressed repo view, comment posts to that repo", async () => {
+    setupRoutes([
+      upstreamViewRoute(),
+      graphqlRoute("discussion(number:", { repository: { discussion: { id: "DISC1", title: "How to X", url: "https://github.com/foo/bar/discussions/3" } } }),
+      graphqlRoute("addDiscussionComment", { addDiscussionComment: { comment: { url: "https://github.com/foo/bar/discussions/3#discussioncomment-9" } } }),
+    ]);
+    const ui = makeStubUI({ editorResponse: "done" });
+    await invokeWithCtx(
+      discussionCommentTool,
+      { number: 3, body: "done", repo: "https://github.com/foo/bar" },
+      makeCtx(ui),
+    );
+    const call = findCall("gh", ["repo", "view"]);
+    expect(call).toBeDefined();
+    expect(call!.args).toEqual(["repo", "view", "foo/bar", "--json", "id,nameWithOwner"]);
+    expect(findGraphqlCall("addDiscussionComment")).toBeDefined();
+    expect(ui.prompts[0].title).toContain("in foo/bar");
+  });
+});

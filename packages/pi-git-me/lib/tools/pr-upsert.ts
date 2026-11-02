@@ -2,8 +2,9 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
-import { describeTitleBodyPayload, repoContextLabel, toTitleBodyPrefill, fromTitleBodyPrefill } from "../format";
+import { describeTitleBodyPayload, repoContextLabel, gateRepoSuffix, toTitleBodyPrefill, fromTitleBodyPrefill } from "../format";
 import { ghPrForCurrentBranch } from "../git";
+import { ghRepoView } from "../github";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   PR_UPSERT_TITLE,
@@ -62,6 +63,9 @@ export const prUpsertTool: ToolDefinition<typeof Params, GitDetails> = {
     // used to share one vague prompt.
     const existing = ghPrForCurrentBranch(cwd);
     const base = params.base ?? "main";
+    // A PR is branch-bound (no repo param), but the dialog must still name
+    // the repo it will open/edit the PR in.
+    const targetRepo = ghRepoView(cwd)?.nameWithOwner ?? null;
 
     const prefill = toTitleBodyPrefill(params.title, params.body);
     const summary = describeTitleBodyPayload(params.title, params.body);
@@ -69,8 +73,8 @@ export const prUpsertTool: ToolDefinition<typeof Params, GitDetails> = {
     const decision = await confirmWrite(ctx, {
       title:
         existing === null
-          ? `Open a new PR (${base} <- HEAD) with this title + body?${repoContextLabel(cwd, ctx.cwd)}`
-          : `Overwrite PR #${existing.number} title + body?${repoContextLabel(cwd, ctx.cwd)}`,
+          ? `Open a new PR${gateRepoSuffix(targetRepo)} (${base} <- HEAD) with this title + body?${repoContextLabel(cwd, ctx.cwd)}`
+          : `Overwrite PR #${existing.number}${gateRepoSuffix(targetRepo)} title + body?${repoContextLabel(cwd, ctx.cwd)}`,
       editableText: prefill,
       summary,
       // gh receives the title and body as separate, trimmed fields. Mirror that

@@ -2,10 +2,11 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
-import { describeReviewPayload, repoContextLabel } from "../format";
+import { describeReviewPayload, repoContextLabel, gateRepoSuffix } from "../format";
 import { ghPrForCurrentBranch, extractUrl } from "../git";
 import type { GhPullRequest } from "../types";
 import { ghRepoView } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import {
   validateAttachmentPaths,
   uploadAttachmentsForComment,
@@ -19,6 +20,7 @@ import {
   PR_COMMENT_BODY_DESCRIPTION,
   PR_COMMENT_NUMBER_DESCRIPTION,
   COMMENT_IMAGES_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
   CWD_DESCRIPTION,
 } from "../prompts";
 
@@ -46,6 +48,7 @@ const Params = Type.Object({
   images: Type.Optional(
     Type.Array(Type.String({ description: COMMENT_IMAGES_DESCRIPTION })),
   ),
+  repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
   cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 });
 
@@ -62,13 +65,22 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     ctx,
   ): Promise<AgentToolResult<GitDetails>> {
     const cwd = params.cwd ?? ctx.cwd;
+    const conflict = repoParamConflict(params);
+    if (conflict) return toToolResult(conflict);
+    const repoInput = parseRepoParam(params.repo);
     try {
-      requireGitRepo(cwd);
+      if (repoInput.kind !== "ok") requireGitRepo(cwd);
       requireGh();
     } catch (err) {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
       throw err;
     }
+    if (repoInput.kind === "ok" && params.pr === undefined) {
+      return toToolResult(
+        "git-me: a pr number is required when repo is set: a current-branch PR only resolves in your own checkout. Pass pr explicitly.",
+      );
+    }
+    const targetRepo = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
 
     // Resolve PR number: explicit > current-branch PR > fail closed. The
     // branch-resolved PR's url is kept as a fallback for the result's url
@@ -100,7 +112,7 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     }
 
     const decision = await confirmWrite(ctx, {
-      title: `Post this comment on PR #${prNumber}?${repoContextLabel(cwd, ctx.cwd)}`,
+      title: `Post this comment on PR #${prNumber}${gateRepoSuffix(targetRepo)}?${repoContextLabel(cwd, ctx.cwd)}`,
       editableText: params.body,
       summary:
         describeReviewPayload(params.body) +
@@ -132,8 +144,7 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     // upload starts.
     let uploaded: UploadedAttachment[] = [];
     if (imagePaths.length > 0) {
-      const repo = ghRepoView(cwd);
-      if (!repo) {
+      if (!targetRepo) {
         return toToolResult(
           `git-me: cannot attach images - could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Nothing was posted.`,
         );
@@ -141,7 +152,7 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
       try {
         uploaded = await uploadAttachmentsForComment({
           paths: imagePaths,
-          nameWithOwner: repo.nameWithOwner,
+          nameWithOwner: targetRepo,
           cwd,
         });
       } catch (err) {
@@ -151,7 +162,10 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     }
 
     try {
-      const result = runGh(["pr", "comment", String(prNumber), "--body", body], cwd);
+      const args = ["pr", "comment", String(prNumber)];
+      if (repoInput.kind === "ok") args.push("-R", repoInput.slug);
+      args.push("--body", body);
+      const result = runGh(args, cwd);
       if (result.exitCode !== 0) {
         const detail = result.stderr.trim() || result.stdout.trim();
         return toToolResult(

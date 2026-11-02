@@ -2,9 +2,10 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
-import { describeReviewPayload, repoContextLabel } from "../format";
+import { describeReviewPayload, repoContextLabel, gateRepoSuffix } from "../format";
 import { extractUrl } from "../git";
 import { ghRepoView } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import {
   validateAttachmentPaths,
   uploadAttachmentsForComment,
@@ -18,6 +19,7 @@ import {
   ISSUE_COMMENT_BODY_DESCRIPTION,
   ISSUE_COMMENT_NUMBER_DESCRIPTION,
   COMMENT_IMAGES_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
   CWD_DESCRIPTION,
 } from "../prompts";
 
@@ -40,6 +42,7 @@ const Params = Type.Object({
   images: Type.Optional(
     Type.Array(Type.String({ description: COMMENT_IMAGES_DESCRIPTION })),
   ),
+  repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
   cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 });
 
@@ -56,13 +59,19 @@ export const issueCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     ctx,
   ): Promise<AgentToolResult<GitDetails>> {
     const cwd = params.cwd ?? ctx.cwd;
+    const conflict = repoParamConflict(params);
+    if (conflict) return toToolResult(conflict);
+    const repoInput = parseRepoParam(params.repo);
     try {
-      requireGitRepo(cwd);
+      // With an explicit slug no checkout is needed: gh --repo targets the
+      // repo by name, so requireGitRepo would only reject valid cross-repo calls.
+      if (repoInput.kind !== "ok") requireGitRepo(cwd);
       requireGh();
     } catch (err) {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
       throw err;
     }
+    const targetRepo = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
 
     // Fail fast on bad attachment paths BEFORE the review dialog.
     const imagePaths = params.images ?? [];
@@ -76,7 +85,7 @@ export const issueCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     }
 
     const decision = await confirmWrite(ctx, {
-      title: `Post this comment on issue #${params.number}?${repoContextLabel(cwd, ctx.cwd)}`,
+      title: `Post this comment on issue #${params.number}${gateRepoSuffix(targetRepo)}?${repoContextLabel(cwd, ctx.cwd)}`,
       editableText: params.body,
       summary:
         describeReviewPayload(params.body) +
@@ -104,8 +113,8 @@ export const issueCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     // cancel leaves nothing behind, a failed upload leaves no comment.
     let uploaded: UploadedAttachment[] = [];
     if (imagePaths.length > 0) {
-      const repo = ghRepoView(cwd);
-      if (!repo) {
+      const nameWithOwner = targetRepo;
+      if (!nameWithOwner) {
         return toToolResult(
           `git-me: cannot attach images - could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Nothing was posted.`,
         );
@@ -113,7 +122,7 @@ export const issueCommentTool: ToolDefinition<typeof Params, GitDetails> = {
       try {
         uploaded = await uploadAttachmentsForComment({
           paths: imagePaths,
-          nameWithOwner: repo.nameWithOwner,
+          nameWithOwner,
           cwd,
         });
       } catch (err) {
@@ -123,13 +132,10 @@ export const issueCommentTool: ToolDefinition<typeof Params, GitDetails> = {
     }
 
     try {
-      const result = runGh([
-        "issue",
-        "comment",
-        String(params.number),
-        "--body",
-        body,
-      ], cwd);
+      const args = ["issue", "comment", String(params.number)];
+      if (repoInput.kind === "ok") args.push("--repo", repoInput.slug);
+      args.push("--body", body);
+      const result = runGh(args, cwd);
       if (result.exitCode !== 0) {
         const detail = result.stderr.trim() || result.stdout.trim();
         return toToolResult(

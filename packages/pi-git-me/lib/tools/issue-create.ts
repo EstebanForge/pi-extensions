@@ -2,7 +2,9 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
-import { describeTitleBodyPayload, repoContextLabel, toTitleBodyPrefill, fromTitleBodyPrefill } from "../format";
+import { describeTitleBodyPayload, repoContextLabel, gateRepoSuffix, toTitleBodyPrefill, fromTitleBodyPrefill } from "../format";
+import { ghRepoView } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   ISSUE_CREATE_TITLE,
@@ -11,6 +13,7 @@ import {
   ISSUE_CREATE_BODY_DESCRIPTION,
   ISSUE_CREATE_LABELS_DESCRIPTION,
   ISSUE_CREATE_ASSIGNEES_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
   CWD_DESCRIPTION,
 } from "../prompts";
 
@@ -24,6 +27,7 @@ const Params = Type.Object({
   body: Type.String({ description: ISSUE_CREATE_BODY_DESCRIPTION, minLength: 1 }),
   labels: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: ISSUE_CREATE_LABELS_DESCRIPTION })),
   assignees: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: ISSUE_CREATE_ASSIGNEES_DESCRIPTION })),
+  repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
   cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 });
 
@@ -40,19 +44,25 @@ export const issueCreateTool: ToolDefinition<typeof Params, GitDetails> = {
     ctx,
   ): Promise<AgentToolResult<GitDetails>> {
     const cwd = params.cwd ?? ctx.cwd;
+    const conflict = repoParamConflict(params);
+    if (conflict) return toToolResult(conflict);
+    const repoInput = parseRepoParam(params.repo);
     try {
-      requireGitRepo(cwd);
+      // With an explicit slug no checkout is needed: gh -R targets the repo
+      // by name, so requireGitRepo would only reject valid cross-repo calls.
+      if (repoInput.kind !== "ok") requireGitRepo(cwd);
       requireGh();
     } catch (err) {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
       throw err;
     }
+    const targetRepo = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
 
     const prefill = toTitleBodyPrefill(params.title, params.body);
     const summary = describeTitleBodyPayload(params.title, params.body);
 
     const decision = await confirmWrite(ctx, {
-      title: `Create a new issue with this title + body?${repoContextLabel(cwd, ctx.cwd)}`,
+      title: `Create a new issue${gateRepoSuffix(targetRepo)} with this title + body?${repoContextLabel(cwd, ctx.cwd)}`,
       editableText: prefill,
       summary,
       // gh receives the title and body as separate, trimmed flags. Mirror
@@ -82,8 +92,11 @@ export const issueCreateTool: ToolDefinition<typeof Params, GitDetails> = {
 
     try {
       // Repeated flags (not comma-joined) so a label or login containing a
-      // comma cannot smuggle a second value into one flag.
-      const args = ["issue", "create", "--title", title, "--body", body];
+      // comma cannot smuggle a second value into one flag. -R names the
+      // target repo explicitly (no checkout needed).
+      const args = ["issue", "create"];
+      if (repoInput.kind === "ok") args.push("-R", repoInput.slug);
+      args.push("--title", title, "--body", body);
       for (const label of params.labels ?? []) args.push("--label", label);
       for (const assignee of params.assignees ?? []) args.push("--assignee", assignee);
       const result = runGh(args, cwd);

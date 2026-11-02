@@ -157,6 +157,16 @@ export function gitCurrentBranch(cwd: string = process.cwd()): string {
   return detached.exitCode === 0 ? `HEAD (detached at ${detached.stdout.trim()})` : "";
 }
 
+/**
+ * Absolute path of the working tree root. null when cwd is not a repo or
+ * git fails — callers fall back to a less precise label rather than error.
+ */
+export function gitToplevel(cwd: string): string | null {
+  const result = runGit(["rev-parse", "--show-toplevel"], cwd);
+  const out = result.stdout.trim();
+  return result.exitCode === 0 && out ? out : null;
+}
+
 // -------------------------------------------------- gh helpers ------------
 
 /** Resolve the PR for the current branch. Returns null when there is no PR. */
@@ -274,11 +284,15 @@ export function extractUrl(stdout: string): string | null {
 }
 
 /**
- * Web URL for a PR by number (`gh pr view <n> --json url`). null on any
- * failure - callers omit the url line rather than erroring.
+ * Web URL for a PR by number (`gh pr view <n> --json url`). With slug the
+ * lookup is repo-addressed (-R owner/name) so a foreign-repo review can
+ * resolve its PR url from an unrelated cwd. null on any failure - callers
+ * omit the url line rather than erroring.
  */
-export function ghPrUrlByNumber(number: number, cwd: string): string | null {
-  const result = runGh(["pr", "view", String(number), "--json", "url"], cwd);
+export function ghPrUrlByNumber(number: number, cwd: string, slug?: string): string | null {
+  const args = ["pr", "view", String(number), "--json", "url"];
+  if (slug) args.push("-R", slug);
+  const result = runGh(args, cwd);
   if (result.exitCode !== 0) return null;
   try {
     const url = (JSON.parse(result.stdout) as { url?: unknown }).url;

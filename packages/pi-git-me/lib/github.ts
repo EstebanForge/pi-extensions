@@ -22,14 +22,18 @@ export interface GhRepoRef {
 }
 
 /**
- * Resolve the repository for a working directory via
- * `gh repo view --json id,nameWithOwner`. Returns null when gh fails (no
- * GitHub remote, not authed, network down) — callers turn that into an
- * actionable message. requireGh() should run first so "gh missing" is
- * already ruled out.
+ * Resolve a GitHub repository: `gh repo view --json id,nameWithOwner`. With
+ * explicitSlug the lookup is slug-addressed ("gh repo view owner/name") and
+ * needs no local checkout; without, cwd's git remotes decide. Returns null
+ * when gh fails (no GitHub remote, not authed, network down) — callers turn
+ * that into an actionable message. requireGh() should run first so "gh
+ * missing" is already ruled out.
  */
-export function ghRepoView(cwd: string): GhRepoRef | null {
-  const result = runGh(["repo", "view", "--json", "id,nameWithOwner"], cwd);
+export function ghRepoView(cwd: string, explicitSlug?: string): GhRepoRef | null {
+  const args = ["repo", "view"];
+  if (explicitSlug) args.push(explicitSlug);
+  args.push("--json", "id,nameWithOwner");
+  const result = runGh(args, cwd);
   if (result.exitCode !== 0) return null;
   try {
     const parsed = JSON.parse(result.stdout) as { id?: string; nameWithOwner?: string };

@@ -88,6 +88,16 @@ Details worth knowing:
 - Paths are checked (exists + supported type) before the review dialog opens.
 - Size limits match the web flow: 10 MB for images/GIFs, 10 MB video on free plans, 100 MB on paid plans.
 
+## Posting to a different repository (cross-repo targeting)
+
+By default every tool targets the repo gh resolves from the working directory's remotes — which is the repo pi was started in. That is wrong when the bug lives upstream: the agent standing in repo A files an issue against its dependency and it would land in repo A. The remote-surface write tools (`git_issue_create`, `git_issue_comment`, both comment-edit tools, `git_discussion_create`, `git_discussion_comment`, `git_pr_comment`, `git_pr_review`) take an explicit `repo` param to name the target: `owner/name` or a github.com URL (`https://github.com/owner/name`, `.git` suffix and trailing paths like `/issues/12` are stripped automatically).
+
+- `repo` needs **no local checkout**: the tools run `gh -R owner/name` (issues, PRs) or `gh repo view owner/name` (discussions) directly, so no stub clone is required.
+- `repo` and `cwd` are mutually exclusive; passing both is refused before any command runs.
+- When the subject belongs to a different repository than the working one, the agent must pass `repo` — the tool descriptions carry this rule verbatim.
+- Every write dialog title names the repo it will touch: from the `repo` param when given, else from `gh repo view` in cwd. `git_commit` and `git_pr_upsert` are checkout-bound by nature (no `repo` param); their titles name the working tree root and the gh-resolved repo instead.
+- `git_pr_comment` / `git_pr_review` with `repo` require an explicit `pr` number: a current-branch PR only resolves in your own checkout (fork workflows included).
+
 ## Install
 
 ```bash
@@ -185,6 +195,13 @@ Start a discussion in Ideas titled "Weekly digest of merged PRs" — draft the f
 Reply under the top comment of discussion #12: this worked for me on 1.2.3.
 ```
 
+Cross-repo example — filing an upstream bug from an unrelated checkout:
+
+```
+Report a bug to the upstream repo foo/bar (we only use their library here):
+git_issue_create with repo="foo/bar", title="...", body="..."
+```
+
 ## Notes
 
 - These tools make real calls against your local repo and (for the GitHub tools) your authenticated GitHub account. Write tools prompt you for review before touching git or GitHub when the write review gate is on (default); see [Write tools & review](#write-tools--review).
@@ -198,6 +215,7 @@ Reply under the top comment of discussion #12: this worked for me on 1.2.3.
 - `git_issue_create` needs `gh issue create` to succeed; a label the repo does not have fails the whole call (nothing is created). Verify label names read-only first if unsure.
 - Discussions have **no `gh` CLI command**. `git_discussion_create` and `git_discussion_comment` go through the GraphQL API via `gh api graphql` (the `createDiscussion` and `addDiscussionComment` mutations). A category **name** is required to create a discussion; a wrong name returns the repo's valid category names, so a first call is a safe way to discover them. Discussions must be enabled on the repo (Settings -> Features) or the category lookup reports it.
 - `git_discussion_comment` posts top-level by default; pass `replyTo` with a comment id (numeric REST id or GraphQL node id, discoverable read-only via `gh api repos/<owner>/<repo>/discussions/<n>/comments`) to thread the reply under that comment.
+- The optional `repo` param on the remote-surface write tools posts into another repository with no local checkout (see [Cross-repo posting](#posting-to-a-different-repository-cross-repo-targeting)); the write dialog always names the target repo before you accept.
 - Other git providers (GitLab, Gitea / Forgejo, Bitbucket, etc.) are out of scope. Wire those up yourself via your preferred path (their CLI, direct API, MCP server, or a custom extension). See [Scope](#scope-github-today-other-providers-out-of-scope).
 
 ## License

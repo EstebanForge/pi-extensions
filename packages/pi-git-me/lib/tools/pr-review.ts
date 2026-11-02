@@ -2,9 +2,11 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
-import { describeReviewPayload, repoContextLabel } from "../format";
+import { describeReviewPayload, repoContextLabel, gateRepoSuffix } from "../format";
 import { ghPrForCurrentBranch, ghPrUrlByNumber } from "../git";
 import type { GhPullRequest } from "../types";
+import { ghRepoView } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   PR_REVIEW_TITLE,
@@ -12,6 +14,7 @@ import {
   PR_REVIEW_BODY_DESCRIPTION,
   PR_REVIEW_PR_DESCRIPTION,
   PR_REVIEW_EVENT_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
   CWD_DESCRIPTION,
 } from "../prompts";
 
@@ -39,6 +42,7 @@ const Params = Type.Object({
       enum: ["COMMENT", "APPROVE", "REQUEST_CHANGES"],
     }),
   ),
+  repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
   cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 });
 
@@ -66,13 +70,22 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
     ctx,
   ): Promise<AgentToolResult<GitDetails>> {
     const cwd = params.cwd ?? ctx.cwd;
+    const conflict = repoParamConflict(params);
+    if (conflict) return toToolResult(conflict);
+    const repoInput = parseRepoParam(params.repo);
     try {
-      requireGitRepo(cwd);
+      if (repoInput.kind !== "ok") requireGitRepo(cwd);
       requireGh();
     } catch (err) {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
       throw err;
     }
+    if (repoInput.kind === "ok" && params.pr === undefined) {
+      return toToolResult(
+        "git-me: a pr number is required when repo is set: a current-branch PR only resolves in your own checkout. Pass pr explicitly.",
+      );
+    }
+    const targetRepo = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
 
     const event = parseReviewEvent(params.event);
 
@@ -94,10 +107,10 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
 
     const eventLabel =
       (event === "APPROVE"
-        ? "Approve this PR with this body?"
+        ? "Approve this PR"
         : event === "REQUEST_CHANGES"
-          ? "Request changes on this PR with this body?"
-          : "Post this review comment on this PR?") + repoContextLabel(cwd, ctx.cwd);
+          ? "Request changes on this PR"
+          : "Post this review comment on this PR") + gateRepoSuffix(targetRepo) + "?" + repoContextLabel(cwd, ctx.cwd);
 
     const decision = await confirmWrite(ctx, {
       title: eventLabel,
@@ -129,13 +142,16 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
 
     try {
       // Map event -> gh flag. COMMENT is the default review (no --approve /
-      // --request-changes), and just needs --body.
+      // --request-changes), and just needs --body. -R names the target repo
+      // explicitly when the agent set one.
+      const base = ["pr", "review", String(prNumber)];
+      if (repoInput.kind === "ok") base.push("-R", repoInput.slug);
       const args =
         event === "APPROVE"
-          ? ["pr", "review", String(prNumber), "--approve", "--body", body]
+          ? [...base, "--approve", "--body", body]
           : event === "REQUEST_CHANGES"
-            ? ["pr", "review", String(prNumber), "--request-changes", "--body", body]
-            : ["pr", "review", String(prNumber), "--comment", "--body", body];
+            ? [...base, "--request-changes", "--body", body]
+            : [...base, "--comment", "--body", body];
 
       const result = runGh(args, cwd);
       if (result.exitCode !== 0) {
@@ -154,7 +170,7 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
       // gh pr review prints nothing on success; resolve the PR url ourselves
       // (free when the branch lookup above already has it, one cheap gh call
       // otherwise).
-      const url = resolved?.url ?? ghPrUrlByNumber(prNumber, cwd);
+      const url = resolved?.url ?? ghPrUrlByNumber(prNumber, cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
       const urlLine = url ? `\n  url: ${url}` : "";
       const { extraText, details } = postedContentExtras(body, decision.edited ?? false);
       return toToolResult(`${verb} PR #${prNumber}.${urlLine}${extraText}`, details);

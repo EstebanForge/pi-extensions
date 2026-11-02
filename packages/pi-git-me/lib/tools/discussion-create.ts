@@ -11,6 +11,7 @@ import {
   CREATE_DISCUSSION_MUTATION,
   parseDiscussionCategories,
 } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   DISCUSSION_CREATE_TITLE,
@@ -18,6 +19,7 @@ import {
   DISCUSSION_CREATE_TITLE_DESCRIPTION,
   DISCUSSION_CREATE_BODY_DESCRIPTION,
   DISCUSSION_CREATE_CATEGORY_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
   CWD_DESCRIPTION,
 } from "../prompts";
 
@@ -32,6 +34,7 @@ const Params = Type.Object({
   title: Type.String({ description: DISCUSSION_CREATE_TITLE_DESCRIPTION, minLength: 1 }),
   body: Type.String({ description: DISCUSSION_CREATE_BODY_DESCRIPTION, minLength: 1 }),
   category: Type.String({ description: DISCUSSION_CREATE_CATEGORY_DESCRIPTION, minLength: 1 }),
+  repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
   cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 });
 
@@ -48,8 +51,11 @@ export const discussionCreateTool: ToolDefinition<typeof Params, GitDetails> = {
     ctx,
   ): Promise<AgentToolResult<GitDetails>> {
     const cwd = params.cwd ?? ctx.cwd;
+    const conflict = repoParamConflict(params);
+    if (conflict) return toToolResult(conflict);
+    const repoInput = parseRepoParam(params.repo);
     try {
-      requireGitRepo(cwd);
+      if (repoInput.kind !== "ok") requireGitRepo(cwd);
       requireGh();
     } catch (err) {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
@@ -57,10 +63,13 @@ export const discussionCreateTool: ToolDefinition<typeof Params, GitDetails> = {
     }
 
     try {
-      const repo = ghRepoView(cwd);
+      // With an explicit slug the lookup is name-addressed: no checkout needed.
+      const repo = ghRepoView(cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
       if (!repo) {
         return toToolResult(
-          `git-me: could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Check that the repo has a GitHub remote and that \`gh\` can see it.`,
+          repoInput.kind === "ok"
+            ? `git-me: could not resolve "${repoInput.slug}" via \`gh repo view\` (not found, or \`gh\` cannot see it).`
+            : `git-me: could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Check that the repo has a GitHub remote and that \`gh\` can see it.`,
         );
       }
 

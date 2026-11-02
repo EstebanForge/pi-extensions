@@ -2,7 +2,7 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { runGit, requireGitRepo, GitMeEnvError } from "../auth";
-import { gitCommitWebUrl } from "../git";
+import { gitCommitWebUrl, gitToplevel } from "../git";
 import { confirmWrite } from "../confirm";
 import { formatCommitMessage, oneLine, repoContextLabel } from "../format";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
@@ -85,12 +85,17 @@ export const commitTool: ToolDefinition<typeof Params, GitDetails> = {
     const prefill = formatCommitMessage(params.subject, params.body);
     const summary = `commit message:\n${oneLine(prefill)}`;
 
+    // The gate must name the repo the commit lands in, even when cwd is the
+    // session default: wrong-checkout commits are invisible otherwise.
+    const toplevel = gitToplevel(cwd);
+    const repoLabel = toplevel ? ` (repo: ${toplevel})` : repoContextLabel(cwd, ctx.cwd);
+
     const decision = await confirmWrite(ctx, {
       title: committingMerge
-        ? `Commit in-progress merge with this message?${repoContextLabel(cwd, ctx.cwd)}`
+        ? `Commit in-progress merge with this message?${repoLabel}`
         : params.amend
-          ? `Amend last commit with this message?${repoContextLabel(cwd, ctx.cwd)}`
-          : `Commit staged changes with this message?${repoContextLabel(cwd, ctx.cwd)}`,
+          ? `Amend last commit with this message?${repoLabel}`
+          : `Commit staged changes with this message?${repoLabel}`,
       editableText: prefill,
       summary,
       // The applied message is trimEnd()'d before it reaches git, so diff the

@@ -80,3 +80,13 @@ export function repoContextLabel(
   return ` (repo: ${effectiveCwd})`;
 }
 
+/**
+ * " in owner/name" for gate titles when the target repository is known;
+ * "" otherwise (the caller keeps its generic wording). Every remote-surface
+ * write names the repo it will touch in the dialog title, so a wrong-repo
+ * post is visible before the human accepts.
+ */
+export function gateRepoSuffix(nameWithOwner: string | null | undefined): string {
+  return nameWithOwner ? ` in ${nameWithOwner}` : "";
+}
+

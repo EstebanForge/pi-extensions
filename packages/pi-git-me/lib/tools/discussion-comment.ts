@@ -12,6 +12,7 @@ import {
   parseDiscussion,
   resolveDiscussionCommentNodeId,
 } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   validateAttachmentPaths,
@@ -26,6 +27,7 @@ import {
   DISCUSSION_COMMENT_NUMBER_DESCRIPTION,
   DISCUSSION_COMMENT_REPLY_TO_DESCRIPTION,
   COMMENT_IMAGES_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
   CWD_DESCRIPTION,
 } from "../prompts";
 
@@ -49,6 +51,7 @@ const Params = Type.Object({
     Type.Array(Type.String({ description: COMMENT_IMAGES_DESCRIPTION })),
   ),
   replyTo: Type.Optional(Type.String({ description: DISCUSSION_COMMENT_REPLY_TO_DESCRIPTION, minLength: 1 })),
+  repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
   cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 });
 
@@ -65,8 +68,11 @@ export const discussionCommentTool: ToolDefinition<typeof Params, GitDetails> = 
     ctx,
   ): Promise<AgentToolResult<GitDetails>> {
     const cwd = params.cwd ?? ctx.cwd;
+    const conflict = repoParamConflict(params);
+    if (conflict) return toToolResult(conflict);
+    const repoInput = parseRepoParam(params.repo);
     try {
-      requireGitRepo(cwd);
+      if (repoInput.kind !== "ok") requireGitRepo(cwd);
       requireGh();
     } catch (err) {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
@@ -74,10 +80,13 @@ export const discussionCommentTool: ToolDefinition<typeof Params, GitDetails> = 
     }
 
     try {
-      const repo = ghRepoView(cwd);
+      // With an explicit slug the lookup is name-addressed: no checkout needed.
+      const repo = ghRepoView(cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
       if (!repo) {
         return toToolResult(
-          `git-me: could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Check that the repo has a GitHub remote and that \`gh\` can see it.`,
+          repoInput.kind === "ok"
+            ? `git-me: could not resolve "${repoInput.slug}" via \`gh repo view\` (not found, or \`gh\` cannot see it).`
+            : `git-me: could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Check that the repo has a GitHub remote and that \`gh\` can see it.`,
         );
       }
 
@@ -118,8 +127,8 @@ export const discussionCommentTool: ToolDefinition<typeof Params, GitDetails> = 
 
       const decision = await confirmWrite(ctx, {
         title: params.replyTo
-          ? `Post this reply in discussion #${params.number} "${discussion.title}"?${repoContextLabel(cwd, ctx.cwd)}`
-          : `Post this comment on discussion #${params.number} "${discussion.title}"?${repoContextLabel(cwd, ctx.cwd)}`,
+          ? `Post this reply in discussion #${params.number} "${discussion.title}" in ${repo.nameWithOwner}?${repoContextLabel(cwd, ctx.cwd)}`
+          : `Post this comment on discussion #${params.number} "${discussion.title}" in ${repo.nameWithOwner}?${repoContextLabel(cwd, ctx.cwd)}`,
         editableText: params.body,
         summary:
           describeReviewPayload(params.body) +

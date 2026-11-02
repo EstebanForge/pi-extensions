@@ -576,4 +576,39 @@ describe("comment-edit hardening", () => {
     );
     expect(verbatim.details).toBeUndefined();
   });
+
+  it("repo param: patch targets the named repo with no working checkout", async () => {
+    // cwd is NOT a git repo (rev-parse fails) - the slug path must not care.
+    // nameWithOwner comes from the repo param, so no `gh repo view` route.
+    const comment = {
+      id: 55,
+      body: "old",
+      user: { login: "me" },
+      issue_url: "https://github.com/foo/bar/issues/7",
+    };
+    const patchBodies: string[] = [];
+    cpMock.state.routes = [
+      { match: (c, a) => c === "git", result: () => ({ stdout: "", stderr: "fatal: not a git repository", status: 128 }) },
+      ROUTES.login,
+      { match: (c, a) => c === "gh" && a[0] === "api" && a[1] === "repos/foo/bar/issues/comments/55" && !a.includes("--method"), result: () => ({ stdout: JSON.stringify(comment), stderr: "", status: 0 }) },
+      {
+        match: (c, a) => {
+          if (!(c === "gh" && a[0] === "api" && a[1] === "--method" && a[2] === "PATCH" && a[3] === "repos/foo/bar/issues/comments/55")) return false;
+          const bodyArg = a.find((x) => x.startsWith("body=")) ?? "";
+          patchBodies.push(bodyArg.slice("body=".length));
+          return true;
+        },
+        result: () => ({ stdout: JSON.stringify({ id: 55, html_url: "https://github.com/foo/bar/issues/7#issuecomment-55", body: patchBodies[patchBodies.length - 1] ?? "", user: { login: "me" } }), stderr: "", status: 0 }),
+      },
+    ];
+    const ui = makeStubUI({ editorResponse: "replacement" });
+    const result = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "replacement", commentId: 55, repo: "https://github.com/foo/bar" },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("Edited your comment on issue #7");
+    expect(firstText(result)).toContain("foo/bar/issues/7#issuecomment-55");
+    expect(patchBodies).toEqual(["replacement"]);
+  });
 });

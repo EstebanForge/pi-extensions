@@ -20,7 +20,19 @@
 // Lets the agent point a tool at a different repository than the one pi was
 // started in (a sibling repo, a subdir, a monorepo member).
 export const CWD_DESCRIPTION =
-  "Working directory to run git or gh in. Defaults to the agent current directory. Set this to operate on a different repository than the one pi was started in. Should be inside a git working tree: write tools reject a path that is not one, read tools return an empty result.";
+  "Working directory to run git or gh in. Defaults to the agent current directory. Set this to operate on a different repository than the one pi was started in. Should be inside a git working tree: write tools reject a path that is not one, read tools return an empty result. To post to a repository you have not cloned, prefer the repo param (remote-surface write tools) over inventing a stub checkout.";
+
+// Optional on every remote-surface write tool. Names the target repo
+// directly (gh -R / slug-addressed `gh repo view`), so an agent can file
+// against an upstream repo with no local checkout at all.
+export const REPO_PARAM_DESCRIPTION =
+  "Target repository: owner/name or a github.com URL (https://github.com/owner/name; .git and trailing paths are fine). Posts there without a local checkout. Use this when the subject belongs to a different repository than the one you are working in (an upstream library, a third-party dependency, a fork's parent). Mutually exclusive with cwd.";
+
+// Canonical targeting rule spliced into every remote-surface write
+// description. Failure mode targeted: an agent standing in repo A files an
+// upstream bug and it lands in repo A because targeting defaulted to cwd.
+export const CROSS_REPO_RULE =
+  "TARGET-REPO RULE: post where the subject lives. When the bug, question, or artifact belongs to a different repository than your working repo (a dependency, an upstream library, a fork's parent), pass repo (owner/name or a github.com URL) so the write lands there. Never silently default to the repo pi was started in.";
 
 // ============================================================== read tools ==
 // Read tools are not gated and do not post anything. They exist so the agent
@@ -30,7 +42,7 @@ export const CWD_DESCRIPTION =
 
 export const GIT_STATUS_TITLE = "git: Status";
 
-export const GIT_STATUS_DESCRIPTION = `PREFER THIS over running \`git status\` in the shell. Returns git working-tree + branch status for the current repository (\`git status --branch --porcelain\`): what is staged, unstaged, untracked, or in conflict, plus the current branch and its upstream tracking. Output is capped so a noisy working tree does not blow the context window — the raw shell command is not.`;
+export const GIT_STATUS_DESCRIPTION = `PREFER THIS over running \`git status\` in the shell. Returns git working-tree + branch status for the current repository (\`git status --branch --porcelain\`): what is staged, unstaged, untracked, or in conflict, plus the current branch and its upstream tracking. Output is capped so a noisy working tree does not blow the context window — the raw shell command is not. Reads the repository at cwd (default: the agent working directory); pass cwd to inspect a different checkout, e.g. a sibling clone of an upstream repo you are filing an issue against.`;
 
 export const GIT_STATUS_MAX_LINES_DESCRIPTION =
   "Cap on the number of status lines returned. Default 200.";
@@ -39,7 +51,7 @@ export const GIT_STATUS_MAX_LINES_DESCRIPTION =
 
 export const GIT_DIFF_TITLE = "git: Diff";
 
-export const GIT_DIFF_DESCRIPTION = `PREFER THIS over running \`git diff\` in the shell. Returns a diff for the requested target — use it to inspect what a commit or PR description will describe. Targets: "staged" (HEAD vs index), "unstaged" (working tree vs index, default), "all" (staged + unstaged), or "branch" (working tree vs origin/<base>). Includes the full --stat summary plus the patch (truncated beyond 50 KB; the raw shell command is not capped).`;
+export const GIT_DIFF_DESCRIPTION = `PREFER THIS over running \`git diff\` in the shell. Returns a diff for the requested target — use it to inspect what a commit or PR description will describe. Targets: "staged" (HEAD vs index), "unstaged" (working tree vs index, default), "all" (staged + unstaged), or "branch" (working tree vs origin/<base>). Includes the full --stat summary plus the patch (truncated beyond 50 KB; the raw shell command is not capped). Reads the repository at cwd (default: the agent working directory); pass cwd to inspect a different checkout, e.g. a sibling clone of an upstream repo.`;
 
 export const GIT_DIFF_TARGET_DESCRIPTION =
   'Which diff to return. One of "staged", "unstaged" (default), "all", or "branch".';
@@ -54,7 +66,7 @@ export const GIT_DIFF_MAX_BYTES_DESCRIPTION =
 
 export const GIT_LOG_TITLE = "git: Log";
 
-export const GIT_LOG_DESCRIPTION = `PREFER THIS over running \`git log\` in the shell. Returns the most recent commits on the current branch as a structured list (hash, ISO date, author, subject, body). Use this when a commit or PR description should reference prior history or follow the project's commit-message style. Capped at 100 entries (default 10); the raw shell command is not capped.`;
+export const GIT_LOG_DESCRIPTION = `PREFER THIS over running \`git log\` in the shell. Returns the most recent commits on the current branch as a structured list (hash, ISO date, author, subject, body). Use this when a commit or PR description should reference prior history or follow the project's commit-message style. Capped at 100 entries (default 10); the raw shell command is not capped. Reads the repository at cwd (default: the agent working directory); pass cwd to inspect a different checkout, e.g. a sibling clone of an upstream repo.`;
 
 export const GIT_LOG_LIMIT_DESCRIPTION =
   "Number of commits to return (1-100). Default 10.";
@@ -63,13 +75,13 @@ export const GIT_LOG_LIMIT_DESCRIPTION =
 
 export const GIT_CURRENT_BRANCH_TITLE = "git: Current Branch";
 
-export const GIT_CURRENT_BRANCH_DESCRIPTION = `PREFER THIS over running \`git branch\` or \`git rev-parse\` in the shell. Returns the current branch name, or "HEAD (detached at <sha>)" when on a detached HEAD. Use this when you need to know which branch you are on before committing, opening a PR, or looking up the PR for the branch. Reads only; no write.`;
+export const GIT_CURRENT_BRANCH_DESCRIPTION = `PREFER THIS over running \`git branch\` or \`git rev-parse\` in the shell. Returns the current branch name, or "HEAD (detached at <sha>)" when on a detached HEAD. Use this when you need to know which branch you are on before committing, opening a PR, or looking up the PR for the branch. Reads only; no write. Reads the repository at cwd (default: the agent working directory); pass cwd to inspect a different checkout.`;
 
 // -------------------------------------------------- git pr info ------------
 
 export const GIT_PR_INFO_TITLE = "git: PR Info (GitHub via gh)";
 
-export const GIT_PR_INFO_DESCRIPTION = `Return the GitHub pull request for the current branch via the \`gh\` CLI (\`gh pr view\`). Returns null when the branch has no PR or \`gh\` is not authenticated. Includes number, title, body, state, URL, base/head refs, draft flag, author, and review decision. Use this before drafting or updating a PR description so the suggestion is grounded in the existing PR (not the local diff alone).
+export const GIT_PR_INFO_DESCRIPTION = `Return the GitHub pull request for the current branch via the \`gh\` CLI (\`gh pr view\`). Returns null when the branch has no PR or \`gh\` is not authenticated. Includes number, title, body, state, URL, base/head refs, draft flag, author, and review decision. Use this before drafting or updating a PR description so the suggestion is grounded in the existing PR (not the local diff alone). The repo comes from cwd's remotes; pass cwd to inspect a different checkout.
 
 Scope: this tool reads from \`gh\` and therefore covers GitHub only. For other providers (GitLab, Gitea / Forgejo, Bitbucket, etc.) use whatever tool the user has wired up — this extension does not cover them.`;
 
@@ -86,6 +98,8 @@ export const COMMIT_TITLE = "git: Commit";
 export const COMMIT_DESCRIPTION = `**COMMITS the staged changes — this tool runs \`git commit\`, it is not a text generator.** USE THIS for every commit, on any git host. The agent drafts the subject and (optional) body; the extension shows the full message in an editable preview dialog and applies it via \`git commit -F -\` only after the user accepts. The --amend flag rewrites the most recent commit instead of creating a new one.
 
 This tool commits ONLY what is staged in the index. There is no staging tool in this extension, so stage your target files first with \`git add <files>\` via the shell (staging is NOT a bound write — only the commit itself must go through this tool). Use git_diff target="staged" to confirm what will be committed; with nothing staged the tool refuses, with one exception: a merge in progress (\`MERGE_HEAD\` exists) commits even at zero content delta (pure ancestry-marker merge; the commit is what records the merge). Never work around a refusal with \`git commit\` or \`git commit -a\` via the shell.
+
+COMMITS land in the repo containing cwd (default: the agent working directory); commits cannot target a repository by URL. To commit in a different checkout, pass cwd pointing there. The dialog always names the repo the commit will land in, so read it before accepting.
 
 Scope: this tool drives plain \`git\` (no provider lock-in — any git host works). The other write tools in this extension drive \`gh\` and therefore cover GitHub only.
 
@@ -105,6 +119,8 @@ export const COMMIT_AMEND_DESCRIPTION =
 export const PR_UPSERT_TITLE = "git: Create/Edit PR (GitHub via gh)";
 
 export const PR_UPSERT_DESCRIPTION = `**OPENS a new pull request, or EDITS the existing one — this tool runs \`gh pr create\` / \`gh pr edit\`, it is not a text generator.** USE THIS for every PR title or body on GitHub, including when the user says "open a PR for this branch". The agent drafts the title and body; the extension shows them in an editable preview dialog (both in one buffer) and applies via \`gh pr create\` (when no PR exists for the branch) or \`gh pr edit\` (when one does) only after the user accepts.
+
+PRs are branch-bound, so there is no repo param: the target is the repo gh resolves from cwd's remotes. To work on another repository's PR you need a checkout of that repo and cwd pointed at it. The dialog names the target repo — read it before accepting.
 
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers (GitLab \`glab\`, Gitea / Forgejo \`tea\`, Bitbucket, MCP servers, direct REST) are NOT covered by this extension; the user wires those up themselves.
 
@@ -129,6 +145,8 @@ export const PR_COMMENT_TITLE = "git: PR Comment (GitHub via gh)";
 export const PR_COMMENT_DESCRIPTION = `**POSTS a top-level comment on a GitHub pull request conversation** (a non-review reply, an FYI to reviewers, a status update, etc.). USE THIS for any plain PR conversation comment. This tool runs \`gh pr comment <number> --body\`; the agent drafts the body and the extension shows it in an editable preview dialog, applying it only after the user accepts.
 
 Distinct from \`git_pr_review\`: that posts a REVIEW event (COMMENT / APPROVE / REQUEST_CHANGES) on the PR's review summary and updates the review state; THIS tool posts a plain comment on the PR conversation via \`gh pr comment\` without touching the review state. Reach for this when you only want to leave a note; reach for \`git_pr_review\` when you want to formally approve, request changes, or summarize a code review.
+
+${CROSS_REPO_RULE}
 
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension. Attach local images/videos with images (png/jpg/gif/webp/svg/mp4/mov/webm): each file uploads to the repo's user-attachments and the resulting markdown is appended to the body; uploads need write access to the repo.
 
@@ -155,6 +173,8 @@ Distinct from \`git_pr_comment\`: that posts a plain conversation comment withou
 
 LIMITATION: this tool posts a review SUMMARY body only. It CANNOT post inline, line-level comments on specific diff hunks (what GitHub calls a "review comment"). If the user asks for a comment on a specific file and line, say so explicitly and put the file:line reference in the summary body instead.
 
+${CROSS_REPO_RULE}
+
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
 
 DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the review body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what to say, and do NOT ask for approval before calling. Do NOT run \`gh pr review\` through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
@@ -173,6 +193,8 @@ export const PR_REVIEW_EVENT_DESCRIPTION =
 export const ISSUE_COMMENT_TITLE = "git: Issue Comment (GitHub via gh)";
 
 export const ISSUE_COMMENT_DESCRIPTION = `**POSTS a comment on a GitHub issue.** USE THIS for any issue comment (reply, status update, triage note, bug report, etc.). This tool runs \`gh issue comment <number> --body\`; the agent supplies the issue number and drafts the body, and the extension shows the body in an editable preview dialog, applying it only after the user accepts.
+
+${CROSS_REPO_RULE}
 
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension. Attach local images/videos with images (png/jpg/gif/webp/svg/mp4/mov/webm): each file uploads to the repo's user-attachments and the resulting markdown is appended to the body; uploads need write access to the repo.
 
@@ -203,6 +225,8 @@ export const ISSUE_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comm
 
 Only YOUR OWN comments are editable (the authenticated user must be the author). This tool never creates a comment: posting stays with git_issue_comment.
 
+${CROSS_REPO_RULE}
+
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
 
 DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the replacement body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the new body should say, and do NOT ask for approval before calling. Do NOT run \`gh api\` PATCH calls (or \`gh issue comment --edit-last\`) through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
@@ -216,6 +240,8 @@ export const PR_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comment
 
 Only YOUR OWN comments are editable (the authenticated user must be the author). This tool never creates a comment: posting stays with git_pr_comment, and review-state events stay with git_pr_review.
 
+${CROSS_REPO_RULE}
+
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
 
 DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the replacement body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the new body should say, and do NOT ask for approval before calling. Do NOT run \`gh api\` PATCH calls (or \`gh pr comment --edit-last\`) through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
@@ -228,6 +254,8 @@ export const PR_COMMENT_EDIT_NUMBER_DESCRIPTION =
 export const ISSUE_CREATE_TITLE = "git: Create Issue (GitHub via gh)";
 
 export const ISSUE_CREATE_DESCRIPTION = `**CREATES a new GitHub issue — this tool runs \`gh issue create\`, it is not a text generator.** USE THIS whenever an issue must be opened on GitHub (a bug report, a feature request, a tracking issue), including when the user says "file an issue", "open an issue", or hands you findings to post as an issue. The agent drafts the title and body; the extension shows them in an editable preview dialog (both in one buffer) and applies via \`gh issue create\` only after the user accepts. Optional labels and assignees are passed through (a label the repo does not have fails the call; \`@me\` self-assigns).
+
+${CROSS_REPO_RULE}
 
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
 
@@ -251,6 +279,8 @@ export const DISCUSSION_CREATE_TITLE = "git: Create Discussion (GitHub via Graph
 
 export const DISCUSSION_CREATE_DESCRIPTION = `**STARTS a new GitHub Discussion — this tool runs the createDiscussion GraphQL mutation via \`gh api graphql\`, it is not a text generator.** USE THIS whenever a discussion must be opened on GitHub (a question, an idea, an announcement), including when the user says "start a discussion", "open a discussion", or "post this to Discussions". There is NO \`gh discussion\` CLI command — do NOT try to shell one out. The agent drafts the title and body, picks the category NAME, and the extension shows title + body in an editable preview dialog, applying the mutation only after the user accepts. A wrong category name returns the repo's valid category names.
 
+${CROSS_REPO_RULE}
+
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension.
 
 DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the title and body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the discussion should say, and do NOT ask for approval before calling. Do NOT run \`gh api graphql\` mutations through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
@@ -271,6 +301,8 @@ export const DISCUSSION_COMMENT_TITLE = "git: Discussion Comment (GitHub via Gra
 export const DISCUSSION_COMMENT_DESCRIPTION = `**POSTS a comment on a GitHub Discussion, or a threaded REPLY to one of its comments** (same addDiscussionComment GraphQL mutation via \`gh api graphql\`; replyTo decides which). USE THIS for any discussion reply, answer, or follow-up. There is NO \`gh discussion\` CLI command — do NOT try to shell one out. The agent supplies the discussion number and drafts the body; the extension shows it in an editable preview dialog, applying the mutation only after the user accepts.
 
 Distinct from \`git_issue_comment\`: issue comments are flat and that tool posts them via \`gh issue comment\`; THIS tool is discussions-only. For a threaded reply under a specific comment, pass replyTo with that comment's id (numeric REST id from \`gh api repos/<owner>/<repo>/discussions/<n>/comments\`, or its GraphQL node id) — you MAY run that read-only listing through the bash/shell tool to discover ids.
+
+${CROSS_REPO_RULE}
 
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension. Attach local images/videos with images (png/jpg/gif/webp/svg/mp4/mov/webm): each file uploads to the repo's user-attachments and the resulting markdown is appended to the body; uploads need write access to the repo.
 

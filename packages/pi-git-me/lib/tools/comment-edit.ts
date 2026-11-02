@@ -32,6 +32,7 @@ import { describeReviewPayload, repoContextLabel } from "../format";
 import { ghPrForCurrentBranch } from "../git";
 import type { GhPullRequest } from "../types";
 import { ghRepoView } from "../github";
+import { parseRepoParam, repoParamConflict } from "../repo-target";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   COMMENT_EDIT_BODY_DESCRIPTION,
@@ -43,6 +44,7 @@ import {
   PR_COMMENT_EDIT_TITLE,
   PR_COMMENT_EDIT_DESCRIPTION,
   PR_COMMENT_EDIT_NUMBER_DESCRIPTION,
+  REPO_PARAM_DESCRIPTION,
 } from "../prompts";
 
 /** The comment fields this tool reads from the REST payloads. */
@@ -158,6 +160,7 @@ export function buildCommentEditTool(
     commentId: Type.Optional(
       Type.Integer({ description: COMMENT_EDIT_COMMENT_ID_DESCRIPTION, minimum: 1 }),
     ),
+    repo: Type.Optional(Type.String({ description: REPO_PARAM_DESCRIPTION })),
     cwd: Type.Optional(Type.String({ description: COMMENT_EDIT_CWD_DESCRIPTION })),
   });
 
@@ -167,6 +170,7 @@ export function buildCommentEditTool(
     number?: number;
     pr?: number;
     commentId?: number;
+    repo?: string;
     cwd?: string;
   }
 
@@ -186,16 +190,22 @@ export function buildCommentEditTool(
     ): Promise<AgentToolResult<GitDetails>> {
       const p = params as unknown as CommentEditParams;
       const cwd = p.cwd ?? ctx.cwd;
+      const conflict = repoParamConflict(p);
+      if (conflict) return toToolResult(conflict);
+      const repoInput = parseRepoParam(p.repo);
       try {
-        requireGitRepo(cwd);
+        // With an explicit slug no checkout is needed: the REST paths carry
+        // the owner/name directly, so requireGitRepo would only reject
+        // valid cross-repo edits.
+        if (repoInput.kind !== "ok") requireGitRepo(cwd);
         requireGh();
       } catch (err) {
         if (err instanceof GitMeEnvError) return toToolResult(err.message);
         throw err;
       }
 
-      const repo = ghRepoView(cwd);
-      if (!repo) {
+      const repoNameWithOwner = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
+      if (!repoNameWithOwner) {
         return toToolResult(
           `git-me: could not resolve a GitHub repository for "${cwd}" (\`gh repo view\` failed). Nothing was edited.`,
         );
@@ -217,10 +227,10 @@ export function buildCommentEditTool(
       let number: number | undefined = cfg.kind === "issue" ? p.number : p.pr;
       let resolvedPr: GhPullRequest | null = null;
       if (p.commentId !== undefined) {
-        target = commentById(repo.nameWithOwner, p.commentId, cwd);
+        target = commentById(repoNameWithOwner, p.commentId, cwd);
         if (!target || typeof target.id !== "number") {
           return toToolResult(
-            `git-me: comment ${String(p.commentId)} not found in ${repo.nameWithOwner} (\`gh api\` lookup failed). Nothing was edited.`,
+            `git-me: comment ${String(p.commentId)} not found in ${repoNameWithOwner} (\`gh api\` lookup failed). Nothing was edited.`,
           );
         }
         if (number === undefined) {
@@ -239,10 +249,10 @@ export function buildCommentEditTool(
         if (number === undefined) {
           return toToolResult(`git-me: a ${kindNoun} number is required.`);
         }
-        target = lastOwnComment(repo.nameWithOwner, number, login, cwd);
+        target = lastOwnComment(repoNameWithOwner, number, login, cwd);
         if (!target || typeof target.id !== "number") {
           return toToolResult(
-            `git-me: no comment by @${login} found on ${kindNoun} #${String(number)} in ${repo.nameWithOwner}. This tool edits YOUR comments only; post one first with ${cfg.postToolName}.`,
+            `git-me: no comment by @${login} found on ${kindNoun} #${String(number)} in ${repoNameWithOwner}. This tool edits YOUR comments only; post one first with ${cfg.postToolName}.`,
           );
         }
       }
@@ -306,7 +316,7 @@ export function buildCommentEditTool(
             "api",
             "--method",
             "PATCH",
-            `repos/${repo.nameWithOwner}/issues/comments/${String(target.id)}`,
+            `repos/${repoNameWithOwner}/issues/comments/${String(target.id)}`,
             "-f",
             `body=${body}`,
           ],
