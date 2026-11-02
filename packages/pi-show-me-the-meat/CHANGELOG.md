@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`meat` parameters type-check again against pi 1.5.** pi-ai 1.5 changed its `StringEnum` return from a TypeBox schema to a plain pi-schema `Schema`, so `Static<typeof params>` stopped inferring the `mode` enum union and every `params.mode` read came out `unknown`. The enum helper now lives in `extensions/string-enum.ts` built on `Type.Unsafe`; the wire format is byte-identical (`{type:"string", enum:[...]}` — Google-compatible providers reject anyOf/const) and a new test pins it.
+
 ## 1.0.1 — 2026-08-06
 
 ### Changed

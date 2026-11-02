@@ -77,7 +77,7 @@
  * or models.json apiKey) continues to resolve against the new baseUrl.
  */
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../lib/string-enum";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/models";
 import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { Type } from "typebox";
