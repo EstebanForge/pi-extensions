@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext, getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -759,7 +759,7 @@ export async function registerAskAntigravityTool(
 			}
 			return new Text(text, 0, 0);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
+		renderResult(result, { expanded, isPartial }, theme, context) {
 			const d = result.details as AgyDetails | undefined;
 			if (isPartial) {
 				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
@@ -789,7 +789,7 @@ export async function registerAskAntigravityTool(
 				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
 				if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
 				if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) {
-					text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+					text += `\n${theme.fg("dim", `… (${context.keyHint("app.tools.expand", "to expand")})`)}`;
 				}
 			}
 			return new Text(text, 0, 0);

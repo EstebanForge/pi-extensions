@@ -294,3 +294,41 @@ process.exit(0);
 		expect(existsSync(promptFile)).toBe(false);
 	});
 });
+
+describe("renderResult key hint", () => {
+	// pi 1.5: a package-imported keyHint cannot see the host's keybindings and
+	// formats app.* ids as ""; only the injected context can render the real
+	// key. The sentinel proves the render reads the injected context.
+	it("takes the expand hint from the injected context keyHint", async () => {
+		const tools: Array<{
+			name: string;
+			renderResult: (result: unknown, opts: { expanded?: boolean; isPartial?: boolean }, theme: unknown, context?: unknown) => unknown;
+		}> = [];
+		const pi: any = new Proxy(
+			{ registerTool: (def: any) => void tools.push(def) },
+			{ get(target, prop) { return prop in target ? (target as any)[prop] : () => {}; } },
+		);
+		await factory(pi);
+		const tool = tools.find((t) => t.name === "AskCodex");
+		expect(tool).toBeDefined();
+
+		const calls: Array<[string, string]> = [];
+		const theme = { fg: (style: string, s: string) => { calls.push([style, s]); return s; } };
+		const hintCalls: Array<[string, string]> = [];
+		const context = {
+			keyHint: (id: string, description: string) => {
+				hintCalls.push([id, description]);
+				return `^E ${description}`;
+			},
+		};
+		const rendered = tool!.renderResult(
+			{ content: [{ type: "text", text: "x".repeat(1100) }], details: { exitCode: 0 } },
+			{ expanded: false, isPartial: false },
+			theme,
+			context,
+		);
+		expect(rendered).toBeDefined();
+		expect(hintCalls).toEqual([["app.tools.expand", "to expand"]]);
+		expect(calls.some(([style, s]) => style === "dim" && s.includes("^E to expand"))).toBe(true);
+	});
+});

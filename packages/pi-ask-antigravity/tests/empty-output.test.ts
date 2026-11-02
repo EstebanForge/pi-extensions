@@ -34,6 +34,7 @@ type RegisteredTool = {
 		result: unknown,
 		opts: { expanded?: boolean; isPartial?: boolean },
 		theme: unknown,
+		context?: unknown,
 	) => unknown;
 };
 
@@ -181,4 +182,34 @@ test("renderResult flips to the error glyph on the empty-output failure", async 
 	expect(
 		calls.some(([style, s]) => style === "error" && s.includes("AskAntigravity error")),
 	).toBe(true);
+});
+
+test("renderResult takes the expand hint from the injected context keyHint", async () => {
+	// pi 1.5: a package-imported keyHint cannot see the host's keybindings and
+	// formats app.* ids as ""; only the injected context can render the real
+	// key. The sentinel proves the render reads the injected context.
+	const tool = await registerTool("/nonexistent/agy-fake");
+	const calls: Array<[string, string]> = [];
+	const theme = {
+		fg: (style: string, s: string) => {
+			calls.push([style, s]);
+			return s;
+		},
+	};
+	const hintCalls: Array<[string, string]> = [];
+	const context = {
+		keyHint: (id: string, description: string) => {
+			hintCalls.push([id, description]);
+			return `^E ${description}`;
+		},
+	};
+	const rendered = tool.renderResult(
+		{ content: [{ type: "text", text: "x".repeat(1100) }], details: { exitCode: 0 } },
+		{ expanded: false, isPartial: false },
+		theme,
+		context,
+	);
+	expect(rendered).toBeDefined();
+	expect(hintCalls).toEqual([["app.tools.expand", "to expand"]]);
+	expect(calls.some(([style, s]) => style === "dim" && s.includes("^E to expand"))).toBe(true);
 });
