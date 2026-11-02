@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import factory from "../extensions/index.js";
 import { buildPriceIndex, lookupPrice } from "../extensions/index.js";
@@ -64,5 +65,70 @@ describe("pi-token-cost-ledger extension entry", () => {
     await factory(pi);
 
     expect(commands).toContain("token-cost-ledger");
+  });
+});
+
+describe("message_end capture: totalFromProvider", () => {
+  const savedLedger = process.env.PI_COST_LEDGER;
+  let root: string;
+
+  // pi 1.5 flags whether cost.total is provider-reported or catalog-estimated;
+  // the ledger must preserve that distinction (present only when pi supplies
+  // it), never invent a value for records pi could not classify.
+  it("records the flag only when pi supplies it", async () => {
+    root = mkdtempSync(join(tmpdir(), "cost-ledger-tfp-"));
+    process.env.PI_COST_LEDGER = root;
+    try {
+      const handlers: Record<string, (event: any) => Promise<void>> = {};
+      const pi: any = new Proxy(
+        {
+          on: (name: string, handler: (event: any) => Promise<void>) => void (handlers[name] = handler),
+        },
+        {
+          get(target, prop) {
+            return prop in target ? (target as any)[prop] : () => {};
+          },
+        },
+      );
+      await factory(pi);
+      const handler = handlers["message_end"];
+      expect(handler).toBeDefined();
+
+      const usage = (totalFromProvider?: boolean) => ({
+        message: {
+          role: "assistant",
+          provider: "zai",
+          model: "glm-5.3-flash",
+          usage: {
+            input: 10,
+            output: 5,
+            cost: {
+              input: 0.0015,
+              output: 0.0025,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0.004,
+              ...(totalFromProvider !== undefined && { totalFromProvider }),
+            },
+          },
+        },
+      });
+      await handler(usage(true));
+      await handler(usage(undefined));
+
+      const lines = readFileSync(join(root, String(new Date().getFullYear()), String(new Date().getMonth() + 1).padStart(2, "0"), `${String(new Date().getDate()).padStart(2, "0")}.jsonl`), "utf8")
+        .trim()
+        .split("\n");
+      expect(lines).toHaveLength(2);
+      const reported = JSON.parse(lines[0]);
+      const estimated = JSON.parse(lines[1]);
+      expect(reported.cost.totalFromProvider).toBe(true);
+      expect(reported.cost.total).toBe(0.004);
+      expect(estimated.cost).not.toHaveProperty("totalFromProvider");
+    } finally {
+      if (savedLedger === undefined) delete process.env.PI_COST_LEDGER;
+      else process.env.PI_COST_LEDGER = savedLedger;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -28,10 +28,10 @@
  * first = primary write target). Construct sandbox and any other producers
  * are unioned read-only; ledgers are disjoint so no dedup is needed.
  *
- * Record shape (unchanged from @ctogg):
+ * Record shape (unchanged from @ctogg; totalFromProvider added for pi 1.5):
  *   {ts, provider, model,
  *    tokens:{input,output,cacheRead,cacheWrite},
- *    cost:{input,output,cacheRead,cacheWrite,total}}
+ *    cost:{input,output,cacheRead,cacheWrite,total,totalFromProvider?}}
  */
 import {
 	getAgentDir,
@@ -94,6 +94,8 @@ interface CostRecord {
 		cacheRead: number;
 		cacheWrite: number;
 		total: number;
+		/** pi 1.5: true = provider-reported total, false = catalog estimate; absent = unclassified. */
+		totalFromProvider?: boolean;
 	};
 }
 
@@ -1483,12 +1485,17 @@ export default function (pi: ExtensionAPI) {
 					cacheRead: num(usage.cacheRead),
 					cacheWrite: num(usage.cacheWrite),
 				},
-				cost: {
+					cost: {
 					input: num(usage.cost.input),
 					output: num(usage.cost.output),
 					cacheRead: num(usage.cost.cacheRead),
 					cacheWrite: num(usage.cost.cacheWrite),
 					total: num(usage.cost.total),
+					// Present only when pi classifies the total; older ledgers and
+					// unclassifiable responses omit it rather than claim estimated.
+					...(usage.cost.totalFromProvider !== undefined && {
+						totalFromProvider: usage.cost.totalFromProvider === true,
+					}),
 				},
 			};
 

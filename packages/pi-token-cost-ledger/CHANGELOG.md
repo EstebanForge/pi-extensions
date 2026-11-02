@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Daily cost records now carry `cost.totalFromProvider` when pi supplies it (pi 1.5 distinguishes provider-reported totals from catalog estimates). The field is absent on records pi could not classify and on all pre-existing lines, so readers must treat it as optional (`record.cost.totalFromProvider === true` = provider-reported).
+
 ## 1.3.0 — 2026-10-12
 
 ### Changed
