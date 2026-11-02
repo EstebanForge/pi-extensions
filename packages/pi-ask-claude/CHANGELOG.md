@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.1] - 2026-11-02
 
 ### Fixed
 - The tool result expand hint now comes from the render context pi injects (`context.keyHint`) instead of the package import. pi 1.5 blinds an imported `keyHint` to the host keybindings (app.* ids format as ""), so the hint rendered as "to expand" with no key. Peer floor moves to `^1.5.0` accordingly.
