@@ -1485,7 +1485,7 @@ export default function (pi: ExtensionAPI) {
 					cacheRead: num(usage.cacheRead),
 					cacheWrite: num(usage.cacheWrite),
 				},
-					cost: {
+				cost: {
 					input: num(usage.cost.input),
 					output: num(usage.cost.output),
 					cacheRead: num(usage.cost.cacheRead),

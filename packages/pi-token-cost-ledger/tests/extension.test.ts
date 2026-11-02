@@ -114,17 +114,23 @@ describe("message_end capture: totalFromProvider", () => {
         },
       });
       await handler(usage(true));
+      await handler(usage(false));
       await handler(usage(undefined));
 
       const lines = readFileSync(join(root, String(new Date().getFullYear()), String(new Date().getMonth() + 1).padStart(2, "0"), `${String(new Date().getDate()).padStart(2, "0")}.jsonl`), "utf8")
         .trim()
         .split("\n");
-      expect(lines).toHaveLength(2);
+      expect(lines).toHaveLength(3);
       const reported = JSON.parse(lines[0]);
       const estimated = JSON.parse(lines[1]);
+      const unclassified = JSON.parse(lines[2]);
       expect(reported.cost.totalFromProvider).toBe(true);
       expect(reported.cost.total).toBe(0.004);
-      expect(estimated.cost).not.toHaveProperty("totalFromProvider");
+      // Explicit false = pi classified it as catalog-estimated; that must
+      // survive the round trip rather than collapse into "absent".
+      expect(estimated.cost.totalFromProvider).toBe(false);
+      expect(estimated.cost).not.toHaveProperty("totalFromProvider", true);
+      expect(unclassified.cost).not.toHaveProperty("totalFromProvider");
     } finally {
       if (savedLedger === undefined) delete process.env.PI_COST_LEDGER;
       else process.env.PI_COST_LEDGER = savedLedger;
