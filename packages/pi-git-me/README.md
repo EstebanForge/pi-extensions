@@ -70,11 +70,14 @@ In **headless mode** (no interactive UI, e.g. an unsupervised or automated run),
 
 The editable review is on by default and is governed by the `git-confirm-write` setting (toggle: `/git confirm on|off` or `/git config`). These are file-backed settings, not pi CLI flags — pi extension flags are in-memory-only and cannot durably reflect a toggle, so `/git config` and the `/git` status line are the authoritative surfaces.
 
+**Shell commits are blocked by default.** `git-deny-shell-commit` (default ON) makes the bash tool refuse `git commit` / `git commit --amend` — including env-prefixed, sudo-wrapped, and `git -C dir` forms — with a tool error pointing at `git_commit`. A shell commit bypasses the editable preview above, so the block is the default and the opt-out is explicit: `/git deny-commit off`.
+
 | Command | Effect |
 | --- | --- |
 | `/git config` | Settings modal (TUI) — toggle the write review gate; status line elsewhere. |
 | `/git confirm on` / `/git confirm off` | One-shot toggle. |
 | `/git headless on` / `/git headless off` | One-shot toggle. |
+| `/git deny-commit on` / `/git deny-commit off` | One-shot toggle of the shell-commit block. |
 
 ## Image & video attachments on comments
 
@@ -156,6 +159,7 @@ The extension reads **no environment variables**. There is no token to copy; `gh
 | `/git config` | Settings modal (write review gate). |
 | `/git confirm on\|off` | Toggle the write review gate (one-shot). |
 | `/git headless on\|off` | Toggle unsupervised (no-UI) write opt-in. |
+| `/git deny-commit on\|off` | Toggle the shell `git commit` block (default on). |
 
 You do not need to use the slash command. The agent reaches for these tools whenever a request touches git or GitHub state.
 

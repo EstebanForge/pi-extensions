@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0 — 2026-11-04
+
+### Added
+
+- **Shell-commit deny (`git-deny-shell-commit`, default ON).** The bash tool now refuses `git commit` / `git commit --amend` — including env-prefixed (`GIT_EDITOR=true git commit`), wrapper (`sudo`/`command`/`builtin`/`noglob`/`env`), and `git -C dir commit` forms — and returns a tool error naming the `git_commit` tool and the toggle. Word-level argv parsing in `lib/deny.ts` (regex cannot separate `git -C dir commit` from `git log -- commit`); the flag is file-backed like the other two, read per call, toggle via `/git deny-commit on|off`, `/git config` modal row, or the `/git` status line. Why default ON: two recorded sessions (2026-09-16, 2026-10-01) contain shell `git commit -F -` bypasses of the commit tool's preview gate, the second after a no-recur promise — guidance alone recurs, so the gate is enforced and the opt-out is explicit. Parser hardening after a 3-round adversarial review: quote-aware segment splitting (separators and backslash-newline continuations inside quotes are not boundaries), subshell/group delimiters as word boundaries, absolute-path basename match, wrapper flag consumption (incl. long options), CRLF continuations, single `&`, and `\\`-before-quote desync between the two scanners. 77 parser/blocker tests.
+
 ## 1.6.0 — 2026-11-02
 
 ### Added
