@@ -51,6 +51,18 @@ export const ALLOW_HEADLESS_WRITE_FLAG = "git-allow-headless-write";
 export const ALLOW_HEADLESS_WRITE_FLAG_DESCRIPTION =
   "When on (default off), the prose write tools (git_commit, git_pr_upsert, git_pr_comment, git_pr_comment_edit, git_issue_comment, git_issue_comment_edit, git_issue_create, git_discussion_create, git_discussion_comment, and git_pr_review COMMENT) MAY run in headless mode (no interactive UI) without a human review. Off by default: unsupervised writes are refused until a human is present at the UI. APPROVE / REQUEST_CHANGES are always blocked in headless mode (no opt-in). Toggle via /git config or /git headless on|off.";
 
+/**
+ * Name of the persisted boolean flag that blocks `git commit` (and
+ * `git commit --amend`) at the bash tool boundary. Default ON: shell commits
+ * bypass the commit tool's editable preview, and two recorded sessions show
+ * the bypass recurring even after a no-recur promise, so enforcement is the
+ * default and an explicit literal false is required to disable it.
+ */
+export const DENY_SHELL_COMMIT_FLAG = "git-deny-shell-commit";
+
+export const DENY_SHELL_COMMIT_FLAG_DESCRIPTION =
+  "When on (default), the bash tool refuses `git commit` / `git commit --amend` (including env-prefixed, sudo-wrapped, and `git -C dir` forms) and tells the agent to use the git_commit tool, whose editable preview is the review gate. Shell commits bypass that gate, so this stays on unless you have a reason. Toggle via /git config or /git deny-commit on|off.";
+
 const SETTINGS_FILENAME = "pi-git-me.json";
 const DEFAULT_CONFIRM_WRITE = true;
 const DEFAULT_ALLOW_HEADLESS_WRITE = false;
@@ -70,6 +82,7 @@ export function getSettingsPath(): string {
 interface SettingsFile {
   confirmWrite?: unknown;
   allowHeadlessWrite?: unknown;
+  denyShellCommit?: unknown;
 }
 
 // Reads happen only on the write-tool path (rare, user-gated), so we read from
@@ -128,6 +141,17 @@ export function setConfirmWriteEnabled(value: boolean): boolean {
 /** Persist the headless-write opt-in value. Read-merge-write; does not clobber the review flag. */
 export function setAllowHeadlessWriteEnabled(value: boolean): boolean {
   return writeSettings({ allowHeadlessWrite: value });
+}
+
+/** Current live value of the shell-commit deny (read from disk each call). */
+export function getDenyShellCommitEnabled(): boolean {
+  // Only an explicit literal false disables; anything else -> default ON.
+  return readSettings().denyShellCommit !== false;
+}
+
+/** Persist the shell-commit deny value. Read-merge-write; does not clobber sibling flags. */
+export function setDenyShellCommitEnabled(value: boolean): boolean {
+  return writeSettings({ denyShellCommit: value });
 }
 
 // Structural slice of the context that the gate touches. Minimal on purpose so

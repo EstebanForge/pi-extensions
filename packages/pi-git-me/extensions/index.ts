@@ -45,12 +45,17 @@ import {
   CONFIRM_WRITE_FLAG_DESCRIPTION,
   ALLOW_HEADLESS_WRITE_FLAG,
   ALLOW_HEADLESS_WRITE_FLAG_DESCRIPTION,
+  DENY_SHELL_COMMIT_FLAG,
+  DENY_SHELL_COMMIT_FLAG_DESCRIPTION,
   getConfirmWriteEnabled,
   setConfirmWriteEnabled,
   getAllowHeadlessWriteEnabled,
   setAllowHeadlessWriteEnabled,
+  getDenyShellCommitEnabled,
+  setDenyShellCommitEnabled,
   getSettingsPath,
 } from "../lib/confirm";
+import { shellCommitBlocker } from "../lib/deny";
 
 // Compact tool guidance appended to the system prompt. The first sentence is
 // the canonical rule: any text the agent intends to post as the user into
@@ -65,6 +70,7 @@ const TOOL_GUIDANCE = [
   "- CANONICAL RULE: any text the agent intends to record or post AS THE USER into git or GitHub — commit messages, PR titles/bodies, PR conversation comments, PR review bodies, issue comments, new issues, discussions and discussion comments — MUST go through one of the git-me write tools (they drive `git` and the `gh` CLI). Bypassing the editable preview is a policy violation.",
   "- The editable preview dialog IS the asking and IS the approval: the user reads your draft there, edits it, and presses Enter to accept or Esc to cancel. Therefore DRAFTING IS YOUR JOB. Do NOT ask the user in chat what the wording should be, do NOT paste a draft into chat asking 'shall I post this?', and do NOT ask for approval before calling the tool. Asking in chat duplicates the dialog.",
   "- Do NOT run `git` or `gh` through the bash/shell/terminal tool to post anything as the user. Forbidden via shell: `git commit`, `git commit --amend`, `gh pr create`, `gh pr edit`, `gh pr comment`, `gh pr review`, `gh issue comment`, `gh issue create`, edits to existing issue or PR comments (including `--edit-last`), and write-shaped `gh api` calls (GraphQL mutations, or REST POST/PATCH/DELETE — e.g. anything that creates a discussion, posts a discussion comment, or PATCHes a comment body). Read-only shell inspection (`git show`, `gh pr view`, `gh api` GET queries, `gh issue list`) is permitted when no git-me read tool fits, but the git-me read tools are preferred.",
+  "- ENFORCEMENT: the git-deny-shell-commit flag (default ON) hard-blocks `git commit` at the bash tool boundary — including env-prefixed, sudo-wrapped, and `git -C dir` forms — and returns this guidance as the tool error. It is not a suggestion that can be promised around; if you need it off, the user runs /git deny-commit off.",
   "- If a write tool returns 'cancelled by user', the user pressed Esc. Do NOT retry through the shell and do NOT ask the user to paste the wording in chat. Ask the user whether to revise the draft or cancel the task; if they want to revise, call the same tool again with a revised draft.",
   "- Surface -> tool map: commit -> git_commit (`git commit -F -`); PR title + body, create or edit -> git_pr_upsert (`gh pr create` / `gh pr edit`); top-level PR conversation comment -> git_pr_comment (`gh pr comment`); edit of YOUR posted PR comment -> git_pr_comment_edit (PATCH via `gh api`); PR review event (COMMENT / APPROVE / REQUEST_CHANGES) -> git_pr_review (`gh pr review`); issue comment -> git_issue_comment (`gh issue comment`); edit of YOUR posted issue comment -> git_issue_comment_edit (PATCH via `gh api`); new issue -> git_issue_create (`gh issue create`); new discussion -> git_discussion_create (createDiscussion GraphQL mutation); discussion comment or threaded discussion reply -> git_discussion_comment (addDiscussionComment mutation).",
   "- Reach for git_status / git_diff / git_log / git_current_branch / git_pr_info BEFORE drafting any of the above, so the draft is grounded in the actual diff and PR state instead of invented.",
@@ -117,6 +123,11 @@ function gitMe(pi: ExtensionAPI): void {
     };
   });
 
+  // Hard block on shell git commit (default ON, /git deny-commit off to
+  // disable). Runs before every bash call; the parser is pure string work,
+  // and the flag is read per call so a toggle applies without reload.
+  pi.on("tool_call", shellCommitBlocker());
+
   // /git <verb> - prefix the editor with an explicit instruction so the agent
   // reaches for the right tool deterministically. The command cannot directly
   // dispatch a tool call, so it sets the editor text and the user hits Enter
@@ -141,17 +152,19 @@ function gitMe(pi: ExtensionAPI): void {
   //   /git config                -> settings modal (write review gate)
   //   /git confirm on|off        -> toggle write review gate
   //   /git headless on|off       -> toggle headless (no-UI) write opt-in
+  //   /git deny-commit on|off    -> toggle shell git-commit block (default on)
   pi.registerCommand("git", {
     description:
-      'Git + GitHub (via gh) tools (act as you). Usage: /git status | /git diff [target] | /git log [N] | /git branch | /git pr | /git commit <subject> | /git pr-create <title> | /git pr-comment [num] | /git pr-comment-edit [num] | /git review | /git issue-comment <num> | /git issue-comment-edit <num> | /git issue-create <title> | /git discussion-create <title> | /git discussion-comment <num> | /git config | /git confirm on|off | /git headless on|off.',
+      'Git + GitHub (via gh) tools (act as you). Usage: /git status | /git diff [target] | /git log [N] | /git branch | /git pr | /git commit <subject> | /git pr-create <title> | /git pr-comment [num] | /git pr-comment-edit [num] | /git review | /git issue-comment <num> | /git issue-comment-edit <num> | /git issue-create <title> | /git discussion-create <title> | /git discussion-comment <num> | /git config | /git confirm on|off | /git headless on|off | /git deny-commit on|off.',
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (!trimmed) {
         const gh = hasGh() ? "gh CLI: ready" : "gh CLI: not found (GitHub tools will fail)";
         const confirm = getConfirmWriteEnabled() ? "on" : "off";
         const headless = getAllowHeadlessWriteEnabled() ? "on" : "off";
+        const denyCommit = getDenyShellCommitEnabled() ? "on" : "off";
         ctx.ui.notify(
-          `git-me: ready. Repo: yes. ${gh}. Write review: ${confirm} (toggle: /git confirm on|off). Headless writes: ${headless} (toggle: /git headless on|off). Verbs: status, diff, log, branch, pr, commit, pr-create, pr-comment, pr-comment-edit, review, issue-comment, issue-comment-edit, issue-create, discussion-create, discussion-comment, config.`,
+          `git-me: ready. Repo: yes. ${gh}. Write review: ${confirm} (toggle: /git confirm on|off). Headless writes: ${headless} (toggle: /git headless on|off). Shell commit block: ${denyCommit} (toggle: /git deny-commit on|off). Verbs: status, diff, log, branch, pr, commit, pr-create, pr-comment, pr-comment-edit, review, issue-comment, issue-comment-edit, issue-create, discussion-create, discussion-comment, config.`,
           "info",
         );
         return;
@@ -338,9 +351,23 @@ function gitMe(pi: ExtensionAPI): void {
           }
           return;
         }
+        case "deny-commit": {
+          const next = rest.toLowerCase();
+          if (next !== "on" && next !== "off") {
+            ctx.ui.notify("Usage: /git deny-commit on|off", "warning");
+            return;
+          }
+          const value = next === "on";
+          if (setDenyShellCommitEnabled(value)) {
+            ctx.ui.notify(`${DENY_SHELL_COMMIT_FLAG}: ${next}.`, "info");
+          } else {
+            ctx.ui.notify(`Failed to persist ${DENY_SHELL_COMMIT_FLAG} (disk write failed).`, "error");
+          }
+          return;
+        }
         default:
           ctx.ui.notify(
-            `Unknown /git verb "${verb}". Verbs: status, diff, log, branch, pr, commit, pr-create, pr-comment, pr-comment-edit, review, issue-comment, issue-comment-edit, issue-create, discussion-create, discussion-comment, config, confirm, headless.`,
+            `Unknown /git verb "${verb}". Verbs: status, diff, log, branch, pr, commit, pr-create, pr-comment, pr-comment-edit, review, issue-comment, issue-comment-edit, issue-create, discussion-create, discussion-comment, config, confirm, headless, deny-commit.`,
             "warning",
           );
           return;
@@ -358,10 +385,11 @@ async function openConfigModal(
 ): Promise<void> {
   const currentConfirm = getConfirmWriteEnabled();
   const currentHeadless = getAllowHeadlessWriteEnabled();
+  const currentDenyCommit = getDenyShellCommitEnabled();
 
   if (ctx.mode !== "tui") {
     ctx.ui.notify(
-      `git-me write review (the five write tools): ${currentConfirm ? "on" : "off"}. Headless writes: ${currentHeadless ? "on" : "off"}. Toggle: /git confirm on|off, /git headless on|off`,
+      `git-me write review (the five write tools): ${currentConfirm ? "on" : "off"}. Headless writes: ${currentHeadless ? "on" : "off"}. Shell commit block: ${currentDenyCommit ? "on" : "off"}. Toggle: /git confirm on|off, /git headless on|off, /git deny-commit on|off`,
       "info",
     );
     return;
@@ -380,6 +408,13 @@ async function openConfigModal(
       label: "Allow writes in headless mode",
       description: ALLOW_HEADLESS_WRITE_FLAG_DESCRIPTION,
       currentValue: currentHeadless ? "on" : "off",
+      values: ["on", "off"],
+    },
+    {
+      id: DENY_SHELL_COMMIT_FLAG,
+      label: "Block git commit via shell",
+      description: DENY_SHELL_COMMIT_FLAG_DESCRIPTION,
+      currentValue: currentDenyCommit ? "on" : "off",
       values: ["on", "off"],
     },
   ];
@@ -422,10 +457,12 @@ async function openConfigModal(
   const setters: Record<string, (v: boolean) => boolean> = {
     [CONFIRM_WRITE_FLAG]: setConfirmWriteEnabled,
     [ALLOW_HEADLESS_WRITE_FLAG]: setAllowHeadlessWriteEnabled,
+    [DENY_SHELL_COMMIT_FLAG]: setDenyShellCommitEnabled,
   };
   const previous: Record<string, boolean> = {
     [CONFIRM_WRITE_FLAG]: currentConfirm,
     [ALLOW_HEADLESS_WRITE_FLAG]: currentHeadless,
+    [DENY_SHELL_COMMIT_FLAG]: currentDenyCommit,
   };
   let changed = false;
   for (const [id, target] of pending) {
