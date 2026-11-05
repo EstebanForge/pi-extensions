@@ -70,7 +70,7 @@ In **headless mode** (no interactive UI, e.g. an unsupervised or automated run),
 
 The editable review is on by default and is governed by the `git-confirm-write` setting (toggle: `/git confirm on|off` or `/git config`). These are file-backed settings, not pi CLI flags — pi extension flags are in-memory-only and cannot durably reflect a toggle, so `/git config` and the `/git` status line are the authoritative surfaces.
 
-**Shell commits are blocked by default.** `git-deny-shell-commit` (default ON) makes the bash tool refuse `git commit` / `git commit --amend` — including env-prefixed, sudo-wrapped, and `git -C dir` forms — with a tool error pointing at `git_commit`. A shell commit bypasses the editable preview above, so the block is the default and the opt-out is explicit: `/git deny-commit off`.
+**Shell commits are blocked by default.** `git-deny-shell-commit` (default ON) makes `bash`, `exec_command`, and direct `write_stdin` input refuse `git commit` / `git commit --amend` — including env-prefixed, sudo-wrapped, chained, and `git -C dir` forms — with a tool error pointing at `git_commit`. Base64-encoded `write_stdin` input is decoded before the same check. A shell commit bypasses the editable preview above, so the block is the default and the opt-out is explicit: `/git deny-commit off`.
 
 | Command | Effect |
 | --- | --- |

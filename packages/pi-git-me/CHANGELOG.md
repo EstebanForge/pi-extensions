@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1 — 2026-11-05
+
+### Fixed
+
+- Shell-commit deny now covers `exec_command` (`cmd`) and direct `write_stdin` input (`chars` and base64 `chars_b64`) in addition to `bash` (`command`). The previous tool-name and payload-field mismatch let unified-shell commit chains skip the preview gate; regression coverage includes the exact reported chain.
+
 ## 1.7.0 — 2026-11-04
 
 ### Added
