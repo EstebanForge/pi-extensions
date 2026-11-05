@@ -1,8 +1,8 @@
 // Shell-commit deny tests. The parser is the load-bearing piece: a regex
 // cannot tell "git -C dir commit" (deny) from "git log -- commit" (allow)
 // because -C consumes the next word, so the match is word-level. The blocker
-// wires the parser to the bash tool boundary through the persisted
-// git-deny-shell-commit flag (default ON, explicit opt-out).
+// wires the parser to the supported shell-tool boundaries through the
+// persisted git-deny-shell-commit flag (default ON, explicit opt-out).
 //
 // The 2026-09-16 and 2026-10-01 sessions both contain shell `git commit -F -`
 // bypasses of the preview gate, the second after a no-recur promise. That
@@ -203,12 +203,63 @@ describe("shellCommitBlocker", () => {
     expect(result.reason).toMatch(/git_commit/);
   });
 
-  it("passes non-commit commands", async () => {
+  it("blocks the exact exec_command chain that bypassed the preview", async () => {
     const blocker = shellCommitBlocker();
-    expect(await blocker(bashEvent("git status"))).toBeUndefined();
+    const event = {
+      toolName: "exec_command",
+      toolCallId: "call-exec",
+      input: {
+        cmd: 'cd /home/esteban/Dev/Baluard/baluard-org && git add -A fdroid/ repo/ && git status --porcelain | grep "^[AM]" | wc -l && git commit -q -m "chore(repo): republish apt, dnf, and fdroid repos with 0.1.3" && git log --oneline -1',
+      },
+    };
+    expect(await blocker(event)).toEqual({ block: true, reason: SHELL_COMMIT_BLOCK_REASON });
   });
 
-  it("ignores tools other than bash", async () => {
+  it("checks cmd even when a benign command field is also present", async () => {
+    const blocker = shellCommitBlocker();
+    const event = {
+      toolName: "exec_command",
+      toolCallId: "call-exec-dual",
+      input: { command: "git status", cmd: "git commit -m wip" },
+    };
+    expect(await blocker(event)).toEqual({ block: true, reason: SHELL_COMMIT_BLOCK_REASON });
+  });
+
+  it.each([
+    ["text", { chars: "git commit -m wip\n" }],
+    ["base64", { chars_b64: Buffer.from("git commit -m wip\n").toString("base64") }],
+  ])("blocks git commit written through write_stdin as %s", async (_encoding, input) => {
+    const blocker = shellCommitBlocker();
+    const event = { toolName: "write_stdin", toolCallId: "call-stdin", input };
+    expect(await blocker(event)).toEqual({ block: true, reason: SHELL_COMMIT_BLOCK_REASON });
+  });
+
+  it("checks chars_b64 even when chars is present but empty", async () => {
+    const blocker = shellCommitBlocker();
+    const event = {
+      toolName: "write_stdin",
+      toolCallId: "call-stdin-dual",
+      input: { chars: "", chars_b64: Buffer.from("git commit -m wip\n").toString("base64") },
+    };
+    expect(await blocker(event)).toEqual({ block: true, reason: SHELL_COMMIT_BLOCK_REASON });
+  });
+
+  it.each([
+    [{ toolName: "bash", input: { command: "git status" } }],
+    [{ toolName: "exec_command", input: { cmd: "git status" } }],
+    [{ toolName: "write_stdin", input: { chars: "git status\n" } }],
+    [
+      {
+        toolName: "write_stdin",
+        input: { chars_b64: Buffer.from("git status\n").toString("base64") },
+      },
+    ],
+  ])("passes non-commit shell input", async (event) => {
+    const blocker = shellCommitBlocker();
+    expect(await blocker(event)).toBeUndefined();
+  });
+
+  it("ignores unsupported tools", async () => {
     const blocker = shellCommitBlocker();
     const event = { toolName: "read", toolCallId: "c", input: { path: "x" } };
     expect(await blocker(event)).toBeUndefined();

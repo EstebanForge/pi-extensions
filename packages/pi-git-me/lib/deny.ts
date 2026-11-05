@@ -9,8 +9,9 @@
 // indirection ($GIT commit), eval, command substitution inside double
 // quotes, and script-file indirection (heredoc bodies are scanned as plain
 // lines, so creating a script that mentions git commit is blocked too -
-// fail-closed). Deliberate multi-step evasion is itself a policy breach;
-// this is a tripwire, not a sandbox.
+// fail-closed). write_stdin is inspected per call, so split-byte input and
+// stateful shell evasion are also outside scope. Deliberate multi-step
+// evasion is itself a policy breach; this is a tripwire, not a sandbox.
 //
 // Why this exists: two recorded sessions (2026-09-16, 2026-10-01) contain
 // shell `git commit -F -` bypasses of the commit tool's preview gate, the
@@ -24,6 +25,7 @@ import { getDenyShellCommitEnabled } from "./confirm";
 export const SHELL_COMMIT_BLOCK_REASON =
   "Shell git commit is blocked (git-deny-shell-commit is on). Use the git_commit tool instead: your draft goes through the editable preview dialog before anything touches git. Toggle: /git deny-commit off.";
 
+const SHELL_TOOL_NAMES = ["bash", "exec_command", "write_stdin"] as const;
 const WRAPPERS = new Set(["sudo", "command", "builtin", "noglob", "env"]);
 // Wrappers that take their own flags before the command. Only value-taking
 // flags are listed; boolean wrapper flags are skipped without a value.
@@ -300,13 +302,27 @@ export function shellCommitBlocker(
 ): (event: unknown) => Promise<{ block: true; reason: string } | undefined> {
   return async (event: unknown) => {
     if (!enabled()) return undefined;
-    if (!isToolCallEventType("bash", event as Parameters<typeof isToolCallEventType>[1])) {
-      return undefined;
+    const toolName = SHELL_TOOL_NAMES.find((name) =>
+      isToolCallEventType(name, event as Parameters<typeof isToolCallEventType>[1]),
+    );
+    if (!toolName) return undefined;
+    const input = (
+      event as {
+        input?: { command?: unknown; cmd?: unknown; chars?: unknown; chars_b64?: unknown };
+      }
+    ).input;
+    if (!input) return undefined;
+    const candidates: string[] = [];
+    if (toolName === "write_stdin") {
+      if (typeof input.chars === "string") candidates.push(input.chars);
+      if (typeof input.chars_b64 === "string") {
+        candidates.push(Buffer.from(input.chars_b64, "base64").toString("utf8"));
+      }
+    } else {
+      if (typeof input.command === "string") candidates.push(input.command);
+      if (typeof input.cmd === "string") candidates.push(input.cmd);
     }
-    const input = (event as { input?: { command?: unknown } | undefined }).input;
-    const command = input?.command;
-    if (typeof command !== "string") return undefined;
-    if (!isShellGitCommit(command)) return undefined;
+    if (!candidates.some((command) => isShellGitCommit(command))) return undefined;
     return { block: true, reason: SHELL_COMMIT_BLOCK_REASON };
   };
 }
