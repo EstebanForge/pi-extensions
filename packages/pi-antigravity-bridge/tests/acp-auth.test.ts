@@ -100,4 +100,14 @@ describe("acp/auth runAcpAuth", () => {
 		assert.match(r.error ?? "", /usable credentials/);
 		assert.equal(readAcpAuthVerified(path.join(dir, "verified.json")), false);
 	});
+
+	test("a ToS-disabled account is detected by the prompt probe and writes no marker", async () => {
+		// session/new passes for a disabled account, so the probe must send a
+		// real prompt: the disablement notice in the reply marks it blocked.
+		const dir = tmpDir();
+		const r = await runAcpAuth(authOpts(dir, "disabled"));
+		assert.equal(r.ok, false);
+		assert.match(r.error ?? "", /disabled for the Antigravity service/i);
+		assert.equal(readAcpAuthVerified(path.join(dir, "verified.json")), false);
+	});
 });

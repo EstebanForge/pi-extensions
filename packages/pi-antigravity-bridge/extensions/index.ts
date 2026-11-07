@@ -62,7 +62,7 @@ import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
 import { setAuthInvalidatedHook } from "../src/acp/connection.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
-import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
+import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup, resolveInstalledArgs } from "../src/acp/setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
@@ -313,6 +313,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Resolved per connection: the setup flow can install the binary and
 		// update acp.bin mid-session; the next turn picks it up (no restart).
 		bin: () => loadConfig().acp.bin,
+		// Registry-declared argv for the managed binary (e.g. linux --uid=).
+		// Empty for env/config overrides, which own their argv. Resolved per
+		// connection alongside bin so a mid-session install picks them up.
+		binArgs: () => resolveInstalledArgs({ configBin: loadConfig().acp.bin }),
 		// Resolved per turn: /agy and AGY_USAGE_ESTIMATE changes apply without
 		// a restart. Without this the driver defaults to "estimate" and the
 		// config knob (incl. "off") is dead.
@@ -656,6 +660,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			);
 			const r = await runAcpAuth({
 				bin: status.bin,
+				binArgs: status.args,
 				...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
 				log: acpLog,
 			});
@@ -1319,6 +1324,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				);
 				const r = await runAcpAuth({
 					bin: status.bin,
+					binArgs: status.args,
 					extraEnv: ctx.authCapture?.browserEnv,
 					authUrlFile: ctx.authCapture?.file,
 					log: ctx.acpLog,

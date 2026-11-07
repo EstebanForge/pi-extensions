@@ -45,8 +45,10 @@ export interface AcpDriverOptions {
 	 *  is resolved per connection: setup can install the binary and update
 	 *  config mid-session, and the next turn picks it up without a restart. */
 	bin: string | (() => string);
-	/** Extra argv for the binary (tests: node + fake-server script). */
-	binArgs?: string[];
+	/** Extra argv for the binary (tests: node + fake-server script). A
+	 *  function is resolved per connection, like bin, so registry args from a
+	 *  mid-session managed install apply without a restart. */
+	binArgs?: string[] | (() => string[]);
 	extraEnv?: Record<string, string>;
 	/** Record file for BROWSER-captured OAuth URLs; passed to the connection,
 	 *  which logs "auth-url" when the server tries to open a login. */
@@ -472,7 +474,7 @@ export class AcpDriver implements TurnDriver {
 		}
 	}
 
-	#onConnectionExit(conn: AcpConnection, info: { stderrTail: string }): void {
+	#onConnectionExit(conn: AcpConnection, info: { code: number | null; signal: string | null; stderrTail: string }): void {
 		if (this.#conn !== conn) {
 			// A replaced connection reporting its death late (RC01's signal
 			// handler intercepts SIGTERM and can outlive its replacement by
@@ -489,7 +491,12 @@ export class AcpDriver implements TurnDriver {
 		// mid-flight is user-reportable, and it surfaces as a normal turn
 		// error, not as raw console noise.
 		const turnActive = Boolean(turn && !turn.closed && !turn.aborted && !turn.sawResult);
-		this.#log("connection-exited", { expected: !turnActive, tail: info.stderrTail.slice(-200) });
+		this.#log("connection-exited", {
+			expected: !turnActive,
+			code: info.code,
+			signal: info.signal,
+			tail: info.stderrTail.slice(-200),
+		});
 		if (!turn || turn.closed) return;
 		if (turn.aborted || turn.sawResult) {
 			this.#settle(turn, {
@@ -501,7 +508,10 @@ export class AcpDriver implements TurnDriver {
 			});
 			return;
 		}
-		this.#failTurn(turn, "Antigravity session exited unexpectedly; it restarts on the next turn");
+		// A silent death (no stderr) leaves only the exit code/signal as a
+		// clue; surface it so the failure is not a bare "exited unexpectedly".
+		const where = info.signal ? ` (signal ${info.signal})` : info.code !== null ? ` (code ${info.code})` : "";
+		this.#failTurn(turn, `Antigravity session exited unexpectedly${where}; it restarts on the next turn`);
 	}
 
 	#ensureConnection(request: DriverTurnRequest): Promise<AcpConnection> {
@@ -511,7 +521,7 @@ export class AcpDriver implements TurnDriver {
 		this.#stats.spawns += 1;
 		const conn = new AcpConnection({
 			bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin),
-			binArgs: this.#opts.binArgs,
+			binArgs: typeof this.#opts.binArgs === "function" ? this.#opts.binArgs() : this.#opts.binArgs,
 			extraEnv: this.#opts.extraEnv,
 			authUrlFile: this.#opts.authUrlFile,
 			cwd: request.cwd,

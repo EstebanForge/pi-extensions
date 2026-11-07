@@ -246,8 +246,13 @@ export class AcpConnection {
 		child.on("exit", (code, signal) => {
 			this.#opts.log("exit", { code: code ?? signal ?? "?" });
 			// The reason rides into pending-request rejections, so it must be
-			// redacted here (server stderr can carry auth material).
-			this.#finish(redactText(this.#stderrTail.trim()));
+			// redacted here (server stderr can carry auth material). When the
+			// server dies with no output the exit code/signal is the only clue,
+			// so it goes into the reason ahead of the stderr tail.
+			const where = signal ? `signal ${signal}` : code !== null ? `code ${code}` : "";
+			const tail = redactText(this.#stderrTail.trim());
+			const detail = [where, tail || "process gone"].filter(Boolean).join(": ");
+			this.#finish(detail, code, signal);
 		});
 
 		const result = (await this.request(
@@ -582,7 +587,7 @@ export class AcpConnection {
 		this.#opts.log("auth-url", { url, port: parseAuthPort(url) });
 	}
 
-	#finish(reason: string): void {
+	#finish(reason: string, code: number | null = null, signal: NodeJS.Signals | null = null): void {
 		if (this.#exited) return;
 		this.#exited = true;
 		this.#authUrlWatcher?.close();
@@ -593,7 +598,7 @@ export class AcpConnection {
 		this.#permissionPending.clear();
 		for (const deny of pendings) deny();
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
-		this.#opts.onExit({ code: null, signal: null, stderrTail: redactText(this.#stderrTail) });
+		this.#opts.onExit({ code, signal, stderrTail: redactText(this.#stderrTail) });
 	}
 }
 

@@ -14,6 +14,7 @@ import {
 	MANUAL_SETUP,
 	platformKey,
 	readAuthState,
+	resolveInstalledArgs,
 	writeAcpAuthVerified,
 	writeAuthType,
 } from "../src/acp/setup.js";
@@ -103,6 +104,103 @@ describe("acp/setup auth state", () => {
 		assert.equal(parsed.auth.type, "gemini-api-key");
 		assert.equal(parsed.auth.keepme, 1);
 		assert.deepEqual(parsed.gcp, { project: "p" });
+	});
+});
+
+describe("acp/setup registry args", () => {
+	const REGISTRY_WITH_ARGS = {
+		id: "antigravity-acp",
+		distribution: {
+			binary: {
+				[platformKey()]: { archive: ARCHIVE, cmd: "./agy_acp_server.par", args: ["--uid="] },
+			},
+		},
+	};
+
+	test("install records registry args and returns them", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			authVerifiedFile: path.join(tmpDir(), "none.json"),
+			env: {},
+			fetchImpl: fakeFetch(REGISTRY_WITH_ARGS),
+			unpack: fakeUnpack,
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
+		assert.deepEqual(status.args, ["--uid="]);
+		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, BUILD, "args.json"), "utf8")), ["--uid="]);
+	});
+
+	test("resolveInstalledArgs recovers recorded args for the managed install", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			authVerifiedFile: path.join(tmpDir(), "none.json"),
+			env: {},
+			fetchImpl: fakeFetch(REGISTRY_WITH_ARGS),
+			unpack: fakeUnpack,
+		});
+		// Second run: the managed `current` layout resolves with no network,
+		// and the early-return path must still surface the recorded args.
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			env: {},
+			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
+		assert.equal(status.binarySource, "existing");
+		assert.deepEqual(status.args, ["--uid="]);
+		assert.deepEqual(resolveInstalledArgs({ installRoot: root, env: {} }), ["--uid="]);
+		// Regression: setup persists the managed path into acp.bin, so on the
+		// next turn the config candidate wins over `current`. Args must still
+		// resolve by path identity, not by which candidate matched.
+		const managedBin = path.join(root, BUILD, "agy_acp_server.par");
+		assert.deepEqual(resolveInstalledArgs({ installRoot: root, env: {}, configBin: managedBin }), ["--uid="]);
+	});
+
+	test("env and config overrides own their argv and get no registry args", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			authVerifiedFile: path.join(tmpDir(), "none.json"),
+			env: {},
+			fetchImpl: fakeFetch(REGISTRY_WITH_ARGS),
+			unpack: fakeUnpack,
+		});
+		const shim = path.join(root, "shim.sh");
+		fs.writeFileSync(shim, "#!/bin/sh\n");
+		fs.chmodSync(shim, 0o755);
+		assert.deepEqual(resolveInstalledArgs({ installRoot: root, env: { AGY_ACP_BIN: shim } }), []);
+		assert.deepEqual(resolveInstalledArgs({ installRoot: root, env: {}, configBin: shim }), []);
+	});
+
+	test("non-string and non-array registry args are dropped", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		const bad = {
+			id: "antigravity-acp",
+			distribution: { binary: { [platformKey()]: { archive: ARCHIVE, cmd: "./agy_acp_server.par", args: ["--uid=", 7, null] } } },
+		};
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			authVerifiedFile: path.join(tmpDir(), "none.json"),
+			env: {},
+			fetchImpl: fakeFetch(bad),
+			unpack: fakeUnpack,
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
+		assert.deepEqual(status.args, ["--uid="]);
 	});
 });
 

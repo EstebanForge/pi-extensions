@@ -1,4 +1,5 @@
 import { AcpConnection } from "./connection.js";
+import { mapUpdate } from "./events.js";
 import { hasAcpToken, writeAcpAuthVerified } from "./setup.js";
 
 // Explicit sign-in (/agy auth): spawn a short-lived server, send
@@ -53,23 +54,62 @@ export interface AcpAuthResult {
 	error?: string;
 }
 
-/** Live credential probe for the token-absent branch: a server with usable
- *  credentials answers session/new; a hollow accept starts (or wants) a
- *  browser flow and the request times out or errors. Closes the probe
- *  session; the caller kills the connection either way. */
-async function probeUsableCredentials(conn: AcpConnection, cwd?: string): Promise<boolean> {
+/** Google returns account-disablement as a normal session/prompt reply
+ *  (stopReason end_turn) carrying this text, not a -32000 auth error, so a
+ *  session/new probe alone cannot tell "authenticated" from "entitled". */
+const ACCOUNT_DISABLED_RE = /disabled in this account|violation of\s+Terms of Service|submit an appeal/i;
+
+/** Bounds the probe's session/prompt. A real first token normally lands well
+ *  under this; a hollow or hung server hits the cap and fails auth. */
+const PROBE_PROMPT_TIMEOUT_MS = 30_000;
+
+/** Live credential probe for the token-absent branch. session/new alone is
+ *  too shallow: a ToS-disabled account passes it. So the probe sends one
+ *  trivial session/prompt and inspects the streamed reply (collected by the
+ *  caller's onUpdate into `sink`): the disablement notice means the account
+ *  is blocked (distinct from a hollow accept). Returns "usable" only when
+ *  the prompt completes without that notice. Closes the probe session; the
+ *  caller kills the connection either way. */
+async function probeUsableCredentials(
+	conn: AcpConnection,
+	sink: { text: string },
+	log: (event: string, data?: unknown) => void,
+	cwd?: string,
+): Promise<"usable" | "disabled" | "unusable"> {
+	let timer: NodeJS.Timeout | undefined;
 	try {
 		const s = await conn.newSession(cwd ?? process.cwd());
-		await conn.closeSession(s.sessionId).catch(() => {});
-		return true;
+		try {
+			sink.text = "";
+			// conn.prompt has no timeout by design (driver timers govern real
+			// turns). The probe runs during interactive auth, so bound it: a
+			// hollow server that accepts session/new but never answers the
+			// prompt must fail, not hang /agy auth and the authInFlight lock.
+			await Promise.race([
+				conn.prompt(s.sessionId, "ping"),
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error("probe prompt timed out")), PROBE_PROMPT_TIMEOUT_MS);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+			await conn.closeSession(s.sessionId).catch(() => {});
+		}
+		// Log the reply head so a change in Google's disablement wording (which
+		// would silently regress the regex to "usable") is diagnosable.
+		log("auth-probe-reply", { head: sink.text.slice(0, 200) });
+		return ACCOUNT_DISABLED_RE.test(sink.text) ? "disabled" : "usable";
 	} catch {
-		return false;
+		return "unusable";
 	}
 }
 
 let authInFlight: Promise<AcpAuthResult> | null = null;
 
 export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
+	// Collects streamed reply text so the credential probe can detect an
+	// account-disablement notice (which arrives as normal prompt content).
+	const probeSink = { text: "" };
 	const conn = new AcpConnection({
 		bin: opts.bin,
 		binArgs: opts.binArgs,
@@ -77,7 +117,10 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 		extraEnv: opts.extraEnv,
 		authUrlFile: opts.authUrlFile,
 		log: opts.log ?? (() => {}),
-		onUpdate: () => {},
+		onUpdate: (_sessionId, update) => {
+			const mapped = mapUpdate(update);
+			if (mapped?.kind === "text") probeSink.text += mapped.delta;
+		},
 		onExit: () => {},
 	});
 	const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -91,8 +134,15 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 			if (!hasAcpToken(opts.tokenDir)) {
 				// authenticate replied but no token file: either the server
 				// authenticated from artifacts outside antigravity-acp, or the
-				// reply is hollow. A live session/new separates the two.
-				if (!(await probeUsableCredentials(conn, opts.cwd))) {
+				// reply is hollow. A live session prompt separates the two.
+				const probe = await probeUsableCredentials(conn, probeSink, opts.log ?? (() => {}), opts.cwd);
+				if (probe === "disabled") {
+					return {
+						ok: false,
+						error: "this Google account is disabled for the Antigravity service (Terms of Service). Signing in again will not help; submit an appeal with Google to restore access.",
+					};
+				}
+				if (probe !== "usable") {
 					return {
 						ok: false,
 						error: `the server accepted the sign-in but holds no usable credentials (session probe failed; token file absent in ${opts.tokenDir ?? "~/.gemini/antigravity-acp"}). Finish the Google sign-in if a browser opened, then retry /agy auth.`,
@@ -101,6 +151,11 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 				writeAcpAuthVerified(opts.authVerifiedFile);
 				return { ok: true, note: "the server authenticated from existing credentials; no browser sign-in was needed" };
 			}
+			// Token present (normal browser sign-in): no entitlement probe. A
+			// ToS-disabled account that completes a real sign-in still verifies
+			// here and surfaces the disablement on its first real prompt. The
+			// prompt probe is scoped to the token-absent branch (issue #9's
+			// `agy acp` shim path) to avoid a model call on every sign-in.
 			writeAcpAuthVerified(opts.authVerifiedFile);
 			return { ok: true };
 		} catch (err) {

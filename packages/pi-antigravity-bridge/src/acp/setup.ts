@@ -52,6 +52,8 @@ export type AcpSetupStatus =
 			ok: true;
 			bin: string;
 			binarySource: "env" | "config" | "installed" | "existing";
+			/** Registry argv for the managed binary; empty for env/config overrides. */
+			args: string[];
 			auth: string;
 			/** True when auth was just set to oauth-personal: /agy auth opens
 			 *  the Google login in the browser. */
@@ -121,6 +123,15 @@ export function executableFile(p: string): boolean {
 interface RegistryBinary {
 	archive: string;
 	cmd?: string;
+	/** Platform-specific argv the server needs to boot (e.g. linux `--uid=`).
+	 *  Untrusted registry data: validated as a string array before use. */
+	args?: unknown;
+}
+
+/** Registry args are untrusted; accept only a flat string array. */
+function normalizeRegistryArgs(raw: unknown): string[] {
+	if (!Array.isArray(raw)) return [];
+	return raw.filter((a): a is string => typeof a === "string");
 }
 
 async function fetchRegistryBinary(opts: SetupOptions, key: string): Promise<RegistryBinary> {
@@ -180,6 +191,8 @@ export interface InstallResult {
 	build: string;
 	sha256: string;
 	downloaded: boolean;
+	/** Registry-declared argv for the managed binary (may be empty). */
+	args: string[];
 }
 
 /** Fetch the pinned registry build for this platform and install it under
@@ -193,8 +206,11 @@ export async function installAcpBinary(opts: SetupOptions = {}): Promise<Install
 	const cmd = (entry.cmd ?? "./agy_acp_server.par").replace(/^\.\//, "");
 	const dir = path.join(root, build);
 	const bin = path.join(dir, cmd);
+	const args = normalizeRegistryArgs(entry.args);
 	if (executableFile(bin)) {
-		return { bin, build, sha256: readRecordedSha(dir), downloaded: false };
+		// Already installed: recover any recorded args so the early-return
+		// path does not silently drop them.
+		return { bin, build, sha256: readRecordedSha(dir), downloaded: false, args: readRecordedArgs(dir) };
 	}
 
 	fs.mkdirSync(root, { recursive: true });
@@ -209,13 +225,14 @@ export async function installAcpBinary(opts: SetupOptions = {}): Promise<Install
 	if (!executableFile(bin)) throw new Error(`${cmd} not found in the archive after unpacking`);
 	fs.chmodSync(bin, 0o755);
 	fs.writeFileSync(path.join(dir, "zip.sha256"), `${sha}  ${path.basename(entry.archive)}\n`);
+	if (args.length > 0) fs.writeFileSync(path.join(dir, "args.json"), JSON.stringify(args));
 
 	// Re-point `current` at the new build. The link is ours (managed layout).
 	const link = path.join(root, "current");
 	fs.rmSync(link, { force: true });
 	fs.symlinkSync(build, link);
 	opts.onProgress?.("ACP server installed.");
-	return { bin, build, sha256: sha, downloaded: true };
+	return { bin, build, sha256: sha, downloaded: true, args };
 }
 
 function readRecordedSha(dir: string): string {
@@ -223,6 +240,14 @@ function readRecordedSha(dir: string): string {
 		return fs.readFileSync(path.join(dir, "zip.sha256"), "utf8").split(/\s+/)[0] ?? "";
 	} catch {
 		return "";
+	}
+}
+
+function readRecordedArgs(dir: string): string[] {
+	try {
+		return normalizeRegistryArgs(JSON.parse(fs.readFileSync(path.join(dir, "args.json"), "utf8")));
+	} catch {
+		return [];
 	}
 }
 
@@ -343,6 +368,25 @@ export function resolveInstalledBinary(opts: SetupOptions = {}): BinaryResolutio
 	return { bin: null, source: null };
 }
 
+/** Registry argv for the managed install only. Env/config overrides (a user
+ *  shim like `agy acp`, or AGY_ACP_BIN) own their argv, so they get none.
+ *  Identity is by PATH, not by which candidate won: setup persists the managed
+ *  path into acp.bin, so after install the config candidate resolves to the
+ *  managed binary too. Compare realpaths against `<root>/current/...` (the
+ *  symlink target carries the args.json sidecar). Empty when not managed. */
+export function resolveInstalledArgs(opts: SetupOptions = {}): string[] {
+	const binary = resolveInstalledBinary(opts);
+	if (!binary.bin) return [];
+	const root = opts.installRoot ?? defaultInstallRoot();
+	const managed = path.join(root, "current", "agy_acp_server.par");
+	try {
+		if (fs.realpathSync(binary.bin) !== fs.realpathSync(managed)) return [];
+	} catch {
+		return [];
+	}
+	return readRecordedArgs(path.dirname(fs.realpathSync(managed)));
+}
+
 /** Read-only setup state (for /agy doctor): no installs, no writes. */
 export function inspectAcpSetup(opts: SetupOptions = {}): { bin: string | null; source: string | null; auth: string | null } {
 	const binary = resolveInstalledBinary(opts);
@@ -367,6 +411,7 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 
 	// 1. Binary.
 	let binary = resolveInstalledBinary(opts);
+	let args = resolveInstalledArgs(opts);
 	if (!binary.bin) {
 		if (opts.install === false) {
 			return { ok: false, stage: "install", error: "no ACP server binary found", manual: MANUAL_SETUP };
@@ -374,6 +419,7 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 		try {
 			const installed = await installAcpBinary(opts);
 			binary = { bin: installed.bin, source: "installed" };
+			args = installed.args;
 			actions.push(installed.downloaded ? `installed ACP server build ${installed.build}` : `found installed ACP server build ${installed.build}`);
 		} catch (err) {
 			return {
@@ -397,7 +443,7 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 		try {
 			writeAuthType("oauth-personal", gdir);
 			actions.push("configured oauth-personal auth (your Antigravity subscription login)");
-			return { ok: true, bin: binary.bin!, binarySource: binary.source!, auth: "oauth-personal", needsLogin: true, actions };
+			return { ok: true, bin: binary.bin!, binarySource: binary.source!, args, auth: "oauth-personal", needsLogin: true, actions };
 		} catch (err) {
 			return {
 				ok: false,
@@ -419,6 +465,7 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 		ok: true,
 		bin: binary.bin!,
 		binarySource: binary.source!,
+		args,
 		auth: auth.type ?? "token",
 		needsLogin,
 		actions,

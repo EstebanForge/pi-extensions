@@ -216,6 +216,14 @@ async function handle(msg) {
       pendingPromptId = id;
       // Multi-turn: each new prompt replays the scenario's frames again.
       streaming = false;
+      if (scenario === "disabled") {
+        // ToS-disabled account: session/new succeeds, session/prompt returns
+        // the disablement notice as normal content with stopReason end_turn.
+        notifyChunk("This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.");
+        result(id, { stopReason: "end_turn" });
+        pendingPromptId = null;
+        return;
+      }
       if (scenario === "tool-diff") {
         // Run-6 wire shapes verbatim: diff on the PENDING tool_call, the
         // completed update carries only rawOutput under a DIFFERENT id
