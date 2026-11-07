@@ -857,7 +857,7 @@ export default async function (pi: ExtensionAPI) {
 			if (args.includeContext) tags.push("context=full");
 			if (args.background) tags.push("bg");
 
-			let text = theme.fg("mdLink", theme.bold("AskClaude "));
+			let text = theme.fg("success", theme.bold("AskClaude "));
 			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
 
 			const prompt = String(args.prompt ?? "");
@@ -873,7 +873,7 @@ export default async function (pi: ExtensionAPI) {
 			const d = result.details as ClaudeDetails | undefined;
 			if (isPartial) {
 				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
-				return new Text(theme.fg("mdLink", "◉ AskClaude ") + theme.fg("muted", status), 0, 0);
+				return new Text(theme.fg("success", "◉ AskClaude ") + theme.fg("muted", status), 0, 0);
 			}
 
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -881,7 +881,7 @@ export default async function (pi: ExtensionAPI) {
 
 			let text = errored
 				? theme.fg("error", "✗ AskClaude error")
-				: theme.fg("mdLink", "✓ AskClaude");
+				: theme.fg("success", "✓ AskClaude");
 
 			const rTags: string[] = [];
 			if (d?.model) rTags.push(`model=${d.model}`);

@@ -739,7 +739,7 @@ export default async function (pi: ExtensionAPI) {
 			if (args.includeContext) tags.push("context=full");
 			if (args.background) tags.push("bg");
 
-			let text = theme.fg("mdLink", theme.bold("AskCodex "));
+			let text = theme.fg("success", theme.bold("AskCodex "));
 			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
 
 			const prompt = String(args.prompt ?? "");
@@ -755,7 +755,7 @@ export default async function (pi: ExtensionAPI) {
 			const d = result.details as CodexDetails | undefined;
 			if (isPartial) {
 				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
-				return new Text(theme.fg("mdLink", "◉ AskCodex ") + theme.fg("muted", status), 0, 0);
+				return new Text(theme.fg("success", "◉ AskCodex ") + theme.fg("muted", status), 0, 0);
 			}
 
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -763,7 +763,7 @@ export default async function (pi: ExtensionAPI) {
 
 			let text = errored
 				? theme.fg("error", "✗ AskCodex error")
-				: theme.fg("mdLink", "✓ AskCodex");
+				: theme.fg("success", "✓ AskCodex");
 
 			const rTags: string[] = [];
 			if (d?.resolvedModel || d?.model) rTags.push(`model=${d?.resolvedModel ?? d?.model}`);
