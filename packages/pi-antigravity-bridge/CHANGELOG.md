@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.3] - 2026-11-06
+
+### Fixed
+
+- **A silently dying ACP server now reports its exit code and signal.** The exit handler received the child's code and signal but dropped them (hardcoded null), so a `.par` that died before answering initialize surfaced only as "process gone" with no cause (issue #9). The code and signal now reach the abort reason and the user-facing mid-turn failure, and the `connection-exited` log line records them alongside the stderr tail.
+
+- **The registry's declared `distribution.binary.args` are now honored.** The installer read only `archive` and `cmd`, so a Linux-only arg like `--uid=` was silently dropped and the server never received it (issue #9). Args are validated as a flat string array, persisted to a sidecar `args.json` next to `zip.sha256` (so the already-installed early-return path recovers them), and resolved by path identity against the managed `<root>/current` binary: setup persists that path into `acp.bin`, so a source-label check would wrongly treat it as a user override on the next turn. Env and config overrides (a user shim such as `agy acp`) own their argv and get no registry args. Both `/agy auth` flows and the per-connection driver receive them.
+
+- **A ToS-disabled Google account is detected at sign-in instead of on the first real prompt.** The credential probe used only `session/new`, which a disabled account passes, so it wrote a sticky verified marker and `/agy doctor` kept reporting healthy (issue #9). The probe now sends one bounded `session/prompt` and scans the streamed reply for the disablement notice (Google returns it as normal content, not a -32000 auth error). A disabled account fails auth immediately with appeal guidance and writes no marker; the probe is time-capped so a hollow or hung server fails rather than hanging `/agy auth`, and the reply head is logged so a change in Google's wording is diagnosable. The probe is scoped to the token-absent branch to avoid a model call on every normal browser sign-in.
+
 ## [1.9.2] - 2026-11-02
 
 ### Fixed
