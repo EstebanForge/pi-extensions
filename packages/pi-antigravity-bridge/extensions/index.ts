@@ -12,8 +12,8 @@
 //   on disk and pi's inline diff review does not engage.
 //
 // /agy command: full runtime config surface (engine, mode, permissions,
-// bridge tools, model, thinking, digest, system prompt, acp binary) plus
-// doctor, auth, patch-cleanup, and session clear. Config persists to
+// bridge tools, model, thinking, digest, system prompt) plus doctor,
+// authentication instructions, patch-cleanup, and session clear. Config persists to
 // ~/.pi/agent/antigravity-bridge/config.json so toggles survive restarts.
 
 import os from "node:os";
@@ -59,15 +59,15 @@ import { detectPermissionGateExtensions, resolveGateMode } from "../src/approval
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
-import { runAcpAuth } from "../src/acp/auth.js";
-import { setAuthInvalidatedHook } from "../src/acp/connection.js";
-import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
-import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup, resolveInstalledArgs } from "../src/acp/setup.js";
+import { sweepStaleAcpHomes } from "../src/acp/home.js";
+import { cleanupManagedAcpInstall } from "../src/acp/setup.js";
+import { agyAuthenticationMessage } from "../src/agy-install.js";
+import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { CONFIG_PATH, legacyAcpBinConfigured, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
-import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "../src/agy-version.js";
+import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
 import { spawn } from "node:child_process";
@@ -80,7 +80,7 @@ import { agyConversationDir } from "../src/agy-paths.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
-import { bridgeMcpConfigDir, startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
+import { bridgeMcpConfigDir, startMcpServer, sweepStaleBridgeDirs, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
 	healBridgeSuppression,
@@ -102,15 +102,8 @@ import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
 
-// The server disowning our verified marker (-32000 anywhere: turn, session
-// new/load, cancel) must drop it, or ensureAcpReady keeps reporting a login
-// that no longer exists. Wire once at load; the hook is a no-op until set.
-setAuthInvalidatedHook(() => clearAcpAuthVerified());
-
-// Last UI seen (session_start / /agy commands). The ACP login URL arrives
-// via the driver log sink, which has no command context; the stash lets that
-// sink toast instead of only logging to stderr. Module scope: both the
-// default export (session_start, log sink) and registerAgyCommand assign it.
+// Last UI seen (session_start / /agy commands). Module scope: both the
+// default export and registerAgyCommand assign it.
 let activeUi: ExtensionUIContext | null = null;
 
 function resolveAgyBinary(): string {
@@ -211,26 +204,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Approval-gate hook script (per-pid, token embedded). Written at session
 	// start when the gate is active; removed at session_shutdown.
 	let gateScriptPath: string | null = null;
-	// ACP self-heal runs once per process (session_start re-fires on /reload;
-	// a ready setup is two file stats, so re-running is harmless anyway).
-	let acpSelfHealRan = false;
-	// Warn-once-per-process flags for the missing-agy-CLI toast and the
-	// too-old-agy version gate (both stream-json).
+	let managedAcpCleanupRan = false;
+	let legacyAcpWarningShown = false;
+	let agySetupOffer: (() => Promise<void>) | null = null;
 	let agyMissingWarned = false;
 	let agyVersionWarned = false;
-	// OAuth URL capture: the server hands the login URL only to the
-	// browser-open call (nothing on stdio), so a BROWSER wrapper records it
-	// and the driver logs it as "auth-url". Local users keep the automatic
-	// browser open; over SSH the URL surfaces for copy-paste with the
-	// port-forward command.
-	const authCapture = setupAuthUrlCapture();
-	if (!authCapture && process.platform !== "win32") {
-		// Rare (unwritable data dir). Surfacing the diagnostic: without it,
-		// login URLs would silently stop appearing on headless boxes.
-		console.error("[antigravity-bridge] OAuth URL capture unavailable; login URL surfacing is off (setup failed).");
-	}
-	// Two turn engines behind one contract (plan §9): the official ACP
-	// server (default for new installs) and the stream-json `agy` CLI
+	// Two turn engines behind one contract: `agy acp` (default for new
+	// installs) and the stream-json `agy` CLI
 	// (fallback). Neither spawns anything until its first turn.
 	// ACP log routing: only genuine failures reach stderr. Routine lifecycle
 	// (driver-created, spawn, session-new, ...) stays in the driver's
@@ -260,63 +240,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const level = failed ? "warn" : msg === "turn-start" ? "info" : "debug";
 		fileLog.log(msg, data, level);
 	};
-	// Shared ACP log sink (driver turns AND /agy auth): the login URL event
-	// toasts so SSH users can copy it; genuine failures reach stderr.
 	const acpLog = (msg: string, data?: unknown): void => {
-		// The daily file log gets EVERY driver event (auth-url stripped of its
-		// query string - it carries one-time login state); the filters below
-		// only decide what reaches the user.
-		const fileData =
-			msg === "auth-url"
-				? { port: (data as { port?: number | null } | undefined)?.port ?? null, url: String((data as { url?: string } | undefined)?.url ?? "").split("?")[0] }
-				: data;
-		// Failures warn; turn-start + auth-url are the always-on skeleton;
-		// routine per-event lifecycle (spawn, session-load, unparked, ...) is
-		// verbose-only. Deliberate teardown exits (Esc abort kill, shutdown,
-		// idle recycle) demote to debug: routine, and the warn tier stays the
-		// "what broke" grep.
 		const expectedExit =
 			msg === "connection-exited" &&
 			(data as { expected?: boolean } | undefined)?.expected === true;
-		const level = expectedExit
-			? "debug"
-			: acpFailures.has(msg)
-				? "warn"
-				: msg === "turn-start" || msg === "auth-url"
-					? "info"
-					: "debug";
-		fileLog.log(msg, fileData, level);
-		if (msg === "auth-url") {
-			const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
-			if (!url) return;
-			// Blank lines fence the URL off from the rest of the text: it is long
-			// and wraps, so separation keeps it readable and copyable.
-			const parts = ["Google sign-in URL for the ACP engine:", "", url];
-			if (port) {
-				parts.push(
-					"",
-					"SSH session? Forward the port on your machine first:",
-					`  ssh -N -L ${port}:127.0.0.1:${port} <user@host>`,
-				);
-			}
-			const text = parts.join("\n");
-			if (activeUi) activeUi.notify(text, "warning");
-			else console.error(`[antigravity-bridge acp] ${text}`);
-			return;
-		}
-		if (!acpFailures.has(msg)) return;
-		// Console noise is gone: warns toast through the fileLog wrapper (with
-		// a stderr fallback when no UI exists), and raw tails stay in the file
-		// log behind AGY_DEBUG.
+		const level = expectedExit ? "debug" : acpFailures.has(msg) ? "warn" : msg === "turn-start" ? "info" : "debug";
+		fileLog.log(msg, data, level);
 	};
 	const acpDriver = new AcpDriver({
-		// Resolved per connection: the setup flow can install the binary and
-		// update acp.bin mid-session; the next turn picks it up (no restart).
-		bin: () => loadConfig().acp.bin,
-		// Registry-declared argv for the managed binary (e.g. linux --uid=).
-		// Empty for env/config overrides, which own their argv. Resolved per
-		// connection alongside bin so a mid-session install picks them up.
-		binArgs: () => resolveInstalledArgs({ configBin: loadConfig().acp.bin }),
+		bin: binary,
+		binArgs: ["acp"],
+		isolateHome: true,
 		// Resolved per turn: /agy and AGY_USAGE_ESTIMATE changes apply without
 		// a restart. Without this the driver defaults to "estimate" and the
 		// config knob (incl. "off") is dead.
@@ -338,7 +272,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				return idx >= 0 ? (req.options[idx]?.optionId ?? undefined) : undefined;
 			});
 		},
-		...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
 		log: acpLog,
 		mcpServers: () => {
 			const handle = mcpHandle;
@@ -445,7 +378,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			return;
 		}
 		closePollRun();
-		if (event.mcpServer === "pi-bridge") return;
+		if (/^pi-bridge(?:-\d+)?$/.test(event.mcpServer ?? "")) return;
 		// MCP calls through our own pi-bridge already have genuine Pi tool cards;
 		// only native Antigravity / other MCP events need display-only entries.
 		if (event.status === "started") {
@@ -567,11 +500,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		getMcpPort: () => mcpHandle?.port ?? null,
 		bridgeTools: getBridgeTools,
 		hiddenBridgeTools,
-		acpLog,
 		fileLog,
 		roster,
-		authCapture: authCapture ?? null,
-		runAcpPickSetup,
+		checkAgySetup,
 	});
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
@@ -607,74 +538,48 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		},
 	});
 
-	/** ACP pick follow-through (first-run wizard): the same self-service
-	 *  setup the /agy engine acp command runs, but immediately - the 1.5 GB
-	 *  download starts while the toast is still on screen, progress rides the
-	 *  footer status, and the Google sign-in opens when the install lands.
-	 *  Restart still applies the engine (drivers wire at load); this only
-	 *  removes the wait. Fire-and-forget: the caller already toasted the
-	 *  promise, failures land in the daily log + a warning toast. */
-	// eslint-disable-next-line @typescript-eslint/no-inner-declarations -- hoisted: registerAgyCommand below injects it
-	async function runAcpPickSetup(ctx: { ui: ExtensionUIContext }): Promise<void> {
-		acpSelfHealRan = true;
-		let lastPhase = "";
-		ctx.ui.setStatus("agy-acp", "downloading ACP server…");
+	function offerSetup(ui: ExtensionUIContext, explicit = false): void {
+		if (agySetupOffer && explicit) {
+			ui.notify(`CLI setup was already offered in this session. ${agyMissingMessage()}`, "info");
+		}
+		agySetupOffer ??= createAgySetupOffer({
+			ui,
+			binaryOverride: process.env.AGY_BIN || undefined,
+			missingMessage: agyMissingMessage,
+			log: (event, data, level) => fileLog.log(event, data, level),
+		});
+		void agySetupOffer();
+	}
+
+	// Availability checks never block bridge startup. The setup offer owns
+	// prompting, deduplication, and failure containment.
+	async function checkAgySetup(ctx: { ui: ExtensionUIContext; mode: string }, selectedEngine: Engine, explicit = false): Promise<void> {
 		try {
-			const status = await ensureAcpReady({
-				configBin: loadConfig().acp.bin,
-				onProgress: (m) => {
-					// Dual surface: the status bar carries the live percent (cleared
-					// on completion, zero footprint); the chat window gets phase
-					// milestones only (download start, unpacking, installed) - same
-					// line-in-chat feel as other extensions' notify() notices. The
-					// percent variant updates every chunk and would spam the chat.
-					ctx.ui.setStatus("agy-acp", m);
-					if (m !== lastPhase && !/\d+%/.test(m)) {
-						ctx.ui.notify(m, "info");
-						lastPhase = m;
-					}
-				},
-			});
-			ctx.ui.setStatus("agy-acp", undefined);
-			fileLog.log(
-				"acp-setup",
-				status.ok
-					? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
-					: { ok: false, error: status.error },
-				status.ok ? "info" : "warn",
-			);
-			if (!status.ok) {
-				ctx.ui.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
+			if (!isAgyInstalled(binary)) {
+				if (ctx.mode === "tui") {
+					offerSetup(ctx.ui, explicit);
+				} else if (!agyMissingWarned) {
+					agyMissingWarned = true;
+					console.error(`[antigravity-bridge] ${agyMissingMessage()}`);
+				}
 				return;
 			}
-			// Spread, not a bare acp patch: a bare {bin} patch would drop
-			// sibling keys (usageEstimate) from the file.
-			saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
-			if (!status.needsLogin) {
-				ctx.ui.notify(`ACP server ready (auth: ${status.auth}). Restart applies the engine.`, "info");
+			if (agyVersionWarned) {
+				if (explicit && ctx.mode === "tui") offerSetup(ctx.ui, true);
 				return;
 			}
-			ctx.ui.notify(
-				"ACP server ready. Signing in: the Google sign-in opens in your browser and completes when you finish it.",
-				"info",
-			);
-			const r = await runAcpAuth({
-				bin: status.bin,
-				binArgs: status.args,
-				...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
-				log: acpLog,
-			});
-			fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
-			if (r.ok) {
-				ctx.ui.notify(
-					r.note ? `Signed in (${r.note}). The ACP engine is ready; restart applies it.` : "Signed in. The ACP engine is ready; restart applies it.",
-					"info",
-				);
-			} else ctx.ui.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
+			const rawCheck = await checkAgyCliVersion(binary);
+			const floor = selectedEngine === "acp" ? MIN_AGY_ACP_VERSION : MIN_AGY_VERSION;
+			const check = agyVersionVerdict(rawCheck.raw, floor);
+			if (check.status !== "unsupported") return;
+			agyVersionWarned = true;
+			const msg = `agy ${check.version} is too old for ${selectedEngine}; install ${floor} or newer.`;
+			if (ctx.mode === "tui") {
+				ctx.ui.notify(msg, "warning");
+				offerSetup(ctx.ui, explicit);
+			} else console.error(`[antigravity-bridge] ${msg}`);
 		} catch (err) {
-			ctx.ui.setStatus("agy-acp", undefined);
-			fileLog.log("acp-setup", { error: String(err) }, "warn");
-			ctx.ui.notify(`ACP setup failed (${String(err)}). /agy auth retries; /agy doctor inspects.`, "warning");
+			fileLog.log("agy-version-check", { error: String(err) }, "warn");
 		}
 	}
 
@@ -693,6 +598,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// (drivers wire at load). The await intentionally runs before the
 		// bridge startup below: on a genuine first run the modal blocks input
 		// anyway, so the delay is invisible.
+		let setupEngine = engine;
 		if (event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(CONFIG_PATH)) {
 			// Best-effort, like the legacy-patch notice below: a picker failure
 			// (mid-prompt TUI teardown, resize races) must never take down the
@@ -701,40 +607,31 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			try {
 				const picked = await showEnginePicker(ctx.ui);
 				if (picked) {
+					setupEngine = picked;
 					saveConfig({ engine: picked });
 					ctx.ui.notify(savedEngineMessage(picked), "info");
-					if (picked === "acp") void runAcpPickSetup(ctx);
 				}
 			} catch (err) {
 				fileLog.log("engine-picker", { error: String(err) }, "warn");
 				console.error(`[antigravity-bridge] engine picker failed: ${String(err)}`);
 			}
 		}
-		// agy presence check (stream-json engine): the CLI is the whole engine,
-		// so a missing binary means every Antigravity turn would fail. Warn on
-		// every process start until it is installed (per-process flag so /new,
-		// /resume and /reload re-fires do not nag mid-session). Runs after the
-		// picker above, so a first-run stream-json pick warns immediately.
-		if (engine === "stream-json" && !agyMissingWarned && !isAgyInstalled(binary)) {
-			agyMissingWarned = true;
-			const msg = agyMissingMessage();
+		if (!legacyAcpWarningShown && legacyAcpBinConfigured()) {
+			legacyAcpWarningShown = true;
+			const msg = "Legacy AGY_ACP_BIN/acp.bin settings are ignored. Turns use `agy acp`; remove the stale override.";
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
 		}
-		// Version gate (stream-json): an agy older than MIN_AGY_VERSION fails
-		// turns with raw stream errors that look like bridge bugs. Warn once
-		// with the fix in the message; doctor carries the full verdict.
-		// Development builds and unreadable output stay silent here (an agy
-		// from source works; doctor shows what we could not parse).
-		if (engine === "stream-json" && !agyVersionWarned && isAgyInstalled(binary)) {
-			void checkAgyCliVersion(binary).then((check) => {
-				if (agyVersionWarned || check.status !== "unsupported") return;
-				agyVersionWarned = true;
-				const msg = `agy ${check.version} is too old; install ${MIN_AGY_VERSION} or newer. Stream-json turns may fail in confusing ways until then (/agy doctor inspects).`;
-				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-				else console.error(`[antigravity-bridge] ${msg}`);
-			});
+		if (!managedAcpCleanupRan) {
+			managedAcpCleanupRan = true;
+			try {
+				const cleanup = cleanupManagedAcpInstall();
+				if (cleanup.removedBuilds.length > 0) fileLog.log("legacy-acp-cleanup", cleanup, "info");
+			} catch (err) {
+				fileLog.log("legacy-acp-cleanup", { error: String(err) }, "warn");
+			}
 		}
+		void checkAgySetup(ctx, setupEngine);
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
 		// and offer /agy patch-cleanup. Never auto-edits the install.
@@ -751,36 +648,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 		} catch {
 			/* detection is best-effort */
-		}
-		// ACP self-heal: engine=acp needs a server binary + auth. Silent when
-		// everything is ready; installs from the registry and bootstraps auth
-		// otherwise; manual instructions only on failure. Fire-and-forget: it
-		// must not delay session start (and nothing spawns until the first turn).
-		if (engine === "acp" && !acpSelfHealRan) {
-			acpSelfHealRan = true;
-			void ensureAcpReady({ configBin: loadConfig().acp.bin }).then((status) => {
-				fileLog.log(
-					"acp-self-heal",
-					status.ok
-						? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
-						: { ok: false, error: status.error },
-					status.ok ? "info" : "warn",
-				);
-				if (status.ok) {
-					if (status.binarySource === "installed" || status.binarySource === "existing") {
-						saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
-					}
-					if (status.needsLogin) {
-						const msg = acpLoginPending();
-						if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-						else console.error(`[antigravity-bridge] ${msg}`);
-					}
-					return;
-				}
-				const msg = `ACP auto-setup failed (${status.error}).\n${status.manual}`;
-				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-				else console.error(`[antigravity-bridge] ${msg}`);
-			});
 		}
 		// Bridge failure logger. Routine lifecycle (listening,
 		// bridge-config-written/removed, closed) is normal startup/teardown
@@ -825,6 +692,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(msg);
 		};
+		// Sweep crashed sessions even when the bridge is disabled.
+		sweepStaleBridgeServers();
+		sweepStaleBridgeDirs();
+		sweepStaleAcpHomes();
 		// Start the bridge unless the user turned it off. No patch gate, no
 		// consent flow: calls route through pi's normal toolUse loop.
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
@@ -927,14 +798,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		);
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
-			// Stale entries swept at start; entries a crashed delegation left
-			// suppressed are healed here - but only when no live delegation is in
+			// Entries a crashed delegation left suppressed are healed here,
+			// but only when no live delegation is in
 			// flight anywhere (marker-aware heal). A blind re-enable used to
 			// un-hide the bridge during another session's active delegation.
 			// Global-config hygiene runs on BOTH engines: a crashed stream-json
 			// session must not leave dead-pid entries or stuck suppression flags
 			// for the next one.
-			sweepStaleBridgeServers();
 			healBridgeSuppression();
 			// ACP supplies the bridge per-session (session/new | session/load);
 			// only the stream-json CLI reads the global MCP config.
@@ -1058,8 +928,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		activeUi = null;
 		const h = mcpHandle;
 		mcpHandle = null;
-		await h?.close();
-		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
 		// "recycle", NOT "shutdown": pi fires session_shutdown on /new, /resume
 		// and /fork (docs/extensions.md session lifecycle), not only on process
 		// exit. The drivers are process-lifetime singletons; closing them with
@@ -1070,6 +938,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// ("quit") - the connection kill is identical and nothing runs after.
 		await streamDriver.close("recycle", "session shutdown");
 		await acpDriver.close("recycle", "session shutdown");
+		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
+		await h?.close();
 		if (engine === "stream-json") unregisterBridgeServer(process.pid);
 		hiddenBridgeTools.clear();
 		// Approval gate: unstage hooks and remove the per-pid script. Pending
@@ -1089,14 +959,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 // --- /agy command -----------------------------------------------------------
 
-/** Shared body for every ACP-login-pending moment (session_start self-heal,
- *  /agy engine acp). End-user simple: what to run, what happens, which
- *  account. Sign-in is explicit (/agy auth); it never rides the first
- *  message. */
-function acpLoginPending(): string {
-	return `One-time sign-in needed to finish ACP setup. Run /agy auth: the Google sign-in opens in your browser. Use the Google account of your Antigravity subscription (the same account as your agy CLI login). If no browser opens, pi shows the sign-in URL to copy. The token stays on your machine; this extension never sees it.`;
-}
-
 interface AgyCommandCtx {
 	entries: AgyModelEntry[];
 	store: SessionStore;
@@ -1108,18 +970,11 @@ interface AgyCommandCtx {
 	getMcpPort: () => number | null;
 	bridgeTools: () => Array<{ name: string }>;
 	hiddenBridgeTools: Set<string>;
-	/** Shared ACP log sink (login URL surfacing + failure events). */
-	acpLog: (msg: string, data?: unknown) => void;
 	/** Daily file logger (src/daily-log.ts); command + doctor surfacing. */
 	fileLog: DailyLogger;
 	/** Live subagent roster (folded in the provider); /agy subagents. */
 	roster: SubagentRoster;
-	/** Wizard-pick follow-through (download now + chained sign-in); reused
-	 *  by /agy engine's no-args modal so both entry points behave alike. */
-	runAcpPickSetup: (cmdCtx: { ui: ExtensionUIContext }) => Promise<void>;
-	/** BROWSER-capture handles; null when unavailable (Windows, unwritable
-	 *  data dir). /agy auth passes them to the sign-in process. */
-	authCapture: { browserEnv: Record<string, string>; file: string } | null;
+	checkAgySetup: (ctx: { ui: ExtensionUIContext; mode: string }, engine: Engine, explicit?: boolean) => Promise<void>;
 }
 
 interface PendingConfig {
@@ -1166,13 +1021,13 @@ function statusText(ctx: AgyCommandCtx): string {
 	const source = ctx.usingFallback ? "fallback (agy models failed)" : "discovered";
 	return [
 		"Antigravity bridge",
-		`  engine:        ${config.engine}${config.engine === "stream-json" ? " (agy CLI fallback)" : " (official server)"}`,
+		`  engine:        ${config.engine}${config.engine === "stream-json" ? " (agy CLI fallback)" : " (agy acp)"}`,
 		`  models:        ${ctx.entries.length} ${source}`,
 		...settingsRows(ctx),
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -1180,7 +1035,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -1245,7 +1100,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "engine") {
 				if (val === "acp" || val === "stream-json") {
 					if (val === "acp" && loadConfig().mode === "plan") {
-						ui?.notify("mode is plan; the ACP engine has no plan mode. /agy mode accept-edits first.", "warning");
+						ui?.notify("mode is plan; provider plan turns are disabled on ACP. /agy mode accept-edits first.", "warning");
 						return;
 					}
 					const next = saveConfig({ engine: val });
@@ -1253,39 +1108,12 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						ui?.notify("engine set to stream-json. Takes effect on the next pi start (or /reload).", "info");
 						return;
 					}
-					// Self-service setup: install the server from the official
-					// registry and bootstrap auth now, so the restart just works.
-					// Manual instructions only when a step fails.
-					ui?.notify("engine set to acp. Preparing the server (binary + auth)…", "info");
-					const status = await ensureAcpReady({
-						configBin: loadConfig().acp.bin,
-						onProgress: (m) => ui?.notify(m, "info"),
-					});
-					ctx.fileLog.log(
-						"acp-setup",
-						status.ok
-							? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
-							: { ok: false, error: status.error },
-						status.ok ? "info" : "warn",
-					);
-					if (!status.ok) {
-						ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
-						return;
-					}
-					saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
-					if (status.needsLogin) {
-						ui?.notify(
-							`ACP engine set. ${acpLoginPending()}`,
-							"warning",
-						);
-					} else {
-						ui?.notify(`ACP engine ready (auth: ${status.auth}). Takes effect on the next pi start (or /reload).`, "info");
-					}
+					ui?.notify("engine set to acp. Turns will use `agy acp` and the CLI's existing authentication. Takes effect on the next pi start (or /reload).", "info");
+					void ctx.checkAgySetup(cmdCtx, "acp", true);
 				} else if (!val && mode === "tui" && ui) {
 					// Same modal as the first-run wizard: switching engines deserves
 					// the explanations, not a bare usage line. Semantics match the
-					// direct path above: plan blocks acp, an acp pick chains setup
-					// + sign-in immediately, restart applies the switch.
+					// direct path above: plan blocks acp and restart applies the switch.
 					await runEngineModal(ui, ctx);
 				} else {
 					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
@@ -1293,99 +1121,20 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				return;
 			}
 			if (sub === "auth") {
-				// Gate on the CONFIGURED engine (disk + env), not the latched one:
-				// /agy engine acp followed by /agy auth in the same session works,
-				// no restart needed before signing in.
-				if (loadConfig().engine !== "acp") {
-					ui?.notify(`the selected engine is ${loadConfig().engine}. /agy engine acp first, then /agy auth.`, "warning");
-					return;
-				}
-				ui?.notify("Preparing the ACP server (binary + auth settings)…", "info");
-				const status = await ensureAcpReady({ configBin: loadConfig().acp.bin, onProgress: (m) => ui?.notify(m, "info") });
-				ctx.fileLog.log(
-					"acp-setup",
-					status.ok
-						? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
-						: { ok: false, error: status.error },
-					status.ok ? "info" : "warn",
-				);
-				if (!status.ok) {
-					ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
-					return;
-				}
-				saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
-				if (!status.needsLogin) {
-					ui?.notify(`Already signed in (auth: ${status.auth}). Nothing to do.`, "info");
-					return;
-				}
-				ui?.notify(
-					"Signing in: the Google sign-in opens in your browser and completes when you finish it (minutes-scale). If no browser opens, pi shows the sign-in URL to copy.",
-					"info",
-				);
-				const r = await runAcpAuth({
-					bin: status.bin,
-					binArgs: status.args,
-					extraEnv: ctx.authCapture?.browserEnv,
-					authUrlFile: ctx.authCapture?.file,
-					log: ctx.acpLog,
-				});
-				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
-				if (r.ok) {
-					ui?.notify(
-						r.note ? `Signed in (${r.note}). The ACP engine is ready; takes effect on the next pi start (or /reload).` : "Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).",
-						"info",
-					);
-				} else {
-					ui?.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
-				}
-				return;
-			}
-			if (sub === "acp-bin") {
-				const rest = (args ?? "").trim().split(/\s+/).slice(1).join(" ");
-				if (rest.length > 0) {
-					// Only the keyword compares case-insensitively; the path keeps its case.
-					const bin = rest.toLowerCase() === "auto" ? "" : rest.replace(/^~(?=\/|$)/, os.homedir());
-					// Spread, not a bare acp patch: a bare {bin} object
-					// would drop sibling keys (usageEstimate) from the file.
-					saveConfig({ acp: { ...loadConfig().acp, bin } });
-					ui?.notify(
-						bin
-							? `acp.bin set to ${bin}. The next ACP turn (re)connects with it.`
-							: "acp.bin cleared. Auto-setup (or AGY_ACP_BIN) picks the binary on the next ACP turn.",
-						"info",
-					);
-				} else {
-					const cur = loadConfig().acp.bin;
-					ui?.notify(`acp.bin: ${cur || "(auto: setup installs, or AGY_ACP_BIN)"}\nusage: /agy acp-bin <path|auto>`, "info");
-				}
+				ui?.notify(agyAuthenticationMessage(), "info");
 				return;
 			}
 			if (sub === "auth-manual") {
 				ui?.notify(
 					[
-						"ACP engine authentication (one-time; usually automatic -",
-						"/agy engine acp and session start set this up for you):",
+						"Both engines use the agy CLI and its cached Google credentials.",
 						"",
-						"The server is Google's official Antigravity ACP, installed from Google's",
-						"own registry. Logging in uses your Antigravity subscription: the same",
-						"Google account and plan as the Antigravity CLI (agy). It is no different",
-						"from logging into the CLI; the server just keeps its own token file on",
-						"your machine, like any Google tool. This extension never sees your",
-						"credentials.",
+						"Install on Linux or macOS:",
+						"  curl -fsSL https://antigravity.google/cli/install.sh | bash",
+						"Install on Windows PowerShell:",
+						"  irm https://antigravity.google/cli/install.ps1 | iex",
 						"",
-						"1. Server binary: auto-setup installs it. Manual: agy_acp_server.par from",
-						"   the antigravity-acp registry; point acp.bin or AGY_ACP_BIN at it.",
-						'2. Default: put {"auth":{"type":"oauth-personal"}} in',
-						"   ~/.gemini/antigravity-acp/settings.json, run /agy auth, and complete",
-						"   the Google login that opens in your browser. No browser (SSH",
-						"   session)? pi shows the sign-in URL to copy; forward the redirect",
-						"   port over ssh (ssh -N -L <port>:127.0.0.1:<port> <user@host>), then",
-						"   open the URL on your machine.",
-						'   Headless alternative: GEMINI_API_KEY + {"auth":{"type":"gemini-api-key"}}',
-						"   (metered paid API - not your Antigravity plan). The key is used only",
-						"   when that type is selected; with the default oauth-personal in place,",
-						"   an exported key is ignored.",
-						"3. /agy doctor shows the server version when auth is OK.",
+						agyAuthenticationMessage(),
 					].join("\n"),
 					"info",
 				);
@@ -1396,15 +1145,11 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				const engine = ctx.engine;
 				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
 				const port = ctx.getMcpPort();
-				// The CLI matters on both engines (AskAntigravity shells out to
-				// `agy -p` even when turns ride ACP), but on an ACP session a
-				// missing CLI is a supported shape, so label it optional there
-				// instead of showing a bare failure line.
-				const cliCheck = await checkAgyCliVersion(resolveAgyBinary());
-				const cliSuffix =
-					cliCheck.status === "unavailable" && engine === "acp"
-						? " (optional here; AskAntigravity delegations use the CLI)"
-						: "";
+				const rawCliCheck = await checkAgyCliVersion(resolveAgyBinary());
+				const cliFloor = engine === "acp" ? MIN_AGY_ACP_VERSION : MIN_AGY_VERSION;
+				const cliCheck = rawCliCheck.status === "ok" || rawCliCheck.status === "unsupported"
+					? agyVersionVerdict(rawCliCheck.raw, cliFloor)
+					: rawCliCheck;
 				const lines = [
 					"Antigravity doctor (no tokens spent)",
 					`  engine:        ${engine}`,
@@ -1413,7 +1158,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
-					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${MIN_AGY_VERSION})${cliSuffix}`,
+					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${cliFloor})`,
 					`  config:        ${CONFIG_PATH}`,
 					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];
@@ -1421,12 +1166,12 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					lines.push(
 						`  acp session:   ${snap.acp.sessionId ?? "(none)"}`,
 						`  acp server:    ${snap.acp.serverVersion ?? "unknown"}${snap.acp.agentTitle ? ` (${snap.acp.agentTitle})` : ""}`,
-						`  acp stats:     prompts=${snap.acp.prompts} created=${snap.acp.sessionsCreated} loaded=${snap.acp.sessionsLoaded} kills=${snap.acp.kills} reconnects=${snap.acp.reconnects} cancel=${snap.acp.cancelSupported === null ? "unprobed" : snap.acp.cancelSupported ? "supported" : "unsupported (kill+reload)"}`,
+						`  acp stats:     prompts=${snap.acp.prompts} created=${snap.acp.sessionsCreated} loaded=${snap.acp.sessionsLoaded} kills=${snap.acp.kills} reconnects=${snap.acp.reconnects}`,
 					);
 					// Gate B watch: silent while the server offers no token counts; one
 					// line the day it starts (then real usage mapping is worth wiring).
 					if (snap.acp.usageSeen) {
-						lines.push("  acp tokens:    AVAILABLE in server payloads (wire real usage mapping next)");
+						lines.push("  acp tokens:    NATIVE exact usage in PromptResponse");
 					} else if (config.acp.usageEstimate !== "off") {
 						lines.push(`  acp tokens:    ESTIMATED client-side (mode: ${config.acp.usageEstimate}; auto-off once the server sends real usage)`);
 					}
@@ -1435,13 +1180,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					lines.push("  lifecycle (last 5):");
 					for (const entry of snap.lifecycle.slice(-5)) lines.push(`    ${entry}`);
 				}
-				if (engine === "acp") {
-					const setup = inspectAcpSetup({ configBin: config.acp.bin });
-					lines.push(
-						`  acp binary:    ${setup.bin ?? "not found (auto-setup offers install)"}${setup.source ? ` (${setup.source})` : ""}`,
-						`  acp auth:      ${setup.auth ?? "not configured (auto-setup bootstraps)"}`,
-					);
-				}
+				if (engine === "acp") lines.push("  acp transport: agy acp (shared CLI authentication, isolated MCP home)");
+				const retiredAuth = path.join(os.homedir(), ".gemini", "antigravity-acp");
+				if (fs.existsSync(retiredAuth)) lines.push(`  retired auth:  ${retiredAuth} is unused; remove it manually when no longer needed`);
 				// The config surface lives here too, so doctor is the ONE status
 				// surface (former /agy status is gone).
 				lines.push("", "settings:", ...settingsRows(ctx));
@@ -1451,7 +1192,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "mode") {
 				if (val === "plan" || val === "accept-edits") {
 					if (val === "plan" && ctx.engine === "acp") {
-						ui?.notify("plan cannot be enforced on provider turns on either engine: the ACP engine has no plan mode (RC01), and the CLI does not gate writes under plan (google-antigravity/antigravity-cli#1181). /agy mode accept-edits.", "warning");
+						ui?.notify("plan cannot be enforced on provider turns: the CLI does not gate writes under plan (google-antigravity/antigravity-cli#1181), and provider plan turns are disabled on ACP. /agy mode accept-edits.", "warning");
 						return;
 					}
 					const next = saveConfig({ mode: val as AgyMode });
@@ -1678,10 +1419,10 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				return;
 			}
 			if (sub === "agent") {
-				// ACP has no agent slot in the protocol (RC01): refuse instead of
+				// ACP has no per-turn agent slot in the protocol: refuse instead of
 				// silently ignoring a configured agent.
 				if (ctx.engine === "acp") {
-					ui?.notify("the ACP engine has no agent selection (RC01). /agy engine stream-json first.", "warning");
+					ui?.notify("the ACP engine has no per-turn agent selection. /agy engine stream-json first.", "warning");
 					return;
 				}
 				const name = (args ?? "").trim().split(/\s+/).slice(1).join(" ").trim();
@@ -2006,11 +1747,11 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 	// mode row can still produce plan while the engine is acp - either the
 	// session-latched engine or the on-disk one, which the Switch engine row
 	// can change mid-session without a restart. Plan cannot be enforced on
-	// provider turns on either engine (#1181 + RC01); refuse the combination.
+	// provider turns on either engine; refuse the combination.
 	const nextMode = pending.mode ?? config.mode;
 	if (nextMode === "plan" && (ctx.engine === "acp" || config.engine === "acp")) {
 		ui.notify(
-			"plan cannot be enforced on provider turns on either engine (google-antigravity/antigravity-cli#1181; ACP additionally has no plan mode, RC01). /agy mode accept-edits.",
+			"plan cannot be enforced on provider turns (google-antigravity/antigravity-cli#1181); provider plan turns are disabled on ACP too. /agy mode accept-edits.",
 			"warning",
 		);
 		return;
@@ -2048,8 +1789,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 
 /** The engine-pick modal shared by /agy engine (no args) and the settings
  *  picker's engine row: the same explanations as the first-run wizard and the
- *  same semantics — plan blocks acp, an acp pick chains setup + sign-in
- *  immediately, restart applies the switch. */
+ *  same semantics: plan blocks acp and restart applies the switch. */
 async function runEngineModal(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const current = loadConfig().engine;
 	const picked = await showEnginePicker(ui);
@@ -2062,10 +1802,10 @@ async function runEngineModal(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promi
 		return;
 	}
 	if (picked === "acp" && loadConfig().mode === "plan") {
-		ui.notify("mode is plan; the ACP engine has no plan mode. /agy mode accept-edits first.", "warning");
+		ui.notify("mode is plan; provider plan turns are disabled on ACP. /agy mode accept-edits first.", "warning");
 		return;
 	}
 	saveConfig({ engine: picked });
 	ui.notify(savedEngineMessage(picked), "info");
-	if (picked === "acp") void ctx.runAcpPickSetup({ ui });
+	if (picked === "acp") void ctx.checkAgySetup({ ui, mode: "tui" }, "acp", true);
 }

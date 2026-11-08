@@ -1,16 +1,10 @@
-// ACP connection: owns the agy_acp_server process, the JSON-RPC session over
-// its stdio, and the protocol methods the driver needs. One connection hosts
-// one session at a time (the driver's model), but the transport supports more.
+// ACP connection: owns the agy acp process, the JSON-RPC session over its
+// stdio, and the protocol methods the driver needs.
 //
-// Protocol facts encoded here were verified live against
-// agy_acp_server_20260818_01_RC01 (docs/ACP-PROTOCOL-REFERENCE.md):
+// Verified live against agy 1.5.3:
 //   - initialize: {protocolVersion:1, clientCapabilities{fs:false,terminal:false}}
-//   - authenticate takes `methodId`; auth errors are -32000 with remediation in
-//     data.message; the token persists in ~/.gemini/antigravity-acp/acp_token.json
-//   - session/set_config_option takes `configId` (model value = FULL slug with
-//     the effort tier baked in, e.g. gemini-3.8-flash-low)
-//   - session/cancel returns -32601 on RC01 (not implemented) — the driver
-//     treats that as "cancel unsupported" and falls back to teardown+kill
+//   - model and thought_level are separate session config options
+//   - session/cancel is a notification; the prompt settles with stopReason cancelled
 //   - session/request_permission: skipPermissions turns answer the first
 //     allow option synchronously; otherwise a wired human handler PARKS the
 //     request (the JSON-RPC reply waits for the decision), and everything
@@ -21,14 +15,11 @@
 //     LIST; a dead URL is accepted at session time (lazy connect)
 
 import { spawn, type ChildProcess } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { parseAuthPort, readLastUrl } from "./browser-capture.js";
 import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
+import { removeStagedAcpHome, stageAcpHome } from "./home.js";
 
 export interface AcpMcpServer {
 	name: string;
@@ -50,16 +41,6 @@ export class AcpAuthError extends Error {
 	}
 }
 
-/** Fired exactly when the SERVER reports an auth failure (-32000 family).
- *  The extension entry wires this to clearAcpAuthVerified(): a verified
- *  marker must never outlive the server disagreeing with it. Kept as a hook
- *  so the low-level connection stays decoupled from bridge file paths. */
-let authInvalidatedHook: (() => void) | null = null;
-
-export function setAuthInvalidatedHook(fn: (() => void) | null): void {
-	authInvalidatedHook = fn;
-}
-
 export interface AcpConnectionOptions {
 	/** Process working directory for the spawned server. */
 	cwd: string;
@@ -67,6 +48,8 @@ export interface AcpConnectionOptions {
 	 *  fake-server script for tests). */
 	bin: string;
 	binArgs?: string[];
+	/** Native agy only: filter per-pid bridges out of inherited global MCP. */
+	isolateHome?: boolean | { geminiHome?: string; parentDir?: string };
 	extraEnv?: Record<string, string>;
 	log: (msg: string, data?: unknown) => void;
 	/** Verified `session/update` payloads (post-suppression). */
@@ -87,11 +70,6 @@ export interface AcpConnectionOptions {
 	onPermissionRequest?: AcpPermissionHandler;
 	/** Park budget for one permission dialog. Tests shrink it. */
 	permissionParkMs?: number;
-	/** Record file for BROWSER-captured OAuth URLs (src/acp/browser-capture.ts).
-	 *  The server hands the login URL only to the browser-open call, so the
-	 *  wrapper records it there; the connection watches the file and logs
-	 *  "auth-url" {url, port} for every new URL. */
-	authUrlFile?: string;
 }
 
 const INIT_TIMEOUT_MS = 30_000;
@@ -126,6 +104,7 @@ export class AcpConnection {
 	#child: ChildProcess | undefined;
 	#rpc: JsonRpcSession | undefined;
 	#stderrTail = "";
+	#stagedHome: string | undefined;
 	#usageSeen = false;
 	/** Set ONLY by a parsed PromptResponse.usage; this gates estimate
 	 *  suppression. #usageSeen stays diagnostic: any usage-shaped frame trips
@@ -138,11 +117,8 @@ export class AcpConnection {
 	agentInfo: Record<string, unknown> | undefined;
 	/** Last known mode/model config echo from set_config_option results. */
 	lastConfigOptions: unknown = undefined;
-	#authUrlWatcher: fs.FSWatcher | undefined;
-	#lastAuthUrl: string | null = null;
-	/** Parked permission dialogs: each entry settles its own request with a
-	 *  deny. #finish drains the set so a dying connection never leaves the
-	 *  server's request hanging. */
+	/** Parked permission dialogs: each entry settles its own request as
+	 *  cancelled. Cancellation and connection death drain the set. */
 	#permissionPending = new Set<() => void>();
 	/** allow_always / reject_always answers, keyed by toolCall kind|title for
 	 *  the life of this connection: identical requests skip the dialog. */
@@ -190,15 +166,24 @@ export class AcpConnection {
 	async start(): Promise<void> {
 		if (this.#child) return;
 		const args = [...(this.#opts.binArgs ?? [])];
-		const child = spawn(this.#opts.bin, args, {
-			cwd: this.#opts.cwd,
-			stdio: ["pipe", "pipe", "pipe"],
-			detached: process.platform !== "win32",
-			windowsHide: true,
-			...(this.#opts.extraEnv ? { env: { ...process.env, ...this.#opts.extraEnv } } : {}),
-		});
+		if (this.#opts.isolateHome) {
+			this.#stagedHome = stageAcpHome(typeof this.#opts.isolateHome === "object" ? this.#opts.isolateHome : {});
+			args.push("--gemini-dir", this.#stagedHome);
+		}
+		let child: ChildProcess;
+		try {
+			child = spawn(this.#opts.bin, args, {
+				cwd: this.#opts.cwd,
+				stdio: ["pipe", "pipe", "pipe"],
+				detached: process.platform !== "win32",
+				windowsHide: true,
+				...(this.#opts.extraEnv ? { env: { ...process.env, ...this.#opts.extraEnv } } : {}),
+			});
+		} catch (err) {
+			this.#releaseHome();
+			throw err;
+		}
 		this.#child = child;
-		if (this.#opts.authUrlFile) this.#watchAuthUrl();
 		child.stdout?.setEncoding("utf8");
 		child.stderr?.setEncoding("utf8");
 		// Pipe failures arrive asynchronously as stream 'error' events; the sync
@@ -272,10 +257,6 @@ export class AcpConnection {
 		const v = this.agentInfo?.version;
 		return typeof v === "string" ? v : undefined;
 	}
-
-	/** True once the server answered -32601 for session/cancel on THIS
-	 *  process (probed lazily by the driver; never assumed). */
-	cancelSupported: boolean | null = null;
 
 	async newSession(cwd: string): Promise<AcpSessionInfo> {
 		const result = (await this.guarded(
@@ -352,9 +333,8 @@ export class AcpConnection {
 		if (typeof stopReason !== "string") {
 			throw new Error("ACP session/prompt returned no stopReason");
 		}
-		// Optional, unstable ACP PromptResponse.usage: absent on 1.1.1 but
-		// parsed for the day the server forwards its SDK usage_metadata. Never
-		// infer exact counts from a context-window usage_update ({used,size}).
+		// Exact PromptResponse.usage is distinct from context-window occupancy
+		// updates; never infer token counts from {used,size}.
 		const usage = parseAcpTurnUsage(result?.usage);
 		if (usage) {
 			this.#usageSeen = true;
@@ -363,17 +343,10 @@ export class AcpConnection {
 		return { stopReason, ...(usage ? { usage } : {}) };
 	}
 
-	/** Probe-and-cancel. Returns supported:false when the server does not
-	 *  implement session/cancel (-32601 on RC01); other errors propagate as
-	 *  translated Errors. Protocol probing stays inside the connection layer. */
-	async cancel(sessionId: string): Promise<{ supported: boolean }> {
-		try {
-			await this.request("session/cancel", { sessionId }, SESSION_OP_TIMEOUT_MS);
-			return { supported: true };
-		} catch (err) {
-			if (err instanceof JsonRpcResponseError && err.code === -32601) return { supported: false };
-			throw translateError("session/cancel", err);
-		}
+	cancel(sessionId: string): void {
+		if (!this.#rpc || !this.alive) throw new Error("ACP connection is not running");
+		this.#rpc.notify("session/cancel", { sessionId });
+		for (const cancel of [...this.#permissionPending]) cancel();
 	}
 
 	async closeSession(sessionId: string): Promise<void> {
@@ -436,7 +409,7 @@ export class AcpConnection {
 				if (settled) return;
 				settled = true;
 				if (timer) clearTimeout(timer);
-				this.#permissionPending.delete(settleDeny);
+				this.#permissionPending.delete(settleCancel);
 				this.#opts.log("permission", { optionId, policy: why });
 				// undefined optionId (no reject option on the table) cancels
 				// instead of selecting nothing.
@@ -447,11 +420,12 @@ export class AcpConnection {
 				);
 			};
 			const settleDeny = (): void => settle(denyId, "dialog-deny");
+			const settleCancel = (): void => settle(undefined, "cancel");
 			timer = setTimeout(() => {
 				this.#opts.log("permission-timeout", { parkMs });
 				settleDeny();
 			}, parkMs);
-			this.#permissionPending.add(settleDeny);
+			this.#permissionPending.add(settleCancel);
 			Promise.resolve()
 				.then(() => handler(params))
 				.then((picked) => {
@@ -562,43 +536,22 @@ export class AcpConnection {
 		}
 	}
 
-	/** Surface OAuth login URLs captured by the BROWSER wrapper: every new
-	 *  URL in the record file is logged once as "auth-url" {url, port}. Best
-	 *  effort only - a broken watch never affects turns. */
-	#watchAuthUrl(): void {
-		const file = this.#opts.authUrlFile!;
-		try {
-			const watcher = fs.watch(file, () => this.#emitAuthUrl());
-			// Without a listener, a watch 'error' event escapes as uncaught.
-			watcher.on("error", () => {
-				/* record file gone: login URL surfacing is off until respawn */
-			});
-			this.#authUrlWatcher = watcher;
-		} catch {
-			/* no watch; the one-shot check below still covers earlier writes */
-		}
-		this.#emitAuthUrl(); // URLs recorded before the watch started
-	}
-
-	#emitAuthUrl(): void {
-		const url = readLastUrl(this.#opts.authUrlFile!);
-		if (!url || url === this.#lastAuthUrl) return;
-		this.#lastAuthUrl = url;
-		this.#opts.log("auth-url", { url, port: parseAuthPort(url) });
-	}
-
 	#finish(reason: string, code: number | null = null, signal: NodeJS.Signals | null = null): void {
 		if (this.#exited) return;
 		this.#exited = true;
-		this.#authUrlWatcher?.close();
-		this.#authUrlWatcher = undefined;
-		// Pending permission dialogs must not outlive the connection: deny them
+		// Pending permission dialogs must not outlive the connection: cancel them
 		// so their replies race the teardown instead of hanging the server.
 		const pendings = [...this.#permissionPending];
 		this.#permissionPending.clear();
 		for (const deny of pendings) deny();
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
+		this.#releaseHome();
 		this.#opts.onExit({ code, signal, stderrTail: redactText(this.#stderrTail) });
+	}
+
+	#releaseHome(): void {
+		if (this.#stagedHome) removeStagedAcpHome(this.#stagedHome);
+		this.#stagedHome = undefined;
 	}
 }
 
@@ -628,26 +581,15 @@ export function translateError(method: string, err: unknown): Error {
 	if (err instanceof AcpAuthError) return err;
 	if (err instanceof JsonRpcResponseError) {
 		if (err.code === -32000) {
-			authInvalidatedHook?.();
 			const detail = typeof err.data === "object" && err.data !== null ? (err.data as { message?: unknown }).message : undefined;
 			const detailText = typeof detail === "string" ? `: ${detail}` : `: ${err.message}`;
-			return new AcpAuthError(`ACP authentication required for ${method}${detailText}. Run /agy auth to sign in; /agy auth-manual has manual steps.`);
+			return new AcpAuthError(`ACP authentication required for ${method}${detailText}. Run agy in your terminal and complete Google sign-in, then restart pi.`);
 		}
-		// Typed protocol errors survive: callers probe .code (-32601 cancel-
-		// unsupported, -32602 param shape). The method prefix is lost — describe()
+		// Typed protocol errors survive: callers inspect .code for parameter
+		// and capability failures. The method prefix is lost — describe()
 		// callers that need it log the method at the call site.
 		return err;
 	}
 	if (err instanceof Error) return err;
 	return new Error(`ACP ${method} failed: ${String(err)}`);
-}
-
-/** Resolve the server binary: env > config > PATH. Resolution failure is a
- *  visible turn error naming what was tried (plan §9.5). */
-/** Resolve the server binary: env > config > PATH. `~` expands to the home
- *  directory (spawn does not expand it). Resolution failure is a visible turn
- *  error naming what was tried (plan §9.5). */
-export function resolveAcpBinary(configBin: string): string {
-	const raw = process.env.AGY_ACP_BIN || (configBin.length > 0 ? configBin : "agy_acp_server.par");
-	return raw === "~" || raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(1)) : raw;
 }

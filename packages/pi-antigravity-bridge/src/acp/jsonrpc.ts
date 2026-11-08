@@ -4,7 +4,7 @@
 // serialized frame + newline to the child's stdin) and feeds incoming bytes to
 // `feed()`. Everything ACP-specific lives in connection.ts.
 //
-// Semantics verified live against agy_acp_server (20260818_01_RC01):
+// Semantics verified live against agy 1.5.3 ACP:
 //   - requests are correlated by numeric id; responses reject the pending
 //     promise on JSON-RPC `error` results;
 //   - server-to-client REQUESTS (session/request_permission, fs/*, terminal/*)
@@ -195,6 +195,11 @@ export class JsonRpcSession {
 			this.#pending.set(id, pending);
 			this.#send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params ?? {} }));
 		});
+	}
+
+	notify(method: string, params?: unknown): void {
+		if (this.#aborted) return;
+		this.#send(JSON.stringify({ jsonrpc: "2.0", method, params: params ?? {} }));
 	}
 
 	/** Reject every pending request (Gate D teardown). The transport is going

@@ -29,10 +29,10 @@ function touch(dir: string, name: string, bytes = 10, mtimeMs?: number): string 
 test("agyBrainRoot: per-engine scope, raw conversation id joins", () => {
 	const home = os.tmpdir();
 	assert.equal(agyBrainRoot("stream-json", home), path.join(home, ".gemini", "antigravity-cli", "brain"));
-	assert.equal(agyBrainRoot("acp", home), path.join(home, ".gemini", "antigravity-acp", "brain"));
+	assert.equal(agyBrainRoot("acp", home), path.join(home, ".gemini", "antigravity-cli", "brain"));
 	assert.equal(
 		agyConversationDir("acp", "36373b4d-1234", home),
-		path.join(home, ".gemini", "antigravity-acp", "brain", "36373b4d-1234"),
+		path.join(home, ".gemini", "antigravity-cli", "brain", "36373b4d-1234"),
 	);
 });
 

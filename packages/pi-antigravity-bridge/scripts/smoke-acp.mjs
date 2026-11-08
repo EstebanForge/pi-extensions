@@ -1,14 +1,12 @@
 // Live smoke for the ACP engine through OUR driver stack (AcpDriver).
 // Gated: AGY_ACP_LIVE=1 (spends a small amount of quota).
 //
-//   AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-//     node scripts/smoke-acp.mjs
+//   AGY_ACP_LIVE=1 npx tsx scripts/smoke-acp.mjs
 //
 // Verifies end-to-end: spawn -> initialize -> session/new -> set_config_option
 // (model) -> prompt streaming through events.ts -> result. No tools, no writes.
 
 import { AcpDriver } from "../src/acp/driver.js";
-import { resolveAcpBinary } from "../src/acp/connection.js";
 
 const scenario = process.argv[2] || "happy";
 
@@ -17,11 +15,13 @@ if (process.env.AGY_ACP_LIVE !== "1") {
 	process.exit(1);
 }
 
-const bin = resolveAcpBinary(process.env.AGY_ACP_BIN || "");
+const bin = process.env.AGY_BIN || "agy";
 console.log(`[smoke] bin: ${bin}`);
 
 const driver = new AcpDriver({
 	bin,
+	binArgs: ["acp"],
+	isolateHome: true,
 	log: (msg, data) => console.error(`[acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),
 });
 
@@ -29,7 +29,7 @@ const controller = new AbortController();
 const activities = [];
 const handle = await driver.run({
 	cwd: process.cwd(),
-	model: "gemini-3.7-flash",
+	model: "gemini-3.8-flash",
 	effort: "low",
 	mode: "accept-edits",
 	skipPermissions: true,

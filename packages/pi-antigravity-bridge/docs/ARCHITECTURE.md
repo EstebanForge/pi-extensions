@@ -77,16 +77,15 @@ By default the prompt agy receives is only the latest user message: agy keeps it
 
 The pre-1.3.0 engine (spawn `agy -p`, poll the SQLite conversation DB, decode protobuf step payloads) was removed in 1.3.2. agy 1.1.18 changed the step-row storage to a two-phase write (a metadata-only placeholder row that grows in place), which the polling decoder read once as an empty placeholder and never re-read: turns completed with the full reply in the database and zero text streamed to pi (issue #1, reported by @imatimba). The engine reverse-engineered an undocumented storage format, so every agy storage change risked repeating that silent failure. The stream-json engine shares none of that code path and is unaffected by storage-format changes. `AGY_ENGINE` and the `engine` config key are gone; a stale value in an existing `config.json` is ignored.
 
-## ACP engine (default, official server)
+## ACP engine (default, agy CLI)
 
-`config.engine: "acp"` (or `/agy engine acp`) routes turns through Google's
-official ACP server (`agy_acp_server.par`, registry id `antigravity-acp`)
-over JSON-RPC stdio. Off by default; stream-json remains the default. BOTH
-engines are permanently maintained peers (standing decision - no deletion,
-regardless of Gate B). Gate B (absent usage fields) is informational:
-zero-usage is documented on ACP. See docs/ACP-ADOPTION-PLAN.md section 17.
+`config.engine: "acp"` (or `/agy engine acp`) routes turns through `agy acp`
+over JSON-RPC stdio. The server ships in the required agy CLI and shares its
+cached credentials. Both engines remain maintained peers. The retired
+standalone server is never spawned; its marked managed builds are removed at
+startup and old binary overrides are ignored.
 
-Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/connection.ts`
+Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/home.ts` (private MCP config with shared CLI state), `src/acp/connection.ts`
 (process + protocol methods + parked permission answering),
 `src/acp/events.ts` (update mapping, pure), `src/acp/driver.ts`
 (`AcpDriver`). Both engines implement `TurnDriver`; `provider.ts` depends on
@@ -110,12 +109,13 @@ Phase-2/3 additions (all ACP-only, verified live):
   the first: Gate D kills + stale-exit replacements) and the handshake
   `agentInfo` name/title; `/agy doctor` surfaces both.
 
+Native agy inherits global MCP servers, so every ACP connection stages a private `--gemini-dir`. The staging directory links the shared CLI app-data and copies global MCP config without any `pi-bridge` or `pi-bridge-<pid>` entry. Foreign MCP servers remain available; another pi session cannot be called through this ACP process. Homes live under `~/.pi/agent/antigravity-bridge/acp-homes`, outside MCP server teardown. Connection exit removes the staged home; a pid-based startup sweep handles crash leftovers even when bridge tools are disabled.
+
 Engine-specific behavior: session ids are scoped per engine
-(`sid:<x>@acp`); model/effort ship as one full slug via
-`session/set_config_option` and are RE-APPLIED after every server restart
-(config does not persist); `session/load` history replay is swallowed (never
-live text); abort is teardown+kill+reload while `session/cancel` is
-unimplemented (RC01); usage tokens are absent (zero-usage fallback).
-Verified protocol shapes and the auth flow:
-docs/ACP-PROTOCOL-REFERENCE.md. Raw captures: `probe-logs/` (gitignored,
-local only).
+(`sid:<x>@acp`); model and thinking level ship as separate `model` and
+`thought_level` options and are re-applied after every server restart;
+`session/load` history replay is swallowed; abort sends the `session/cancel`
+notification and falls back to teardown if the prompt does not settle;
+agy 1.5.3 returns exact per-turn usage, with estimates retained as a fallback.
+The historical standalone-server captures remain in
+docs/ACP-PROTOCOL-REFERENCE.md for archaeology only.

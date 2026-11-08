@@ -1,46 +1,42 @@
 # Engines
 
-Turns run through one of two engines behind the same provider surface (`config.engine`, default `acp`). The choice of engine is left to the user: a first-run picker explains the trade-offs and asks once (acp preselected), and `/agy engine` (no arguments, TUI) reopens the same modal anytime. Direct switches work too: `/agy engine acp|stream-json`.
+Turns run through one of two engines behind the same provider surface (`config.engine`, default `acp`). A first-run picker explains the choices, and `/agy engine` reopens it. Direct switches work too: `/agy engine acp|stream-json`. Restart applies the switch.
 
-- **acp** (default): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display runs on live client-side estimates via `acp.usageEstimate`, default `estimate`, streamed per delta and superseded automatically the day the server starts sending real per-turn usage) and no cancel (abort tears the server down and reloads it next turn).
-- **stream-json** (fallback): the persistent `agy` CLI process. Live token usage; conversation resume via `--conversation`.
+Both engines require the same `agy` CLI installation and use its cached Google credentials. There is no separate ACP binary or second sign-in.
 
-## First run
+- **acp** (default): `agy acp`, JSON-RPC 2.0 over stdio. Verified live on agy 1.5.3 with text streaming, exact token usage, session resume, bridge tools, separate model/thinking options, and notification-based cancellation.
+- **stream-json** (fallback): a persistent `agy` CLI process using the stream-json protocol. Live token usage and conversation resume via `--conversation`.
 
-On a fresh install (no `config.json` yet), the first interactive pi start opens a picker modal that explains both engines - stream-json needs the `agy` CLI installed and authenticated; ACP needs a second Google sign-in plus a ~1.5 GB server binary downloaded from Google. stream-json is preselected (the default); `esc` decides later (nothing is written, the modal reappears on the next start).
+## First run and CLI setup
 
-Picking **acp** starts the server download immediately (progress in the status bar, milestones in the chat), then opens the Google sign-in; a restart applies the engine. Picking **stream-json** persists and toasts; while that engine is active and the `agy` binary is missing, pi warns on every start with the install link until the binary shows up.
+On a fresh install, the first interactive pi start opens the engine picker. `acp` is preselected; `esc` decides later and writes nothing.
+
+If `agy` is missing, interactive pi asks once per process before running Google's official installer without blocking bridge startup. Linux and macOS run `set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | bash`. Windows PowerShell runs `irm https://antigravity.google/cli/install.ps1 | iex`. Headless sessions print instructions once and never install automatically. A bad explicit `AGY_BIN` gets correction instructions instead of a useless install.
+
+After installation, the bridge verifies that agy is available, then asks you to run `agy` in a terminal, complete Google sign-in, and restart pi. ACP requires agy 1.5.3 or newer. An older installation triggers the same confirmed installer offer. `/agy engine acp` checks availability immediately.
+
+Existing installs clean up the retired ACP server only under `~/.local/opt/agy-acp`. A build must contain `agy_acp_server.par` plus `zip.sha256`, the unpacked `localharness_external` directory, or a matching interrupted `.download-<build>.zip` archive. Interrupted archives and empty build directories are removed too. The managed `current` symlink is removed with those builds. Unmarked binaries, unrelated files, and custom installation paths stay untouched. Legacy `acp.bin` and `AGY_ACP_BIN` overrides produce a warning, are ignored, and are removed from saved config on the next config write. Retired `~/.gemini/antigravity-acp` credentials are not deleted automatically; `/agy doctor` identifies them for manual removal.
 
 ## Capabilities
 
-| Capability | `stream-json` (default) | `acp` (beta) |
+| Capability | `stream-json` | `acp` |
 | --- | --- | --- |
-| Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
-| Live token usage | Yes (live metrics from CLI step events) | Live client-side estimates (absent in RC01; `acp.usageEstimate`, default `estimate`, streamed per delta, superseded automatically by real per-turn usage when the server starts sending it) |
-| Image prompt input | No native blocks (the CLI prompt is text-only); user-attached images stage to per-turn temp files with a prompt note and arrive through the bridge read tool (`src/prompt-images.ts`) | Yes (native image blocks forwarded to server) |
-| Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
-| Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |
-| Review-only plan mode | Refused on provider turns; the CLI does not gate writes under plan (upstream [#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181), probed 2026-10-07: the write executes in the same turn with `permission_mode: "request-review"` reported). The ask tool's plan runs add a restricted agent as a damper. | No (RC01 modes are permission levels; plan mode refused) |
-| Leading slash commands in prompt | Disabled via `--disable-slash-commands` (sent as plain text) | Server intercepts recognized commands (e.g. `/plan`) and executes them under the active policy |
-| Dynamic model / effort switch | Recycles process on model or effort change | Dynamic per-turn via `session/set_config_option` (no restart) |
-| Process lifecycle | 1 persistent `agy` process per provider; recycles on drift | 1 persistent server process hosting N sessions concurrently |
-| Session resume & persistence | Client-side map in `sessions.json` via `--conversation <id>` | Server-side session store via `session/load` and `session/new` |
-| Turn cancel / abort | Kills process group; in-flight turn terminates | Teardown, kill, and auto-reload on RC01 (-32601 fallback) |
-| MCP tool bridge routing | Injected filesystem config via `--add-dir` | Direct `mcpServers` param in `session/new` and `session/load` |
-| Tool execution & visibility | Native re-exec (read-only) + wrapper replay (mutating) | Server executes tools natively; steps render as display-only cards in pi (path/diff/command + output) |
-| Inline file edit diffs | Sourced from git working tree in thinking block | Sourced from `tool_call content[]` or disk vs git HEAD |
-| Permission handling | `--dangerously-skip-permissions` (unattended CLI requirement) | Protocol-native `session/request_permission` (auto-approve when `skipPermissions` is on; auto-deny when off) |
-| Context digest delivery (G1) | Prepend plain text inline in prompt | Native `embeddedContext` resource block |
-| System prompt delivery (G10) | Staged agy agent file via `--agent` (content-addressed dir under the agents root, write-once; the prompt line carries only the user text; the frontmatter declares `subagent: false` + `agents: []`, masking the native subagent tools - issue #7) | Prepend to first prompt of conversation |
-| Authentication methods | Inherits existing `agy` CLI OAuth state | 4 methods: `oauth-personal`, `oauth-business`, `gemini-api-key`, `agent-platform` |
-| Wire protocol | Undocumented CLI NDJSON stream format | Versioned JSON-RPC 2.0 over stdio (`protocolVersion: 1`) |
-| Diagnostics (`/agy doctor`) | Child PID, state, process spawns, recycles, queue stats | Server version, agentInfo, session counts, reconnect count, cancel support |
-| Integration channel | Spawns internal CLI stream-json dialect | Official Google first-party ACP server binary |
+| Show thinking text | No (token count only) | Yes, when the server sends thought chunks |
+| Token usage | Live CLI metrics | Exact server usage; client estimates remain a fallback |
+| Image prompt input | Staged temp files plus bridge read tool | Native image blocks |
+| Image tool results | Yes | Yes |
+| Review-only provider turns | Refused; the CLI does not enforce plan read-only | Refused by the bridge |
+| Dynamic model / effort switch | Recycles process on drift | Per-turn `model` and `thought_level` config options |
+| Process lifecycle | Persistent `agy` process | Persistent `agy acp` process |
+| Session resume | `--conversation <id>` | `session/load` and `session/new` |
+| Turn cancel | Kills process group | `session/cancel` notification, with teardown fallback |
+| MCP tool bridge | Filesystem config via `--add-dir` | Direct `mcpServers` plus a sanitized private MCP home |
+| Tool visibility | Native re-exec plus wrapper replay | Display-only native tool cards |
+| Context digest | Inline prompt text | `embeddedContext` resource block |
+| System prompt | Staged agy agent file | Prepended to the first prompt |
+| Authentication | Shared `agy` CLI credentials | Shared `agy` CLI credentials |
+| Wire protocol | CLI NDJSON stream | JSON-RPC 2.0 over stdio |
 
-## Engine-dependent features
+## Switching and authentication
 
-pi image attachments ride natively only on the ACP engine; on stream-json they stage to per-turn temp files (mode 0600, 24h sweep) and the pixels arrive through the bridge read tool result, so both engines accept image attaches. With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text. The G10 system prompt likewise splits: stream-json stages it as an agent file passed via `--agent` because the CLI silently drops any single prompt past a ~25KB input cap (a dropped turn answers empty and the conversation never responds again), while ACP prepends it to the first prompt of the conversation. The `AskAntigravity` delegation tool is unaffected by `config.engine` and runs the `stream-json` CLI (`agy -p`) across both configurations.
-
-## Switching and setup
-
-Switch with `/agy engine acp|stream-json` (takes effect on restart), or run `/agy engine` with no arguments for the same picker modal as first run (an `acp` pick there runs the same download + sign-in chain). Setup is automatic: switching to `acp` installs Google's official ACP server binary from the [antigravity-acp registry entry](https://github.com/agentclientprotocol/registry) (`~/.local/opt/agy-acp/<build>/` + a `current` symlink, zip sha256 recorded; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](ACP-ADOPTION-PLAN.md)) and prepares the login. The login is your Antigravity subscription: the same account and plan you use for the Antigravity CLI (`agy`). Sign in explicitly with `/agy auth` (engine `acp` selected): it opens the Google login in your browser and completes when you finish it. If no browser is available (an SSH session on a remote machine), pi shows the sign-in URL to copy, plus the ssh port-forward command for the login redirect. It is no different from logging into the CLI; the server just keeps its own token file on your machine, like any Google tool, and this extension never sees your credentials. If you also export `GEMINI_API_KEY`, it is ignored: the server uses the auth type in settings.json, and setup always writes `oauth-personal`. A session start self-heals the same way, silently when everything is ready. Manual instructions (`/agy auth-manual`) surface only when a step fails. Sessions are engine-scoped, so switching engines never crosses conversations.
+Switch with `/agy engine acp|stream-json`, then restart pi. `/agy auth` and `/agy auth-manual` show the shared CLI authentication instructions. `/agy doctor` checks the CLI version and reports the active ACP server version without spending tokens. Sessions are engine-scoped, so switching engines never crosses conversations.

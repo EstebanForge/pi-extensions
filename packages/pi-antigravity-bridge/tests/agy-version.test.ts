@@ -16,6 +16,7 @@ import {
 	checkAgyCliVersion,
 	compareVersionTuples,
 	describeAgyVersionCheck,
+	MIN_AGY_ACP_VERSION,
 	MIN_AGY_VERSION,
 	parseAgyVersionTriple,
 	resetAgyVersionCache,
@@ -86,6 +87,12 @@ test("agyVersionVerdict: custom floor", () => {
 });
 
 // --- checkAgyCliVersion (fake binaries) --------------------------------------
+
+test("native ACP requires an agy version that ships agy acp", () => {
+	assert.equal(MIN_AGY_ACP_VERSION, "1.5.3");
+	assert.equal(agyVersionVerdict("1.5.2", MIN_AGY_ACP_VERSION).status, "unsupported");
+	assert.equal(agyVersionVerdict("1.5.3", MIN_AGY_ACP_VERSION).status, "ok");
+});
 
 test("checkAgyCliVersion: ok, unsupported, development, invalid", async () => {
 	assert.equal((await checkAgyCliVersion(makeFakeBinary("1.2.10"))).status, "ok");

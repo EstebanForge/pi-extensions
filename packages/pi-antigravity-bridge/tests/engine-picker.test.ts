@@ -65,15 +65,12 @@ test("picker: only the exact engine literals count; anything else falls to the a
 	assert.equal(toEngine("sqlite"), "acp");
 });
 
-test("picker: saved-engine toast names the download-now and sign-in promise", () => {
+test("picker: saved-engine toast requires only the authenticated agy CLI", () => {
 	assert.match(savedEngineMessage("stream-json"), /Restart pi to apply/);
 	const acp = savedEngineMessage("acp");
-	// The pick must promise immediacy: download starts now, sign-in follows
-	// it, only the engine switch waits for the restart.
-	assert.match(acp, /~1\.5 GB/);
-	assert.match(acp, /downloads now/);
-	assert.match(acp, /sign-in opens when it lands/);
+	assert.match(acp, /agy acp/);
 	assert.match(acp, /Restart applies the engine/);
+	assert.doesNotMatch(acp, /download|sign-in/i);
 });
 
 test("picker: showEnginePicker resolves the picked engine, undefined on esc", async () => {
@@ -134,11 +131,9 @@ test("picker: missing-agy toast carries the official install URL", () => {
 test("picker: intro explains both engines' constraints", () => {
 	assert.match(ENGINE_PICKER_INTRO, /agy` CLI/);
 	assert.match(ENGINE_PICKER_INTRO, /authenticated/);
-	assert.match(ENGINE_PICKER_INTRO, /official server/);
-	assert.match(ENGINE_PICKER_INTRO, /second Google sign-in/);
-	// The download is the ACP engine's main cost; the pin keeps it disclosed.
-	assert.match(ENGINE_PICKER_INTRO, /~1\.5 GB/);
-	assert.match(ENGINE_PICKER_INTRO, /unavoidable/);
+	assert.match(ENGINE_PICKER_INTRO, /agy acp/);
+	assert.match(ENGINE_PICKER_INTRO, /same installation and Google sign-in/);
+	assert.doesNotMatch(ENGINE_PICKER_INTRO, /second Google sign-in|1\.5 GB|unavoidable/);
 	assert.match(ENGINE_PICKER_INTRO, /\/agy engine/);
 	// Tool-result images ride BOTH engines since the gate widening
 	// (probe-verified 2026-09-07); the old "adds image input" claim painted

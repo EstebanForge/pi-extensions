@@ -1,11 +1,9 @@
 // First-run onboarding: the engine picker plus the agy-presence warning.
 //
 // On the first interactive start (no config file yet, no AGY_ENGINE env) pi
-// asks which turn engine to use: the stream-json `agy` CLI or Google's
-// official ACP server. The choice persists via saveConfig({ engine }) and,
+// asks which native agy engine to use: stream-json or `agy acp`. The choice persists via saveConfig({ engine }) and,
 // like /agy engine, takes effect on the next pi start (drivers wire at load).
-// Every start with the stream-json engine active also re-checks that the
-// `agy` binary exists and warns until it does (re-auth is out of scope).
+// Startup checks the CLI once per process and offers setup when needed.
 //
 // UI: the shared framed choice modal from @estebanforge/pi-tui-dialogs
 // (dialogChoice): one decision statement, a closed option list, esc cancels.
@@ -21,8 +19,8 @@ import { DEFAULT_ENGINE, type Engine } from "./config.js";
 export const ENGINE_PICKER_ITEMS: ChoiceOption[] = [
 	{
 		value: "acp",
-		label: "ACP server (official Google)",
-		description: "default · official Google server",
+		label: "ACP (agy acp)",
+		description: "default · ACP server in the agy CLI",
 	},
 	{
 		value: "stream-json",
@@ -36,7 +34,7 @@ export const ENGINE_PICKER_ITEMS: ChoiceOption[] = [
 export const ENGINE_PICKER_INTRO = [
 	"Pick the engine that runs your Antigravity turns. Switch anytime with /agy engine (restart applies it).",
 	"",
-	"ACP (default): Google's official server (agy_acp_server.par). Needs a second Google sign-in and a ~1.5 GB server binary downloaded from Google (automatic, one-time, unavoidable: the server is not part of the agy CLI).",
+	"ACP (default): `agy acp`, the ACP server built into the agy CLI. Uses the same installation and Google sign-in as the CLI.",
 	"stream-json (fallback): the `agy` CLI you already installed and authenticated. Persistent process, streamed output.",
 ].join("\n");
 
@@ -63,12 +61,10 @@ export function toEngine(value: string): Engine {
 	return value === "acp" || value === "stream-json" ? value : DEFAULT_ENGINE;
 }
 
-/** Toast copy shown after the choice is saved. ACP names the promise that
- *  matters: the binary download starts NOW (not on restart), sign-in follows
- *  when it lands, restart applies the engine. */
+/** Toast copy shown after the choice is saved. */
 export function savedEngineMessage(engine: Engine): string {
 	return engine === "acp"
-		? "Engine saved: acp. The ~1.5 GB server binary downloads now; the Google sign-in opens when it lands. Restart applies the engine."
+		? "Engine saved: acp. Turns will use `agy acp` and your existing CLI authentication. Restart applies the engine."
 		: "Engine saved: stream-json. Restart pi to apply.";
 }
 
@@ -84,7 +80,7 @@ export function engineSettingsRow(engine: Engine): DialogRow {
 		id: ENGINE_SETTINGS_ROW_ID,
 		label: "Switch engine",
 		description:
-			"Open the engine picker (stream-json CLI vs the official ACP server). Enter opens it and closes settings; esc in the picker changes nothing. Restart applies a switch.",
+			"Open the engine picker (stream-json CLI vs agy acp). Enter opens it and closes settings; esc in the picker changes nothing. Restart applies a switch.",
 		currentValue: engine,
 	};
 }

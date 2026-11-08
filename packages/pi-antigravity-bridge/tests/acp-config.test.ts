@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadConfig, saveConfig } from "../src/config.js";
+import { legacyAcpBinConfigured, loadConfig, saveConfig } from "../src/config.js";
 
 function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-cfg-")), "config.json");
@@ -21,7 +21,7 @@ test("engine defaults to acp (stream-json is the fallback)", () => {
 	try {
 		const c = loadConfig(p);
 		assert.equal(c.engine, "acp");
-		assert.equal(c.acp.bin, "");
+		assert.deepEqual(Object.keys(c.acp), ["usageEstimate"]);
 	} finally {
 		rm(p);
 	}
@@ -61,8 +61,7 @@ test("a legacy config file without an engine key keeps stream-json", () => {
 	try {
 		// saveConfig always writes the engine key whole; a file missing it
 		// predates the key, i.e. an existing install. The acp default is for
-		// new installs only - an existing install must not silently start
-		// the ~1.5 GB acp binary download.
+		// new installs only; existing installs keep their engine.
 		fs.writeFileSync(p, JSON.stringify({ mode: "accept-edits" }));
 		assert.equal(loadConfig(p).engine, "stream-json");
 	} finally {
@@ -124,12 +123,20 @@ test("escalateLongTools: junk file shapes fall back to empty, strings and env st
 	}
 });
 
-test("AGY_ACP_BIN env overrides acp.bin", () => {
+test("legacy ACP binary overrides are ignored and dropped on save", () => {
 	const p = tmpConfig();
 	const prev = process.env.AGY_ACP_BIN;
 	process.env.AGY_ACP_BIN = "/opt/agy-acp/server.par";
 	try {
-		assert.equal(loadConfig(p).acp.bin, "/opt/agy-acp/server.par");
+		fs.writeFileSync(p, JSON.stringify({ acp: { bin: "/opt/old-server.par", usageEstimate: "estimate" } }));
+		assert.equal("bin" in loadConfig(p).acp, false);
+		assert.equal(legacyAcpBinConfigured(p), true);
+		saveConfig({ digest: true }, p);
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> };
+		assert.equal("bin" in raw.acp, false);
+		assert.equal(legacyAcpBinConfigured(p), true, "environment override still needs a warning");
+		delete process.env.AGY_ACP_BIN;
+		assert.equal(legacyAcpBinConfigured(p), false);
 	} finally {
 		if (prev === undefined) delete process.env.AGY_ACP_BIN;
 		else process.env.AGY_ACP_BIN = prev;
@@ -137,15 +144,20 @@ test("AGY_ACP_BIN env overrides acp.bin", () => {
 	}
 });
 
-test("acp.bin persists through saveConfig", () => {
+test("empty legacy ACP binary defaults do not trigger migration warnings", () => {
 	const p = tmpConfig();
+	const prev = process.env.AGY_ACP_BIN;
 	try {
-		saveConfig({ acp: { bin: "~/.local/opt/agy-acp/current/agy_acp_server.par", usageEstimate: "estimate" } }, p);
-		assert.equal(loadConfig(p).acp.bin, "~/.local/opt/agy-acp/current/agy_acp_server.par");
-		saveConfig({ digest: true }, p);
-		assert.equal(loadConfig(p).acp.bin, "~/.local/opt/agy-acp/current/agy_acp_server.par");
-		assert.equal(loadConfig(p).digest, true);
+		fs.writeFileSync(p, JSON.stringify({ acp: { bin: "", usageEstimate: "estimate" } }));
+		delete process.env.AGY_ACP_BIN;
+		assert.equal(legacyAcpBinConfigured(p), false);
+		process.env.AGY_ACP_BIN = "";
+		assert.equal(legacyAcpBinConfigured(p), false);
+		process.env.AGY_ACP_BIN = "  ";
+		assert.equal(legacyAcpBinConfigured(p), false);
 	} finally {
+		if (prev === undefined) delete process.env.AGY_ACP_BIN;
+		else process.env.AGY_ACP_BIN = prev;
 		rm(p);
 	}
 });
@@ -154,7 +166,7 @@ test("usageEstimate defaults to estimate; unknown values fall back", () => {
 	const p = tmpConfig();
 	try {
 		assert.equal(loadConfig(p).acp.usageEstimate, "estimate");
-		saveConfig({ acp: { bin: "", usageEstimate: "direct" } }, p);
+		saveConfig({ acp: { usageEstimate: "direct" } }, p);
 		assert.equal(loadConfig(p).acp.usageEstimate, "direct");
 		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
 		const acpRaw = raw.acp as Record<string, unknown>;
@@ -181,7 +193,7 @@ test("AGY_USAGE_ESTIMATE env overrides acp.usageEstimate", () => {
 	}
 });
 
-test("legacy acp.permissions key is ignored on load and dropped on save", () => {
+test("legacy acp keys are ignored on load and dropped on save", () => {
 	const p = tmpConfig();
 	try {
 		fs.writeFileSync(
@@ -190,10 +202,12 @@ test("legacy acp.permissions key is ignored on load and dropped on save", () => 
 		);
 		const c = loadConfig(p);
 		assert.equal("permissions" in c.acp, false);
+		assert.equal("bin" in c.acp, false);
 		saveConfig({ digest: true }, p);
 		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
 		const acpRaw = raw.acp as Record<string, unknown>;
 		assert.equal("permissions" in acpRaw, false);
+		assert.equal("bin" in acpRaw, false);
 	} finally {
 		rm(p);
 	}

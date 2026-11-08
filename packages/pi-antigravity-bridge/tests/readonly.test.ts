@@ -173,7 +173,7 @@ test("provider: /agy mode plan is refused on stream-json too (probed: writes exe
 	});
 });
 
-test("provider: plan turn is refused on ACP (RC01, unified message)", async () => {
+test("provider: plan turn is refused on ACP (unified message)", async () => {
 	await withEnvs({ AGY_READONLY: "0", AGY_MODE: "plan" }, async () => {
 		const { opts, events } = await captureTurn("acp");
 		assert.equal(opts, undefined);
@@ -395,7 +395,7 @@ test("saveConfig: env overrides are not baked into the file; null nested keys to
 			assert.equal(raw.readOnly, false, "env-derived values must not persist to disk");
 			assert.equal(raw.mode, "accept-edits");
 			// The null nested objects were normalized instead of crashing.
-			assert.deepEqual(raw.acp, { bin: "", usageEstimate: "estimate" });
+			assert.deepEqual(raw.acp, { usageEstimate: "estimate" });
 			assert.deepEqual(raw.approvals, { gateMode: "auto", mode: "ask" });
 		});
 	} finally {

@@ -95,6 +95,47 @@ describe("acp/events mapUpdate", () => {
 		assert.deepEqual(mapped.args, { text: "PROBE-9" });
 	});
 
+	test("native agy MCP name preserves bridge identity and clean tool name", () => {
+		const start = mapUpdate({
+			sessionUpdate: "tool_call",
+			toolCallId: "call-native",
+			name: "mcp_pi-bridge_bridge_echo",
+			title: "Run mcp_pi-bridge_bridge_echo",
+			kind: "other",
+			status: "in_progress",
+			rawInput: { text: "RAW-FRAME-1", toolSummary: "Echo text" },
+		});
+		assert.ok(start && start.kind === "tool_start");
+		if (start.kind === "tool_start") {
+			assert.equal(start.name, "bridge_echo");
+			assert.equal(start.mcpServer, "pi-bridge");
+			assert.deepEqual(start.args, { text: "RAW-FRAME-1", toolSummary: "Echo text" });
+		}
+		const done = mapUpdate({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "call-native",
+			name: "mcp_pi-bridge_bridge_echo",
+			status: "completed",
+			rawOutput: "ECHO:RAW-FRAME-1",
+		});
+		assert.deepEqual(done, { kind: "tool_done", toolCallId: "call-native", output: "ECHO:RAW-FRAME-1", mcpServer: "pi-bridge" });
+	});
+
+	test("unknown native MCP names are not guessed from server prefixes or titles", () => {
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call",
+			toolCallId: "call-foreign",
+			name: "mcp_my_server_hyphen-tool",
+			title: "Run arbitrary display text",
+			kind: "other",
+			status: "in_progress",
+		});
+		assert.ok(mapped && mapped.kind === "tool_start");
+		if (mapped.kind !== "tool_start") return;
+		assert.equal(mapped.name, "mcp_my_server_hyphen-tool");
+		assert.equal(mapped.mcpServer, undefined);
+	});
+
 	test("completed tool content[] wins over rawOutput", () => {
 		// Probe: rawOutput was the display title while content[] carried the
 		// real payload text.
@@ -188,7 +229,7 @@ describe("acp/events mapUpdate", () => {
 	});
 
 	test("tool_call_update failed maps to tool_error with the raw output as message", () => {
-		// A GENUINE failure (not the RC01 approved-echo sentinel, which has its
+		// A GENUINE failure (not the legacy approved-echo sentinel, which has its
 		// own suppression test above).
 		const mapped = mapUpdate({
 			sessionUpdate: "tool_call_update",

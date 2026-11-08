@@ -1,5 +1,7 @@
 # ACP Protocol Reference — `antigravity-acp` (verified live)
 
+> Historical RC01 record only. Current transport truth: agy 1.5.3 uses separate `model` and `thought_level` options, exact PromptResponse.usage, and notification-based `session/cancel`. Do not use this document to configure new installs.
+
 Everything below was verified LIVE on 2026-09-03 against the official Google
 ACP server, build `agy_acp_server_20260818_01_RC01` (registry id
 `antigravity-acp`, v1.0.0), linux-x86_64, on a headless Fedora box. Raw

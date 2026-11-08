@@ -7,16 +7,15 @@
 // `agy --version`, memoized per binary because discovery already spawns agy
 // once per load and the version will not change mid-process.
 //
-// The ACP server reports its own version at initialize (agentInfo.version,
-// e.g. "agy_acp_server_1.1.1") and /agy doctor already prints it. ACP build
-// numbering is a different lineage from the CLI, so no floor is enforced
-// there: the one known-good build must not be locked out by a CLI number.
+// The ACP server reports the CLI version at initialize. agy acp has its own
+// floor because older CLI releases do not ship the subcommand.
 
 import { spawn } from "node:child_process";
 
 /** Floor for the stream-json CLI. Matches the protocol grammar our driver
  *  and the event mapping rely on; older agy predates verified fields. */
 export const MIN_AGY_VERSION = "1.1.22";
+export const MIN_AGY_ACP_VERSION = "1.5.3";
 
 const VERSION_TIMEOUT_MS = 5_000;
 

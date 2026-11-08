@@ -1,7 +1,8 @@
 // Live probe: does the ACP server deliver MCP tool-result IMAGE content to the
 // model? Gated: AGY_ACP_LIVE=1 (spends quota).
 //
-//   AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+//   AGY_ACP_LIVE=1 npx tsx scripts/probe-acp-image-result.mjs
+//
 //     npx tsx scripts/probe-acp-image-result.mjs
 //
 // Context (2026-09-05): bridge `read` of an image file drops the image block
@@ -17,14 +18,14 @@
 
 import fs from "node:fs";
 import zlib from "node:zlib";
-import { AcpConnection, resolveAcpBinary } from "../src/acp/connection.js";
+import { AcpConnection } from "../src/acp/connection.js";
 import { startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
 
 if (process.env.AGY_ACP_LIVE !== "1") {
 	console.error("refusing to run: set AGY_ACP_LIVE=1 (spends quota)");
 	process.exit(1);
 }
-const bin = resolveAcpBinary(process.env.AGY_ACP_BIN || "");
+const bin = process.env.AGY_BIN || "agy";
 console.log(`[probe] bin: ${bin}`);
 
 // --- raw frame log ------------------------------------------------------------
@@ -137,6 +138,8 @@ const mcpServers = () => [
 let answer = "";
 const conn = new AcpConnection({
 	bin,
+	binArgs: ["acp"],
+	isolateHome: true,
 	cwd: process.cwd(),
 	mcpServers,
 	log: (msg, data) => console.error(`[acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),

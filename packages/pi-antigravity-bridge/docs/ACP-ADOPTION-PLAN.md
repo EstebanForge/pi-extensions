@@ -1,5 +1,7 @@
 # ACP Adoption Plan: Official Google `antigravity-acp` Server
 
+> Historical record only. The bridge now uses `agy acp` from the CLI exclusively. The standalone binary, registry installer, separate credentials, binary overrides, and RC01 protocol details below are retired.
+
 Status: PROPOSED. Phase 0 COMPLETE + Phase 1 COMPLETE (2026-09-03): ACP engine
 implemented behind `config.engine` (default off), full suite green, live smoke
 PASS through the full stack. Gate F VERIFIED live (`scripts/smoke-acp-bridge.mjs`):

@@ -5,14 +5,11 @@
 // Engine differences vs stream-json, all verified live (docs/ACP-PROTOCOL-REFERENCE.md):
 //   - no process recycle on profile drift: one server process, sessions
 //     selected per turn via session/new / session/load
-//   - model/effort via session/set_config_option (configId "model", FULL slug
-//     with the effort tier baked in); mode via configId "mode"
+//   - model and thought_level are separate session/set_config_option calls
 //   - config does NOT persist across server restarts: re-applied every turn
 //   - session/load replays history as full-text notification pairs BEFORE its
 //     response; the connection suppresses updates while loading
-//   - session/cancel is unimplemented on RC01 (-32601): abort = abortAll()
-//     teardown + kill, then session/load on the next turn. The method is
-//     probed once per connection; when upstream ships it, abort goes graceful
+//   - session/cancel is a notification; teardown remains the safety net
 //   - overall-timer pause uses remaining-budget semantics on G9 parks (never a
 //     fresh cap); every park carries its own timeout (BRIDGE_TIMEOUT_MS)
 //   - request_permission: skipPermissions turns answer the first allow option
@@ -23,7 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
-import { AcpConnection, resolveAcpBinary, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
+import { AcpConnection, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
 import type { AcpPermissionHandler } from "./connection.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
@@ -41,18 +38,13 @@ import type {
 const LIFECYCLE_LIMIT = 24;
 
 export interface AcpDriverOptions {
-	/** Config acp.bin value (may be empty). Env AGY_ACP_BIN wins. A function
-	 *  is resolved per connection: setup can install the binary and update
-	 *  config mid-session, and the next turn picks it up without a restart. */
+	/** agy CLI binary. Tests may substitute node with a fake-server script. */
 	bin: string | (() => string);
-	/** Extra argv for the binary (tests: node + fake-server script). A
-	 *  function is resolved per connection, like bin, so registry args from a
-	 *  mid-session managed install apply without a restart. */
+	/** Extra argv (production: ["acp"]; tests: fake-server script). */
 	binArgs?: string[] | (() => string[]);
+	/** Native agy only: isolate inherited global MCP from other pi sessions. */
+	isolateHome?: boolean;
 	extraEnv?: Record<string, string>;
-	/** Record file for BROWSER-captured OAuth URLs; passed to the connection,
-	 *  which logs "auth-url" when the server tries to open a login. */
-	authUrlFile?: string;
 	/** Bridge registration for session/new AND session/load. */
 	mcpServers?: () => AcpMcpServer[];
 	/** Gate B stopgap: how ACP turns synthesize usage while the server sends
@@ -110,24 +102,13 @@ interface ActiveTurn {
 	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }>;
 }
 
-/** Recombine the provider's (base slug, effort) into the FULL ACP model slug.
- *  Fixed families (no effort) pass through unchanged. Verified against the
- *  run-5 catalog: session/set_config_option wants "gemini-3.8-flash-low"-style
- *  full slugs. */
-export function acpModelSlug(model: string, effort?: string): string {
-	if (!effort) return model;
-	if (/(?:^|-)(?:high|medium|low)$/.test(model)) return model;
-	return `${model}-${effort}`;
-}
-
 /** Map our config knobs onto ACP session modes. skipPermissions=false also
  *  fail-closes the in-connection permission handler (reject options), so the
- *  modes keep their server-side meaning. Known gap: the CLI's `--mode plan`
- *  has no ACP equivalent (review 4, finding 4) — plan + acp is refused at the
- *  command level and fails the turn visibly. */
+ *  modes keep their server-side meaning. Provider plan turns are refused
+ *  because agy does not enforce review-only writes. */
 export function acpMode(mode: string, skipPermissions: boolean): string {
-	if (skipPermissions) return "yolo";
-	return mode === "plan" ? "default" : "auto_edit";
+	if (skipPermissions) return "accept-edits";
+	return mode === "plan" ? "plan" : mode === "accept-edits" ? "accept-edits" : "default";
 }
 
 export class AcpDriver implements TurnDriver {
@@ -148,12 +129,11 @@ export class AcpDriver implements TurnDriver {
 	};
 	#serverVersion: string | undefined;
 	#lastSessionId: string | undefined;
-	#lastCancelSupported: boolean | null = null;
 	#agentInfo: { name?: string; title?: string } | undefined;
 
 	constructor(opts: AcpDriverOptions) {
 		this.#opts = opts;
-		this.#log("driver-created", { bin: typeof opts.bin === "function" ? "(resolved per turn)" : resolveAcpBinary(opts.bin) });
+		this.#log("driver-created", { bin: typeof opts.bin === "function" ? "(resolved per turn)" : opts.bin });
 	}
 
 	get state(): DriverState {
@@ -334,7 +314,8 @@ export class AcpDriver implements TurnDriver {
 		// are a parity break); mode failure is best-effort (auto policy makes
 		// the modes converge anyway).
 		try {
-			await conn.setConfigOption(turn.sessionId, "model", acpModelSlug(request.model, request.effort));
+			await conn.setConfigOption(turn.sessionId, "model", request.model);
+			if (request.effort) await conn.setConfigOption(turn.sessionId, "thought_level", request.effort);
 		} catch (err) {
 			this.#failTurn(turn, `ACP model selection failed: ${describe(err)}`);
 			return;
@@ -349,9 +330,8 @@ export class AcpDriver implements TurnDriver {
 		// Timers: overall (turn deadline, pause-aware) + idle (inactivity).
 		this.#armOverall(turn);
 		this.#armIdle(turn);
-		// Live usage is explicitly an estimate: ACP 1.1.1 does not forward the
-		// SDK's exact usage_metadata onto the ACP wire. Emit input first; output
-		// estimates advance with each text/thought delta below.
+		// Estimates cover servers without exact PromptResponse.usage. Native
+		// agy replaces them with exact counts when the prompt completes.
 		this.#emitLiveEstimate(turn);
 
 		// Prompt. Updates stream through the connection's onUpdate callback.
@@ -476,9 +456,8 @@ export class AcpDriver implements TurnDriver {
 
 	#onConnectionExit(conn: AcpConnection, info: { code: number | null; signal: string | null; stderrTail: string }): void {
 		if (this.#conn !== conn) {
-			// A replaced connection reporting its death late (RC01's signal
-			// handler intercepts SIGTERM and can outlive its replacement by
-			// seconds): its turn is long gone and the new connection owns the
+			// A replaced connection can report its death after the replacement
+			// spawns: its turn is long gone and the new connection owns the
 			// driver state. Clobbering #conn here would orphan the live one.
 			this.#log("stale-connection-exited", { tail: info.stderrTail.slice(-200) });
 			return;
@@ -520,10 +499,10 @@ export class AcpDriver implements TurnDriver {
 		this.#state = "starting";
 		this.#stats.spawns += 1;
 		const conn = new AcpConnection({
-			bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin),
+			bin: typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin,
 			binArgs: typeof this.#opts.binArgs === "function" ? this.#opts.binArgs() : this.#opts.binArgs,
+			isolateHome: this.#opts.isolateHome,
 			extraEnv: this.#opts.extraEnv,
-			authUrlFile: this.#opts.authUrlFile,
 			cwd: request.cwd,
 			mcpServers: this.#opts.mcpServers,
 			log: (msg, data) => this.#log(msg, data),
@@ -542,7 +521,7 @@ export class AcpDriver implements TurnDriver {
 			onExit: (info) => this.#onConnectionExit(conn, info),
 		});
 		this.#conn = conn;
-		this.#log("spawn", { bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin) });
+		this.#log("spawn", { bin: typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin });
 		return conn
 			.start()
 			.then(() => {
@@ -566,8 +545,7 @@ export class AcpDriver implements TurnDriver {
 			});
 	}
 
-	/** Gate D abort. RC01 has no session/cancel: probe it once per connection,
-	 *  then either wait for the cancelled result or tear down. */
+	/** Send native cancellation, then wait for the prompt or tear down. */
 	async #abortTurn(turn: ActiveTurn): Promise<void> {
 		if (turn.closed) return;
 		turn.aborted = true;
@@ -575,19 +553,12 @@ export class AcpDriver implements TurnDriver {
 		const conn = this.#conn;
 		// No session yet (killed during setup), no live connection, or a server
 		// already known not to implement cancel: teardown directly.
-		if (!conn?.alive || turn.sessionId === "" || !turn.promptStarted || this.#cancelUnsupported()) {
+		if (!conn?.alive || turn.sessionId === "" || !turn.promptStarted) {
 			this.#teardownAbort(turn);
 			return;
 		}
 		try {
-			const probe = await conn.cancel(turn.sessionId);
-			conn.cancelSupported = probe.supported;
-			this.#lastCancelSupported = probe.supported;
-			if (!probe.supported) {
-				this.#log("cancel-unsupported", { build: this.#serverVersion });
-				this.#teardownAbort(turn);
-				return;
-			}
+			conn.cancel(turn.sessionId);
 			// Cancel accepted: the prompt result (stopReason cancelled) settles
 			// the turn through the normal path. Safety net below in case the
 			// server never answers.
@@ -606,10 +577,6 @@ export class AcpDriver implements TurnDriver {
 			this.#log("cancel-failed", { message: describe(err) });
 			this.#teardownAbort(turn);
 		}
-	}
-
-	#cancelUnsupported(): boolean {
-		return this.#conn?.cancelSupported === false;
 	}
 
 	/** Gate D teardown: reject everything pending, kill the process. The turn
@@ -810,7 +777,7 @@ export class AcpDriver implements TurnDriver {
 		// Superseded only by EXACT PromptResponse.usage. Diagnostic usage-shaped
 		// frames (context windows, occupancy) must not silence the estimates:
 		// the connection outlives turns and no exact data ever replaces them
-		// on ACP 1.1.1 (peer review 2026-09-23).
+		// on servers without PromptResponse.usage.
 		if (this.#conn?.exactUsageSeen) return undefined;
 		return synthesizeUsage({
 			mode,
@@ -873,7 +840,6 @@ export class AcpDriver implements TurnDriver {
 				sessionsCreated: this.#stats.sessionsCreated,
 				sessionsLoaded: this.#stats.sessionsLoaded,
 				kills: this.#stats.kills,
-				cancelSupported: this.#conn?.cancelSupported ?? this.#lastCancelSupported,
 				serverVersion: this.#serverVersion,
 				// Connections beyond the first are server restarts (Gate D kills,
 				// stale-exit replacements) = reconnects.

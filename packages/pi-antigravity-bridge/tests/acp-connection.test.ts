@@ -7,7 +7,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test, describe } from "vitest";
-import { AcpConnection, setAuthInvalidatedHook, translateError } from "../src/acp/connection.js";
+import { fileURLToPath } from "node:url";
+import { AcpConnection, translateError } from "../src/acp/connection.js";
 import { JsonRpcResponseError } from "../src/acp/jsonrpc.js";
 
 test("acp connection: stderr tail and exit info are redacted", async () => {
@@ -96,37 +97,38 @@ test("acp connection: a stdout frame flood kills the connection instead of growi
 	fs.rmSync(dir, { recursive: true, force: true });
 }, 30_000);
 
-describe("acp connection auth-invalidated hook", () => {
-	test("a -32000 family error fires the hook exactly once", () => {
-		let fired = 0;
-		setAuthInvalidatedHook(() => {
-			fired += 1;
-		});
-		try {
-			const translated = translateError("session/prompt", new JsonRpcResponseError({ code: -32000, message: "Authentication required" }));
-			assert.equal(translated.name, "AcpAuthError");
-			assert.equal(fired, 1);
-		} finally {
-			setAuthInvalidatedHook(null);
-		}
+test("native ACP home survives until the agy process exits", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-home-kill-"));
+	const processDir = path.join(dir, "staging");
+	let notifyExit!: () => void;
+	const exited = new Promise<void>((resolve) => { notifyExit = resolve; });
+	const conn = new AcpConnection({
+		cwd: dir,
+		bin: process.execPath,
+		binArgs: [fileURLToPath(new URL("./helpers/fake-acp-server.mjs", import.meta.url))],
+		isolateHome: { geminiHome: path.join(dir, ".gemini"), parentDir: processDir },
+		log: () => {},
+		onUpdate: () => {},
+		onExit: notifyExit,
 	});
+	try {
+		fs.mkdirSync(path.join(dir, ".gemini", "config"), { recursive: true });
+		await conn.start();
+		assert.equal(fs.readdirSync(processDir).filter((name) => name.startsWith("acp-home-")).length, 1);
+		conn.kill();
+		assert.equal(fs.readdirSync(processDir).filter((name) => name.startsWith("acp-home-")).length, 1);
+		await exited;
+		assert.equal(fs.readdirSync(processDir).filter((name) => name.startsWith("acp-home-")).length, 0);
+	} finally {
+		conn.kill();
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
 
-	test("protocol errors and plain errors never fire the hook", () => {
-		let fired = 0;
-		setAuthInvalidatedHook(() => {
-			fired += 1;
-		});
-		try {
-			translateError("session/cancel", new JsonRpcResponseError({ code: -32601, message: "Method not found" }));
-			translateError("session/prompt", new Error("boom"));
-			assert.equal(fired, 0);
-		} finally {
-			setAuthInvalidatedHook(null);
-		}
-	});
-
-	test("no hook registered is a no-op", () => {
-		const translated = translateError("session/new", new JsonRpcResponseError({ code: -32000, message: "nope" }));
+describe("acp connection errors", () => {
+	test("auth errors point at the shared agy CLI sign-in", () => {
+		const translated = translateError("session/prompt", new JsonRpcResponseError({ code: -32000, message: "Authentication required" }));
 		assert.equal(translated.name, "AcpAuthError");
+		assert.match(translated.message, /Run agy in your terminal/);
 	});
 });

@@ -36,32 +36,26 @@ npm run smoke:pi
 AGY_LIVE=1 node --experimental-strip-types scripts/smoke-stream-json.mjs
 
 # Live smoke for the ACP engine through OUR driver stack. OPT-IN: spends a
-# little quota. Needs AGY_ACP_BIN (or acp on PATH) and a one-time
-# /agy auth-manual credential setup.
-AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-  npx tsx scripts/smoke-acp.mjs
+# little quota. Uses the authenticated agy CLI.
+AGY_ACP_LIVE=1 npx tsx scripts/smoke-acp.mjs
 
 # Live smoke for the Gate F bridge e2e: the real ACP server lists the bridge
 # catalog and completes a tool call through the registered mcpServers entry.
-AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-  npx tsx scripts/smoke-acp-bridge.mjs
+AGY_ACP_LIVE=1 npx tsx scripts/smoke-acp-bridge.mjs
 
 # Live smoke for image prompts on the ACP engine: builds a 64x64 two-tone PNG
 # in-process and asserts the model identifies both halves through the full
 # driver stack.
-AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-  npx tsx scripts/smoke-acp-image.mjs
+AGY_ACP_LIVE=1 npx tsx scripts/smoke-acp-image.mjs
 
 # Live probe: thought-chunk sparsity, tool_call content[]/rawInput shapes,
 # and the /plan command flow, captured to probe-logs/ (local only).
-AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-  npx tsx scripts/probe-acp-phase2.mjs
+AGY_ACP_LIVE=1 npx tsx scripts/probe-acp-phase2.mjs
 
 # Live probe: does the ACP server deliver MCP tool-result IMAGE content to
 # the model? One bridge tool returns a two-tone PNG in its result; the model
 # must name both halves from the tool result alone.
-AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-  npx tsx scripts/probe-acp-image-result.mjs
+AGY_ACP_LIVE=1 npx tsx scripts/probe-acp-image-result.mjs
 
 # Live probe: same image question for the stream-json engine. AGY
 # bridge tool returns a two-tone PNG in its result; model must name both
@@ -71,10 +65,13 @@ AGY_LIVE=1 npx tsx scripts/probe-stream-json-image.mjs
 
 # Live parity run: the SAME scenario set (streaming, continuity, bridge
 # round-trip, effort switch, serialization, abort+recover, usage) through
-# BOTH engines. Needs the agy CLI AND the ACP binary. Spends ~13 flash-low
-# turns; prints a per-scenario matrix and exits non-zero on any mismatch.
-AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-  npx tsx scripts/parity-live.mjs
+# BOTH engines. Uses the agy CLI for each. Spends ~13 flash-low turns;
+# prints a per-scenario matrix and exits non-zero on any mismatch.
+AGY_ACP_LIVE=1 npx tsx scripts/parity-live.mjs
+
+# Live cross-session isolation: registers one global bridge, then proves ACP
+# neither lists nor calls it. The probe removes its registration in finally.
+AGY_ACP_LIVE=1 npx tsx scripts/probe-acp-isolation.mjs
 ```
 
 ## Debugging a hang or "stuck" turn
@@ -94,8 +91,10 @@ Most "stuck" reports trace to one of:
 - `tests/mcp-server.test.ts` - the MCP tool bridge end-to-end against a real (port 0) server: capability gate, per-pid config lifecycle, shared-secret token gate, 1 MB body cap, protocol-version clamp. The provider owns the tool catalog and the round-trip; the server only ferries list/call.
 - `tests/acp-jsonrpc.test.ts` - the JSON-RPC stdio session: id correlation, typed error results, server-to-client requests, notifications, line framing (partial frames buffered across chunk boundaries, garbage lines counted not fatal).
 - `tests/acp-events.test.ts` - ACP session/update mapping onto pi activities (text, thought, tool cards) and the session/load replay suppression.
-- `tests/acp-driver.test.ts` - the ACP driver over the fake server (`tests/helpers/fake-acp-server.mjs`, scenario-selected): happy flow, load-replay, permission auto-answer, Gate D abort (cancel probe, teardown, `cancelSupported` memory), the stale-exit race (a killed connection's late exit must not fail its replacement - `ACP_FAKE_SLOW_DEATH_MS`), auth errors, park/kickIdle timer pause with remaining budget.
-- `tests/acp-config.test.ts` - engine selection narrowing (`AGY_ENGINE`/`config.engine`), acp block parsing.
+- `tests/acp-driver.test.ts` - the ACP driver over the fake server (`tests/helpers/fake-acp-server.mjs`, scenario-selected): happy flow, load-replay, permission auto-answer, Gate D abort (notification cancellation, parked-permission cancellation, and teardown fallback), the stale-exit race (a killed connection's late exit must not fail its replacement - `ACP_FAKE_SLOW_DEATH_MS`), auth errors, park/kickIdle timer pause with remaining budget.
+- `tests/acp-home.test.ts` - private MCP-home staging, shared-state preservation, foreign MCP preservation, symlink handling, lifecycle sweeps, and fail-closed malformed config.
+- `tests/agy-install.test.ts` / `tests/agy-setup.test.ts` - real shell pipeline failure, post-install verification, process-group timeout, one-shot prompting, and shared setup failures.
+- `tests/acp-config.test.ts` - engine selection narrowing (`AGY_ENGINE`/`config.engine`), acp block parsing, and legacy override detection.
 - `tests/daily-log.test.ts` - the support log: day rotation, retention cutoff boundary, secret redaction (incl. header blocks), the 4 KB record cap, never-throw on a broken dir, and the two-tier gate (debug records dropped unless `AGY_DEBUG`).
 - `tests/mcp-registration.test.ts` - the `~/.gemini/config/mcp_config.json` registration for the stream-json CLI: exact agy entry shape, foreign servers preserved, corrupt config refused, atomic writes, stale-entry sweep, delegation suppression (`setBridgeEntriesDisabled` flip/restore/idempotence, refcounted `acquireBridgeSuppression`) and the cross-process marker (concurrent two-session simulation, dead and stale delegator pruning, marker-aware `healBridgeSuppression`, the registration guard).
 - `tests/ask-tool-suppression.test.ts` - the AskAntigravity delegation path end-to-end over a fake `AGY_BIN` that outlives the old grace: exactly one suppression release, at process close, never on a timer.

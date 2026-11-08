@@ -8,7 +8,7 @@
 //
 // A picked name rides the turn request as `--agent` (same flag our web
 // tools already pass for their throwaway agents). ACP has no agent slot in
-// the protocol (RC01), so selection is refused at the command level there.
+// per-turn agent selection, so the bridge refuses it at the command level.
 
 import { spawnAgyRaw } from "./models.js";
 

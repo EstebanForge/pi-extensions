@@ -26,6 +26,13 @@ describe("acp/jsonrpc", () => {
 		assert.deepEqual(await p, { sessionId: "s1" });
 	});
 
+	test("notification sends no id and never waits for a response", () => {
+		const { session, sent } = makeSession();
+		session.notify("session/cancel", { sessionId: "s" });
+		assert.deepEqual(sent[0], { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "s" } });
+		assert.equal(session.pendingCount, 0);
+	});
+
 	test("error results reject with JsonRpcResponseError carrying code + data", async () => {
 		const { session, sent } = makeSession();
 		const p = session.request("session/cancel", { sessionId: "s" });

@@ -138,22 +138,16 @@ describe("queued-messages ensureQueuedMessagesInFile", () => {
 });
 
 describe("queued-messages ensureQueuedMessagesDefaults", () => {
-	it("ensures defaults for both cli and acp settings files", () => {
+	it("writes only the CLI settings shared by both engines", () => {
 		const dir = tmpDir();
 		const cliFile = path.join(dir, "cli", "settings.json");
-		const acpFile = path.join(dir, "acp", "settings.json");
+		const retiredAcpFile = path.join(dir, "acp", "settings.json");
 
-		const report = ensureQueuedMessagesDefaults({
-			cliSettingsPath: cliFile,
-		acpSettingsPath: acpFile,
-		});
+		const report = ensureQueuedMessagesDefaults({ cliSettingsPath: cliFile });
 
-		assert.equal(report.cli.updated, true);
-		assert.equal(report.acp.updated, true);
-
+		assert.equal(report.updated, true);
 		const cliJson = JSON.parse(fs.readFileSync(cliFile, "utf8"));
-		const acpJson = JSON.parse(fs.readFileSync(acpFile, "utf8"));
 		assert.equal(cliJson.queuedMessages, "send-immediately");
-		assert.equal(acpJson.queuedMessages, "send-immediately");
+		assert.equal(fs.existsSync(retiredAcpFile), false);
 	});
 });

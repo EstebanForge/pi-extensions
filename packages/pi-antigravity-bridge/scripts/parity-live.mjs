@@ -1,7 +1,8 @@
 // Live parity run: the SAME scenario set through BOTH engines (plan §6).
 // Gated: AGY_ACP_LIVE=1 (spends quota: ~13 flash-low turns).
 //
-//   AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+//   AGY_ACP_LIVE=1 npx tsx scripts/parity-live.mjs
+//
 //     npx tsx scripts/parity-live.mjs
 //
 // Requires the `agy` CLI on PATH for the stream-json engine. Prints a
@@ -10,7 +11,6 @@
 
 import { execFileSync } from "node:child_process";
 import { AcpDriver } from "../src/acp/driver.js";
-import { resolveAcpBinary } from "../src/acp/connection.js";
 import { StreamDriver } from "../src/driver.js";
 import { startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
 
@@ -25,7 +25,7 @@ try {
 	process.exit(1);
 }
 
-const MODEL = "gemini-3.7-flash";
+const MODEL = "gemini-3.8-flash";
 const BASE = {
 	cwd: process.cwd(),
 	model: MODEL,
@@ -200,8 +200,8 @@ async function parity(driver, tag) {
 
 	ok(
 		"usage-fields",
-		tag === "stream-json" ? t1.outcome.usage != null : t1.outcome.usage == null,
-		tag === "stream-json" ? "mapped" : "documented-absent (Gate B)",
+		t1.outcome.usage != null,
+		JSON.stringify(t1.outcome.usage),
 	);
 
 	return results;
@@ -219,11 +219,13 @@ const matrix = {};
 	}
 }
 {
-	console.log("[parity] engine: acp (official server)");
-	const bin = resolveAcpBinary(process.env.AGY_ACP_BIN || "");
+	console.log("[parity] engine: acp (agy acp)");
+	const bin = process.env.AGY_BIN || "agy";
 	console.log(`[parity] bin: ${bin}`);
 	const driver = new AcpDriver({
 		bin,
+		binArgs: ["acp"],
+	isolateHome: true,
 		mcpServers,
 		log: (msg, data) => console.error(`[acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),
 	});

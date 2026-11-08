@@ -1,6 +1,7 @@
 // Live phase-2 probe for the ACP engine. Gated: AGY_ACP_LIVE=1 (spends quota).
 //
-//   AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+//   AGY_ACP_LIVE=1 npx tsx scripts/probe-acp-phase2.mjs
+//
 //     npx tsx scripts/probe-acp-phase2.mjs
 //
 // Answers the four open shape questions phase 2 needs:
@@ -12,14 +13,14 @@
 
 import fs from "node:fs";
 import zlib from "node:zlib";
-import { AcpConnection, resolveAcpBinary } from "../src/acp/connection.js";
+import { AcpConnection } from "../src/acp/connection.js";
 import { startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
 
 if (process.env.AGY_ACP_LIVE !== "1") {
 	console.error("refusing to run: set AGY_ACP_LIVE=1 (spends quota)");
 	process.exit(1);
 }
-const bin = resolveAcpBinary(process.env.AGY_ACP_BIN || "");
+const bin = process.env.AGY_BIN || "agy";
 console.log(`[probe] bin: ${bin}`);
 
 // --- raw frame log ----------------------------------------------------------
@@ -113,6 +114,8 @@ const mcpServers = () => [
 // --- connection ---------------------------------------------------------------
 const conn = new AcpConnection({
 	bin,
+	binArgs: ["acp"],
+	isolateHome: true,
 	cwd: process.cwd(),
 	mcpServers,
 	log: (msg, data) => console.error(`[acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),

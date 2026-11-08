@@ -1,8 +1,7 @@
 // Live smoke: bridge MCP server + ACP engine end-to-end (Gate F live).
 // Gated: AGY_ACP_LIVE=1 (spends a small amount of quota).
 //
-//   AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
-//     npx tsx scripts/smoke-acp-bridge.mjs
+//   AGY_ACP_LIVE=1 npx tsx scripts/smoke-acp-bridge.mjs
 //
 // Proves the last load-bearing unknown of the ACP adoption: the REAL agy ACP
 // server can (a) accept our mcpServers registration (port + shared-secret
@@ -13,7 +12,6 @@
 // MCP client, which no fake server can stand in for.
 
 import { AcpDriver } from "../src/acp/driver.js";
-import { resolveAcpBinary } from "../src/acp/connection.js";
 import { startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
 
 const ECHO_TOKEN = "BRIDGE-E2E-777";
@@ -23,7 +21,7 @@ if (process.env.AGY_ACP_LIVE !== "1") {
 	process.exit(1);
 }
 
-const bin = resolveAcpBinary(process.env.AGY_ACP_BIN || "");
+const bin = process.env.AGY_BIN || "agy";
 console.log(`[smoke] bin: ${bin}`);
 
 // --- 1. Real bridge MCP server with a canned echo tool ---------------------
@@ -71,6 +69,8 @@ console.log(`[smoke] bridge: http://127.0.0.1:${port}/mcp (token: ${token.slice(
 const toolCalls = [];
 const driver = new AcpDriver({
 	bin,
+	binArgs: ["acp"],
+	isolateHome: true,
 	log: (msg, data) => console.error(`[acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),
 	mcpServers: () => [
 		{
@@ -105,7 +105,7 @@ const collecting = (async () => {
 			process.stdout.write(activity.delta);
 		} else {
 			// The driver surfaces bridge tool calls as tool_start/tool_done.
-			if (activity.type === "tool_start") toolStarts.push({ name: activity.name, args: activity.args });
+			if (activity.type === "tool_start") toolStarts.push({ name: activity.name, args: activity.args, mcpServer: activity.mcpServer });
 			console.log(`\n[activity] ${JSON.stringify(activity)}`);
 		}
 	}
@@ -126,7 +126,7 @@ await bridge.handle.close();
 const ok =
 	outcome.status === "OK" &&
 	joined.includes(`ECHO:${ECHO_TOKEN}`) &&
-	toolStarts.some((t) => t.name === "bridge_echo") &&
+	toolStarts.some((t) => t.name === "bridge_echo" && t.mcpServer === "pi-bridge") &&
 	sawList > 0 &&
 	sawCallOk > 0;
 console.log(ok ? "\nACP BRIDGE SMOKE OK." : "\nACP BRIDGE SMOKE FAILED.");

@@ -31,6 +31,8 @@ async function runDriver(
 	scenario: string,
 	opts: {
 		prompt?: string;
+		model?: string;
+		effort?: string | null;
 		images?: Array<{ data: string; mimeType: string }>;
 		contextBlock?: { uri: string; title: string; text: string };
 		conversationId?: string | null;
@@ -61,8 +63,8 @@ async function runDriver(
 	const controller = new AbortController();
 	const handle = await driver.run({
 		cwd: dir,
-		model: "gemini-3.8-flash",
-		effort: "low",
+		model: opts.model ?? "gemini-3.8-flash",
+		effort: opts.effort === undefined ? "low" : (opts.effort ?? undefined),
 		mode: "accept-edits",
 		skipPermissions: opts.skipPermissions ?? true,
 		conversationId: opts.conversationId ?? null,
@@ -135,15 +137,28 @@ describe("acp/driver happy path", () => {
 		const setModel = requests.find((r) => r.method === "session/set_config_option") as {
 			params: { configId: string; value: string };
 		};
-		// Gate A: full slug with the effort tier baked in.
 		assert.equal(setModel.params.configId, "model");
-		assert.equal(setModel.params.value, "gemini-3.8-flash-low");
+		assert.equal(setModel.params.value, "gemini-3.8-flash");
+		const thought = requests.find(
+			(r) => r.method === "session/set_config_option" && (r.params as { configId: string }).configId === "thought_level",
+		) as { params: { value: string } };
+		assert.equal(thought.params.value, "low");
 		const mode = requests.find(
 			(r) => r.method === "session/set_config_option" && (r.params as { configId: string }).configId === "mode",
 		) as { params: { value: string } };
-		assert.equal(mode.params.value, "yolo");
+		assert.equal(mode.params.value, "accept-edits");
 		const prompt = requests.find((r) => r.method === "session/prompt") as { params: { prompt: unknown[] } };
 		assert.deepEqual(prompt.params.prompt, [{ type: "text", text: "hi" }]);
+	});
+
+	test("fixed-family models keep their qualified slug without thought_level", async () => {
+		const run = await tracked("happy", { model: "gemini-4-argon", effort: null });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const configs = sentRequests(run._logPath).filter((r) => r.method === "session/set_config_option");
+		const model = configs.find((r) => (r.params as { configId?: string }).configId === "model");
+		assert.equal((model?.params as { value?: string }).value, "gemini-4-argon");
+		assert.equal(configs.some((r) => (r.params as { configId?: string }).configId === "thought_level"), false);
 	});
 
 	test("registers the bridge on session/new and session/load", async () => {
@@ -370,27 +385,45 @@ describe("acp/driver permission parking", () => {
 });
 
 describe("acp/driver Gate D abort", () => {
-	test("cancel-unsupported (-32601) falls back to teardown and reports aborted", async () => {
+	test("native cancel notification settles the prompt as aborted without teardown", async () => {
 		const controller = new AbortController();
-		const started = runDriver("cancel-unsupported", { prompt: "count", signal: controller.signal });
+		const started = runDriver("cancel", { prompt: "count", signal: controller.signal });
 		// Give the fake a moment to start streaming, then abort.
 		await new Promise((r) => setTimeout(r, 400));
 		controller.abort();
 		const run = await started;
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.aborted, true);
-		assert.equal(run.driver.state, "dead");
-		// The -32601 probe result must be remembered per connection.
-		const acp = run.driver.snapshot().acp;
-		assert.ok(acp, "acp snapshot block present");
-		assert.equal(acp.cancelSupported, false);
+		assert.equal(run.driver.state, "ready");
+		assert.equal(run.driver.snapshot().acp?.kills, 0);
 		const requests = sentRequests(run._logPath);
 		const cancel = requests.find((r) => r.method === "session/cancel");
 		assert.ok(cancel, "driver should have probed session/cancel first");
 		run.cleanup();
 	});
 
-	test("abort teardown exit logs connection-exited as expected", async () => {
+	test("abort settles a parked permission as cancelled without teardown", async () => {
+	const controller = new AbortController();
+	const started = runDriver("permission-cancel", {
+		prompt: "make the file",
+		skipPermissions: false,
+		signal: controller.signal,
+		onPermissionRequest: () => new Promise(() => {}),
+	});
+	await new Promise((r) => setTimeout(r, 400));
+	controller.abort();
+	const run = await started;
+	const outcome = await run.handle.outcome;
+	assert.equal(outcome.aborted, true);
+	assert.equal(run.driver.snapshot().acp?.kills, 0);
+	const answer = (sentRequests(run._logPath) as Array<{ _permissionOutcome?: string }>).find(
+		(r) => r._permissionOutcome !== undefined,
+	);
+	assert.equal(answer?._permissionOutcome, "cancelled");
+	run.cleanup();
+}, 15_000);
+
+test("abort teardown exit logs connection-exited as expected", async () => {
 		// Regression pin: the Gate D kill used to emit a bare connection-exited
 		// whose stderr tail the extension sink console.error'd into the pi UI
 		// (raw google3 stack dump on every Esc). The driver must mark teardown
@@ -436,7 +469,7 @@ describe("acp/driver Gate D abort", () => {
 			exits.every((e) => e?.expected === true),
 			"every teardown exit must carry expected: true",
 		);
-	});
+	}, 15_000);
 });
 
 describe("acp/driver timers", () => {
@@ -486,7 +519,7 @@ describe("acp/driver timers", () => {
 	});
 
 	test("stale connection's late exit never fails the replacement turn", async () => {
-		// Live race, hit during the parity run: RC01's signal handler intercepts
+		// Live race from the parity run: a server's signal handler intercepts
 		// SIGTERM and the killed server outlives its replacement by seconds.
 		// The old connection's exit used to clobber #conn and fail the recovery
 		// turn with the old stderr. Deterministic version: the fake lingers
@@ -541,7 +574,7 @@ describe("acp/driver timers", () => {
 		const acpSnap = driver.snapshot().acp;
 		assert.ok(acpSnap, "acp snapshot block present");
 		assert.equal(acpSnap.reconnects, 1);
-	});
+	}, 15_000);
 
 	test("images ride as typed content blocks ahead of the text", async () => {
 		const run = await runDriver("happy", {
@@ -648,7 +681,7 @@ describe("acp/driver auth", () => {
 		const run = await tracked("auth-required", { prompt: "hi" });
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "ERROR");
-		assert.match(outcome.error ?? "", /auth-manual/);
+		assert.match(outcome.error ?? "", /Run agy in your terminal/);
 	});
 });
 

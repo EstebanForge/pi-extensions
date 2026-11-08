@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Both engines now use only the agy CLI.** ACP turns spawn `agy acp` (agy 1.5.3+) and share the CLI's cached Google credentials. The standalone ACP server download, separate OAuth flow, `AGY_ACP_BIN`, `acp.bin`, and `/agy acp-bin` are removed. Startup deletes only retired builds with managed-install evidence under `~/.local/opt/agy-acp`; unmarked binaries and unrelated files stay untouched. Missing or outdated CLI installations trigger a confirmed official-installer flow on Linux, macOS, and Windows, followed by instructions to authenticate with `agy` and restart pi. Native ACP model/thinking options, exact usage, and notification-based cancellation are supported (issue #10).
+
+### Fixed
+
+- **CLI setup cannot stall startup or report a failed download as success.** Unix installation uses `pipefail`, verifies agy afterward, and kills the whole installer process group on timeout. Prompts are deduplicated once per process, concurrent failures are contained, bad `AGY_BIN` overrides get correction instructions, and `/agy engine acp` checks the selected engine's CLI floor immediately.
+
+- **Native ACP sessions cannot inherit another pi session's MCP bridge.** Each connection stages a private MCP home that filters all global bridge registrations while sharing CLI credentials, settings, and conversation state. Native tool-name parsing is restricted to known bridge prefixes, and fixed-family model slugs work without a thought-level option.
+
+- **Retired-install cleanup handles interrupted downloads and concurrent starters.** Registry-named builds, partial unpacks, absolute or relative managed `current` links, and temporary archives are covered without touching unmarked files. Legacy binary overrides now produce a warning. Retired standalone credentials remain untouched and are identified by `/agy doctor` for manual removal. Both engines now write queued-message settings only to their shared CLI settings file.
+
+- **Native ACP shutdown and cancellation no longer depend on teardown.** Staged homes live outside MCP cleanup and survive until agy exits, crash leftovers are swept by pid, and aborting a parked permission returns a cancelled outcome without killing the connection. Broken config symlinks are skipped, empty legacy binary defaults do not warn, and first-run setup checks the engine the user selected.
+
 ## [1.9.3] - 2026-11-06
 
 ### Fixed

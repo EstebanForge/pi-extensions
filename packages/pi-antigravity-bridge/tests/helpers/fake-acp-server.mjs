@@ -7,8 +7,8 @@
 //   happy              prompt -> chunks "HE","LLO" -> end_turn
 //   permission         prompt -> request_permission (waits for the client's
 //                      answer) -> chunks "PER","MIS" -> end_turn
-//   cancel-unsupported prompt -> chunk "C1" then chunks every 150ms forever;
-//                      session/cancel -> -32601 (RC01 behavior)
+//   cancel            prompt -> chunk "C1" then chunks every 150ms until
+//                      session/cancel settles the prompt as cancelled
 //   slow               prompt -> nothing, ever (deadline tests)
 //   load-replay        session/load -> full-text history replay pairs, then
 //                      prompt -> chunks "LIVE-1","LIVE-2" -> end_turn
@@ -35,9 +35,10 @@ const scenario = process.env.ACP_FAKE_SCENARIO || "happy";
 const sessionId = "fake-session-0001";
 let pendingPromptId = null;
 let streaming = false;
+let cancellationIgnored = false;
 const timers = [];
 
-// Mimic RC01's signal handler: intercept SIGTERM and linger before dying, so
+// Mimic a slow signal handler: intercept SIGTERM and linger before dying, so
 // driver tests can exercise a replacement connection spawning while the old
 // one is still alive (stale-exit race).
 if (process.env.ACP_FAKE_SLOW_DEATH_MS) {
@@ -109,7 +110,13 @@ async function handle(msg) {
   // request (id 101) after the first answer, for allow_always memory tests.
   if (method === undefined && (id === 100 || id === 101)) {
     const optionId = msg.result?.outcome?.optionId;
-    logReq({ _permissionAnswer: optionId });
+    const outcome = msg.result?.outcome?.outcome;
+    logReq({ _permissionAnswer: optionId, _permissionOutcome: outcome });
+    if (scenario === "permission-cancel" && outcome === "cancelled") {
+      if (pendingPromptId !== null) result(pendingPromptId, { stopReason: "cancelled" });
+      pendingPromptId = null;
+      return;
+    }
     if (scenario === "permission-twice" && id === 100) {
       send({
         jsonrpc: "2.0",
@@ -267,7 +274,7 @@ async function handle(msg) {
         streaming = false;
         return;
       }
-      if (scenario === "permission" || scenario === "permission-twice" || scenario === "permission-late") {
+      if (scenario === "permission" || scenario === "permission-twice" || scenario === "permission-late" || scenario === "permission-cancel") {
         send({
           jsonrpc: "2.0",
           id: 100,
@@ -305,15 +312,17 @@ async function handle(msg) {
     }
 
     case "session/cancel":
-      if (scenario === "cancel-unsupported" || process.env.ACP_FAKE_CANCEL_UNSUPPORTED === "1") {
-        error(id, -32601, "Method not found", { method: "session/cancel" });
+      if (scenario === "permission-cancel") return;
+      if (process.env.ACP_FAKE_CANCEL_UNSUPPORTED === "1") {
+        if (id === undefined || id === null) cancellationIgnored = true;
+        else error(id, -32601, "Method not found", { method: "session/cancel" });
         return;
       }
       if (pendingPromptId !== null) {
         result(pendingPromptId, { stopReason: "cancelled" });
         pendingPromptId = null;
       }
-      result(id, {});
+      if (id !== undefined && id !== null) result(id, {});
       return;
 
     case "session/close":
@@ -329,7 +338,7 @@ async function streamPrompt() {
   if (streaming) return;
   streaming = true;
   if (scenario === "slow") return; // never emits, never completes
-  if (scenario === "cancel-unsupported") {
+  if (scenario === "cancel") {
     notifyChunk("C1");
     const t = setInterval(() => {
       if (pendingPromptId === null) {
@@ -344,6 +353,7 @@ async function streamPrompt() {
   if (scenario === "park") {
     notifyChunk("P1");
     const t = setTimeout(() => {
+      if (cancellationIgnored) return;
       notifyChunk("P2");
       if (pendingPromptId !== null) {
         result(pendingPromptId, { stopReason: "end_turn" });

@@ -7,8 +7,8 @@
 // deleted (phase 4) without breaking imports.
 //
 // The ACP driver implements the same surface with protocol-native mechanics:
-// no process recycle on profile drift, teardown-based abort (Gate D), and
-// `session/load` resume. See docs/ACP-ADOPTION-PLAN.md section 9.
+// no process recycle on profile drift, notification cancel with teardown
+// fallback, and `session/load` resume. See docs/ACP-ADOPTION-PLAN.md section 9.
 
 export type DriverState = "idle" | "starting" | "ready" | "running" | "dead";
 
@@ -19,7 +19,7 @@ export interface DriverProfile {
 	mode: string;
 	skipPermissions: boolean;
 	/** Custom agy agent (stream-json `--agent`). ACP has no agent slot in the
-	 *  protocol (RC01) and ignores it; the /agy agent command refuses to set
+	 *  per-turn agent selection and ignores it; the /agy agent command refuses to set
 	 *  one while the ACP engine is active. */
 	agent?: string;
 }
@@ -138,8 +138,6 @@ export interface DriverSnapshot {
 		sessionsCreated: number;
 		sessionsLoaded: number;
 		kills: number;
-		/** null = never probed on this server process. */
-		cancelSupported: boolean | null;
 		serverVersion?: string;
 		/** Connections beyond the first this driver process made = server
 		 *  restarts (Gate D kills + stale-exit replacements). */

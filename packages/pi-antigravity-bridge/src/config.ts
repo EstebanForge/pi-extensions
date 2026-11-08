@@ -38,15 +38,13 @@ export function logsDir(): string {
 	);
 }
 
-/** Which turn engine drives turns. "acp" (the official server) is the
- *  default for new installs; "stream-json" (the `agy` CLI) remains a fully
- *  supported fallback. */
+/** Native `agy acp` is the default for new installs; stream-json remains
+ *  a fully supported fallback. */
 export type Engine = "stream-json" | "acp";
 
 /** The engine a fresh install runs when nothing is configured (no file key,
  *  no AGY_ENGINE): the official ACP server. Unknown/stale stored values also
- *  fall back here; the first startup's acp self-heal installs the binary and
- *  chains the sign-in. */
+ *  fall back here. Startup checks that the required agy CLI is available. */
 export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
@@ -82,8 +80,6 @@ export interface GateConfig {
 }
 
 export interface AcpConfig {
-	/** Path to agy_acp_server.par. Empty = env AGY_ACP_BIN > PATH. */
-	bin: string;
 	/** Gate B stopgap: client-side token estimates for ACP turns so pi's
 	 *  usage surfaces show nonzero numbers. Estimates are labeled as such in
 	 *  /agy doctor and auto-disable when the server sends real usage. */
@@ -100,7 +96,7 @@ export interface AgyConfig {
 	 *  is refused visibly: the agy CLI has no review-only enforcement on any
 	 *  path (probed 2026-10-07, upstream #1181: plan mode stages a plan and
 	 *  executes the write in the same turn on -p and stream-json alike; the
-	 *  ACP engine has no plan mode at all). Built for callers like
+	 *  provider plan turns are refused on ACP too). Built for callers like
 	 *  `pi -p --no-tools` health checks that must never mutate a workspace
 	 *  and prefer a visible refusal over a write-capable turn. Wins over
 	 *  `mode`; the AskAntigravity delegation tool is refused while this is on
@@ -215,7 +211,7 @@ const DEFAULTS: AgyConfig = {
 	turnTimeoutMin: 0, // placeholder: the real default is resolved per loadConfig call (defaultTurnTimeoutMin)
 	inactivityTimeoutMin: 5,
 	approvals: { gateMode: "auto", mode: "ask" },
-	acp: { bin: "", usageEstimate: "estimate" },
+	acp: { usageEstimate: "estimate" },
 };
 
 /** Hard ceiling for a free-typed turn cap: one day, in minutes. */
@@ -255,6 +251,14 @@ function readConfigFile(configPath: string): Partial<AgyConfig> {
 	return {};
 }
 
+export function legacyAcpBinConfigured(configPath: string = CONFIG_PATH): boolean {
+	if (process.env.AGY_ACP_BIN?.trim()) return true;
+	const file = readConfigFile(configPath) as Record<string, unknown>;
+	if (!file.acp || typeof file.acp !== "object" || Array.isArray(file.acp)) return false;
+	const bin = (file.acp as Record<string, unknown>).bin;
+	return typeof bin === "string" && bin.trim().length > 0;
+}
+
 /** Load config merged over defaults. Env vars override the file when set. */
 export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	let file: Partial<AgyConfig> = readConfigFile(configPath);
@@ -268,8 +272,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	// One absence exception: a config file WITHOUT an engine key belongs to an
 	// existing install (saveConfig persists the resolved legacy engine), and
 	// the acp default is for new installs only - an existing install keeps
-	// the legacy stream-json engine instead of silently starting the ~1.5 GB
-	// acp download. existsSync is false on EACCES too, which reads as fresh
+	// the legacy stream-json engine. existsSync is false on EACCES too, which reads as fresh
 	// and picks acp; an unreadable config dir is a broken install either way.
 	const freshInstall = !fs.existsSync(configPath);
 	const engineFallback = freshInstall || file.engine !== undefined ? DEFAULT_ENGINE : "stream-json";
@@ -379,12 +382,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	).toLowerCase();
 	const usageEstimate: UsageEstimate =
 		usageRaw === "direct" || usageRaw === "off" ? usageRaw : "estimate";
-	const acp: AcpConfig = {
-		bin:
-			process.env.AGY_ACP_BIN ??
-			(typeof fileAcp.bin === "string" ? fileAcp.bin : DEFAULTS.acp.bin),
-		usageEstimate,
-	};
+	const acp: AcpConfig = { usageEstimate };
 
 	// Custom agent for stream-json turns (--agent). Env wins over the file
 	// (same pattern as mode). Normalized (trim/cap/control-strip); an empty
@@ -438,14 +436,14 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFI
 	// must never be baked into the file). A legacy file without an engine key
 	// persists "stream-json": the bare DEFAULTS spread below would otherwise
 	// write the acp default into an existing install's file on any unrelated
-	// save, arming the ~1.5 GB download on the next start.
+	// save, switching an existing install to ACP on the next start.
 	const persistedEngine = patch.engine ?? file.engine
 		?? (fs.existsSync(configPath) ? "stream-json" : DEFAULT_ENGINE);
 	const next: AgyConfig = {
 		...DEFAULTS,
 		...file,
 		...(file.acp !== undefined
-			? { acp: { bin: fileAcp.bin ?? DEFAULTS.acp.bin, usageEstimate: fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate } }
+			? { acp: { usageEstimate: fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate } }
 			: {}),
 		...(file.approvals !== undefined
 			? { approvals: { gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode, mode: fileApprovals.mode ?? DEFAULTS.approvals.mode } }

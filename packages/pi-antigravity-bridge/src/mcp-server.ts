@@ -155,7 +155,7 @@ export function bridgeMcpConfigExists(): boolean {
 	return fs.existsSync(bridgeMcpConfigPath());
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
@@ -166,10 +166,10 @@ function isPidAlive(pid: number): boolean {
 }
 
 /** Best-effort cleanup of stale per-pid dirs left by crashed sessions. */
-function sweepStaleBridgeDirs(): void {
+export function sweepStaleBridgeDirs(baseDir: string = BRIDGE_BASE, alive: (pid: number) => boolean = isPidAlive): void {
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(BRIDGE_BASE);
+		entries = fs.readdirSync(baseDir);
 	} catch {
 		return;
 	}
@@ -177,9 +177,9 @@ function sweepStaleBridgeDirs(): void {
 		if (!name.startsWith("agy-mcp-")) continue;
 		const pid = Number(name.slice("agy-mcp-".length));
 		if (!Number.isInteger(pid) || pid === process.pid) continue;
-		if (isPidAlive(pid)) continue;
+		if (alive(pid)) continue;
 		try {
-			fs.rmSync(path.join(BRIDGE_BASE, name), { recursive: true, force: true });
+			fs.rmSync(path.join(baseDir, name), { recursive: true, force: true });
 		} catch {
 			/* best effort */
 		}

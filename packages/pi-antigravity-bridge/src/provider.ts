@@ -1213,7 +1213,7 @@ function acpEditFileArg(args: Record<string, unknown>): string | undefined {
 			// Edit display has TWO paths on ACP:
 			//   a) native diff in tool_call content[] (future builds / the
 			//      permission-request flow carries it; phase-2 probe shape);
-			//   b) RC01 with the auto policy sends NO content: the file simply
+			//   b) auto-approved edits can send NO content: the file simply
 			//      lands on disk. Read it and diff against git HEAD - the same
 			//      output the stream-json engine produces, one readFileSync.
 			if (feats.engine === "acp") {
@@ -1802,8 +1802,8 @@ export function createStreamSimple(
 		const config = loadConfig();
 		const engine = deps.engine ?? config.engine;
 		const selected = engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
-		// Plan-shaped provider turns are fail-closed on BOTH engines. ACP has
-		// no plan mode at all (RC01). Stream-json is worse and probed
+		// Plan-shaped provider turns are fail-closed on BOTH engines because
+		// agy does not enforce review-only writes. Stream-json, probed
 		// 2026-10-07: the engine WARNS that --mode plan is a no-op while
 		// --disable-slash-commands is set, executes file writes even with
 		// slash expansion left on (it stages a plan.md and still writes in the
@@ -1828,7 +1828,7 @@ export function createStreamSimple(
 				stream,
 				blocks,
 				"error",
-				"Plan mode cannot be enforced on provider turns: the agy CLI stages a plan and executes writes in the same turn (probed 2026-10-07, google-antigravity/antigravity-cli#1181), and the ACP engine has no plan mode (RC01). /agy mode accept-edits, and enforce review-only in the host.",
+				"Plan mode cannot be enforced on provider turns: the agy CLI stages a plan and executes writes in the same turn (probed 2026-10-07, google-antigravity/antigravity-cli#1181), and provider plan turns are disabled on ACP too. /agy mode accept-edits, and enforce review-only in the host.",
 			);
 			return stream;
 		}

@@ -8,7 +8,7 @@
 //   { "mcpServers": { "<name>": { "disabled": false,
 //        "headers": { "x-bridge-token": "..." }, "serverUrl": "http://..." } } }
 //
-// The ACP engine does not use this file (mcpServers ride session/new).
+// Native ACP gets a sanitized private copy; stream-json reads this file.
 //
 // Merge rules: foreign servers are preserved; corrupt JSON is refused (the
 // file is shared user config - never clobber); writes are atomic.
