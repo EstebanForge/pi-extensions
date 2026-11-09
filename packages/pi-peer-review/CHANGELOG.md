@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.3] - 2026-11-09
 
 ### Added
 - `config` as an alias of the `settings` token on every door (`/peer-review config`, `/unblock config`, `/advice config`), so users who forget the door word still reach the settings editor.
