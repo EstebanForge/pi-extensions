@@ -365,7 +365,9 @@ export class ReviewEngine {
 
 		const delta = this.computeDelta(from!);
 		if (delta.statuses.length === 0) {
-			this.ports.notify(`peer-review: nothing changed since last review (${backend})`);
+			// The empty state is the door users hit first: hint the settings editor
+			// so a bare /peer-review with no changes is never a dead end.
+			this.ports.notify(`peer-review: nothing changed since last review (${backend}); settings: /peer-review settings`);
 			return null;
 		}
 

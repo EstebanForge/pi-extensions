@@ -27,7 +27,7 @@ Works in any folder: with git it snapshots trees through a throwaway index (untr
 - **Publish boundary.** `git push` and `gh pr create` (including inside compound commands) pass a confirm dialog first, which now shows "N files changed since last peer review". Accepted commands get a synchronous consult — against the peer-review frame when there is unreviewed work — whose answer blocks the call until the model re-issues it.
 - `/unblock [focus text]` and `/advice [focus text]` are the same command (same handler, same arguments): consult the reviewer on demand with the recent transcript slice as material.
 
-`settings` works from every door: `/peer-review settings`, `/unblock settings`, `/advice settings`.
+`settings` (alias `config`) works from every door: `/peer-review settings`, `/unblock settings`, `/advice settings`, and the same with `config`.
 
 ## Design boundaries
 

@@ -138,9 +138,11 @@ export default function unblockExtension(pi: ExtensionAPI): void {
 	//   ... settings                        -> settings editor (from any door)
 	//   ... stuck [focus] / review [focus]  -> force the other door explicitly
 	const REVIEWERS: ReadonlySet<string> = new Set(["claude", "codex", "agy"]);
+	// "config" is an alias of "settings": users who forgot the door word get the editor anyway.
+	const SETTINGS_TOKENS: ReadonlySet<string> = new Set(["settings", "config"]);
 	const handle = (defaultMode: "review" | "stuck") => async (args: string, ctx: ExtensionCommandContext) => {
 		const tokens = args.trim().split(/\s+/).filter(Boolean);
-		if (tokens[0] === "settings") {
+		if (tokens[0] !== undefined && SETTINGS_TOKENS.has(tokens[0])) {
 			await openSettings(ctx);
 			return;
 		}

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `config` as an alias of the `settings` token on every door (`/peer-review config`, `/unblock config`, `/advice config`), so users who forget the door word still reach the settings editor.
+
+### Changed
+- The "nothing changed since last review" toast now points at the settings door instead of dead-ending a bare `/peer-review` with no changes.
+
 ## [1.1.2] - 2026-10-13
 
 ### Changed
