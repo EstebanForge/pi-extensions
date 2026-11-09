@@ -63,6 +63,7 @@ import {
 	MAX_TIMEOUT_MINUTES,
 	emptyClaudeEventState,
 	loadLayeredRaw,
+	resolveSpawnTarget,
 	RunSpawnError,
 	runProcess,
 	saveLayeredConfig,
@@ -280,9 +281,11 @@ function extraArgs(): string[] {
  *  version string. Used to fail fast with a clear message instead of an
  *  opaque spawn error inside the tool call. */
 async function claudeAvailable(binary: string): Promise<boolean> {
+	const target = resolveSpawnTarget(binary);
+	if (target.kind === "unavailable") return false;
 	try {
 		const out = await new Promise<string>((resolve, reject) => {
-			const proc = spawn(binary, ["--version"], {
+			const proc = spawn(target.file, ["--version"], {
 				stdio: ["ignore", "pipe", "ignore"],
 				shell: false,
 			});
