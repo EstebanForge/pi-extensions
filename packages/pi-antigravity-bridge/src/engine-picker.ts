@@ -85,28 +85,51 @@ export function engineSettingsRow(engine: Engine): DialogRow {
 	};
 }
 
-/** True when the `agy` CLI binary can be found. A binRef with a path
- *  separator (AGY_BIN=/opt/agy/agy) must exist as a file; a bare name is
- *  searched on PATH. statSync cannot throw through the guards, but a race
- *  (file removed between listing and stat) fails closed to false. */
-export function isAgyInstalled(binRef: string, env: NodeJS.ProcessEnv = process.env): boolean {
-	if (binRef.includes("/")) {
+/** Bare-name suffix candidates per platform. Windows pins the probe to
+ *  agy.exe: that is the only artifact Google ships there, and .bat/.cmd
+ *  cannot spawn anyway (shell:false + EINVAL since CVE-2024-27980). */
+function executableSuffixes(platform: NodeJS.Platform): string[] {
+	return platform === "win32" ? [".EXE"] : [""];
+}
+
+/** True when the `agy` CLI binary can be found. A binRef carrying a path
+ *  separator must exist as a file - backslashes count as separators on
+ *  win32, where path.join would mangle a bare "C:\..." AGY_BIN into a PATH
+ *  segment. Otherwise the bare name is searched on PATH, appending the
+ *  Windows candidate (agy.exe only: Google ships nothing else there, and
+ *  an extensionless or .cmd file cannot be spawned anyway). A bare
+ *  AGY_BIN that already ends in .exe probes the raw name too. Only a
+ *  regular file counts; races fail closed. */
+export function isAgyInstalled(
+	binRef: string,
+	env: NodeJS.ProcessEnv = process.env,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	if (binRef.includes("/") || (platform === "win32" && binRef.includes("\\"))) {
 		try {
 			return fs.statSync(binRef).isFile();
 		} catch {
 			return false;
 		}
 	}
+	let suffixes = executableSuffixes(platform);
+	// A bare AGY_BIN=agy.exe already carries the extension; name+suffix
+	// would stat agy.exe.EXE and miss the real file (issue #11 class).
+	if (platform === "win32" && path.extname(binRef).toLowerCase() === ".exe") {
+		suffixes = ["", ...suffixes];
+	}
 	return (env.PATH ?? "")
 		.split(path.delimiter)
 		.filter(Boolean)
-		.some((dir) => {
-			try {
-				return fs.statSync(path.join(dir, binRef)).isFile();
-			} catch {
-				return false;
-			}
-		});
+		.some((dir) =>
+			suffixes.some((suffix) => {
+				try {
+					return fs.statSync(path.join(dir, binRef) + suffix).isFile();
+				} catch {
+					return false;
+				}
+			}),
+		);
 }
 
 /** Toast copy for the missing-CLI warning. Fires every pi start while the

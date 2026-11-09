@@ -128,6 +128,57 @@ test("picker: missing-agy toast carries the official install URL", () => {
 	assert.match(agyMissingMessage(), /[Ll]og in/);
 });
 
+test("picker: win32 bare names probe spawnable suffixes (issue #11)", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-bin-win-"));
+	try {
+		// Suffix case matches the host fs; the point is OUR probe logic, not
+		// NTFS case-insensitivity.
+		fs.writeFileSync(path.join(dir, "agy.EXE"), "");
+		fs.writeFileSync(path.join(dir, "agy2.EXE"), "");
+		fs.writeFileSync(path.join(dir, "agy3.COM"), "");
+		fs.writeFileSync(path.join(dir, "agy4"), "");
+		assert.equal(isAgyInstalled("agy", { PATH: dir }, "win32"), true);
+		assert.equal(isAgyInstalled("agy2", { PATH: dir }, "win32"), true);
+		// Google ships only agy.exe on Windows; nothing else is probed.
+		assert.equal(isAgyInstalled("agy3", { PATH: dir }, "win32"), false);
+		// A bare AGY_BIN=agy.exe already carries the extension.
+		fs.writeFileSync(path.join(dir, "agy7.exe"), "");
+		assert.equal(isAgyInstalled("agy7.exe", { PATH: dir }, "win32"), true);
+		// .cmd shims count as NOT installed: spawns run shell:false and Node
+		// throws EINVAL on .bat/.cmd since CVE-2024-27980.
+		fs.writeFileSync(path.join(dir, "agy5.CMD"), "");
+		assert.equal(isAgyInstalled("agy5", { PATH: dir }, "win32"), false);
+		// Extensionless files cannot be spawned on win32 either.
+		assert.equal(isAgyInstalled("agy4", { PATH: dir }, "win32"), false);
+		// Real machines export PATHEXT; it must not widen the probe.
+		assert.equal(isAgyInstalled("agy5", { PATH: dir, PATHEXT: ".CMD;.EXE" }, "win32"), false);
+		fs.rmSync(path.join(dir, "agy.EXE"));
+		fs.mkdirSync(path.join(dir, "agy.EXE"));
+		assert.equal(isAgyInstalled("agy", { PATH: dir }, "win32"), false); // dir is not a file
+		// No suffix probing off win32, even when a .exe exists.
+		assert.equal(isAgyInstalled("agy2", { PATH: dir }, "linux"), false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("picker: backslash binRef routes to the explicit-file branch on win32 (issue #11)", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-bin-bs-"));
+	try {
+		// A file whose POSIX name contains backslashes: only the PATH scan
+		// can find it; the explicit branch would stat a relative path. The
+		// .EXE twin makes the win32 assertion falsifiable: broken routing
+		// would find the twin through the suffix probe and return true.
+		fs.writeFileSync(path.join(dir, "C:\\agy.exe"), "");
+		fs.writeFileSync(path.join(dir, "C:\\agy.exe.EXE"), "");
+		assert.equal(isAgyInstalled("C:\\agy.exe", { PATH: dir }, "linux"), true);
+		assert.equal(isAgyInstalled("C:\\agy.exe", { PATH: dir }, "win32"), false);
+		assert.equal(isAgyInstalled("C:\\nope\\agy.exe", { PATH: dir }, "win32"), false); // missing, no throw
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("picker: intro explains both engines' constraints", () => {
 	assert.match(ENGINE_PICKER_INTRO, /agy` CLI/);
 	assert.match(ENGINE_PICKER_INTRO, /authenticated/);

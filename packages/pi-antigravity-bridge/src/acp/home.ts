@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isPidAlive } from "../mcp-server.js";
+import { readGlobalMcpConfig } from "../mcp-registration.js";
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must contain a JSON object`);
@@ -23,7 +24,9 @@ export function stageAcpHome(opts: { geminiHome?: string; parentDir?: string } =
 	const globalMcpPath = path.join(globalConfigDir, "mcp_config.json");
 	let config: Record<string, unknown> = { mcpServers: {} };
 	try {
-		config = record(JSON.parse(fs.readFileSync(globalMcpPath, "utf8")), globalMcpPath);
+		// Tolerant of the CLI's 0-byte fresh-install file and a UTF-8 BOM;
+		// only a missing file means "no config at all" (issue #11).
+		config = record(readGlobalMcpConfig(globalMcpPath), globalMcpPath);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
 			throw new Error(`Cannot isolate inherited MCP config ${globalMcpPath}: ${err instanceof Error ? err.message : String(err)}`);

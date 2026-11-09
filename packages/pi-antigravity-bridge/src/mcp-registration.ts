@@ -36,19 +36,29 @@ export interface BridgeServerEntry {
 
 type McpConfig = { mcpServers: Record<string, unknown> };
 
+/** Tolerant read of the global mcp_config.json: strips a UTF-8 BOM and
+ *  treats the CLI's fresh-install 0-byte file as no config (issue #11).
+ *  Content that is not a JSON object still throws; ENOENT propagates.
+ *  A malformed mcpServers value is NOT normalized here - staging wants
+ *  strictness; registration normalizes at its own call site. */
+export function readGlobalMcpConfig(file: string): McpConfig {
+	const raw = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
+	const parsed = raw.trim() === "" ? { mcpServers: {} } : JSON.parse(raw);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("mcp_config.json is not an object");
+	}
+	return parsed as McpConfig;
+}
+
 function readConfig(file: string): { ok: true; config: McpConfig } | { ok: false; reason: string } {
-	let parsed: unknown;
+	let config: McpConfig;
 	try {
-		parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+		config = readGlobalMcpConfig(file);
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") return { ok: true, config: { mcpServers: {} } };
 		return { ok: false, reason: `mcp_config.json is not valid JSON; refusing to touch it (${String(err)})` };
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return { ok: false, reason: "mcp_config.json is not an object; refusing to touch it" };
-	}
-	const config = parsed as McpConfig;
 	if (!config.mcpServers || typeof config.mcpServers !== "object" || Array.isArray(config.mcpServers)) {
 		config.mcpServers = {};
 	}

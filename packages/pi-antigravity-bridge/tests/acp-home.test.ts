@@ -105,3 +105,27 @@ test("ACP home fails closed instead of inheriting an unreadable MCP config", () 
 	assert.throws(() => stageAcpHome({ geminiHome, parentDir }), /mcp_config\.json/);
 	assert.deepEqual(fs.existsSync(parentDir) ? fs.readdirSync(parentDir) : [], []);
 });
+
+test("ACP home treats the CLI's empty MCP config as 'no config' (issue #11)", () => {
+	const { geminiHome, parentDir } = fixture();
+	for (const content of ["", "\n\t ", "\uFEFF"]) {
+		fs.writeFileSync(path.join(geminiHome, "config", "mcp_config.json"), content);
+		const staged = stageAcpHome({ geminiHome, parentDir });
+		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(staged, "config", "mcp_config.json"), "utf8")), { mcpServers: {} });
+		removeStagedAcpHome(staged);
+	}
+});
+
+test("ACP home parses a BOM-prefixed MCP config (issue #11)", () => {
+	const { geminiHome, parentDir } = fixture();
+	fs.writeFileSync(path.join(geminiHome, "config", "mcp_config.json"), "\uFEFF{\"mcpServers\": {\"keep\": {\"command\": \"x\"}}}");
+	const staged = stageAcpHome({ geminiHome, parentDir });
+	const stagedConfig = JSON.parse(fs.readFileSync(path.join(staged, "config", "mcp_config.json"), "utf8")) as { mcpServers: Record<string, unknown> };
+	assert.deepEqual(Object.keys(stagedConfig.mcpServers), ["keep"]);
+});
+
+test("ACP home fails closed on a malformed mcpServers value", () => {
+	const { geminiHome, parentDir } = fixture();
+	fs.writeFileSync(path.join(geminiHome, "config", "mcp_config.json"), JSON.stringify({ mcpServers: "oops" }));
+	assert.throws(() => stageAcpHome({ geminiHome, parentDir }), /mcpServers/);
+});
