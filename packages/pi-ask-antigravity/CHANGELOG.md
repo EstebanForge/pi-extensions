@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Windows: `agy models` discovery now resolves the binary like the shared runner does (native `.exe`/`.com` on `PATH`, explicit `AGY_BIN` paths honored, npm shims reported as unavailable instead of a cryptic spawn failure), and every run kills its process tree via `taskkill` instead of POSIX group signals that never fire on Windows.
+
 ## [1.3.3] - 2026-11-02
 
 ### Fixed

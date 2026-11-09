@@ -65,6 +65,7 @@ import {
 	newConversationId,
 	parseModelLine,
 	resolveAgyModel,
+	resolveSpawnTarget,
 	RunSpawnError,
 	runProcess,
 	saveLayeredConfig,
@@ -350,9 +351,11 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Query `agy models`. Returns [] on any failure (non-fatal). */
 async function discoverModels(binary: string): Promise<ModelEntry[]> {
+	const target = resolveSpawnTarget(binary);
+	if (target.kind === "unavailable") return [];
 	try {
 		const text = await new Promise<string>((resolve, reject) => {
-			const proc = spawn(binary, ["models"], {
+			const proc = spawn(target.file, ["models"], {
 				stdio: ["ignore", "pipe", "ignore"],
 				shell: false,
 			});
