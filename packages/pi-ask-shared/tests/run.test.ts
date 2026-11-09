@@ -1,6 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { runProcess, RunSpawnError } from "../src/run.js";
+import { describe, expect, it, vi } from "vitest";
+import { createKillTree, resolveSpawnTarget, runProcess, RunSpawnError } from "../src/run.js";
 
 // Characterization suite for the shared peer-process lifecycle, extracted
 // from runClaudeProcess / runCodexProcess / runAgyProcess. Locks the
@@ -140,5 +142,111 @@ describe("runProcess — lifecycle", () => {
 		await expect(
 			runProcess({ binary: "/nonexistent/peer-binary-xyz", args: [], timeoutMs: 10_000 }),
 		).rejects.toBeInstanceOf(RunSpawnError);
+	});
+});
+
+// --- Windows: binary resolution and tree kill -------------------------------
+// The suite's no-mock rule bends only here: createKillTree takes a spawner by
+// injection and the POSIX group-kill assertions spy on process.kill, because
+// real Windows behavior cannot run on this Linux host.
+
+function binFixture(files: string[]): { dir: string; env: NodeJS.ProcessEnv } {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ask-bin-"));
+	for (const f of files) fs.writeFileSync(path.join(dir, f), "#!/bin/sh\n", { mode: 0o755 });
+	return { dir, env: { PATH: dir } };
+}
+
+describe("resolveSpawnTarget — win32", () => {
+	it("probes a bare name against PATH with spawnable suffixes", () => {
+		const { dir, env } = binFixture(["claude.EXE"]);
+		const t = resolveSpawnTarget("claude", env, "win32");
+		expect(t).toEqual({ kind: "direct", file: path.join(dir, "claude.EXE") });
+	});
+
+	it("probes the raw name first when a bare binRef already carries .exe", () => {
+		const { dir, env } = binFixture(["codex.exe"]);
+		const t = resolveSpawnTarget("codex.exe", env, "win32");
+		expect(t).toEqual({ kind: "direct", file: path.join(dir, "codex.exe") });
+	});
+
+	it("fails closed on an npm .cmd shim with guidance", () => {
+		const { env } = binFixture(["codex.cmd"]);
+		const t = resolveSpawnTarget("codex.cmd", env, "win32");
+		expect(t.kind).toBe("unavailable");
+		if (t.kind === "unavailable") expect(t.reason).toMatch(/shim/i);
+	});
+
+	it("reports not-found for a bare name with no spawnable artifact", () => {
+		const { env } = binFixture([]);
+		const t = resolveSpawnTarget("claude", env, "win32");
+		expect(t.kind).toBe("unavailable");
+		if (t.kind === "unavailable") expect(t.reason).toMatch(/claude\.com/);
+	});
+
+	it("probes spawnable suffixes next to an explicit extensionless path", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "ask-explicit-"));
+		// A literal 'C:\tools' directory component: valid on this Linux host,
+		// and win32 path semantics treat the backslashes as separators.
+		fs.mkdirSync(path.join(root, "C:\\tools"), { recursive: true });
+		fs.writeFileSync(path.join(root, "C:\\tools", "claude.EXE"), "", { mode: 0o755 });
+		const binRef = `${root}/C:\\tools\\claude`;
+		const t = resolveSpawnTarget(binRef, { PATH: "" }, "win32");
+		expect(t).toEqual({ kind: "direct", file: path.join(`${root}/C:\\tools`, "claude.EXE") });
+		// POSIX stays passthrough: spawn does its own PATH search there.
+		expect(resolveSpawnTarget(binRef, { PATH: "" }, "linux")).toEqual({ kind: "direct", file: binRef });
+	});
+
+	it("routes backslash binRefs to the explicit branch, not the PATH scan", () => {
+		// Falsifiability twin: the fixture sits in the PATH dir under a literal
+		// backslash name, so broken routing (PATH scan) would find it and pass.
+		const { dir, env } = binFixture(["C:\\tools\\claude.EXE"]);
+		const t = resolveSpawnTarget("C:\\tools\\claude", env, "win32");
+		expect(t.kind).toBe("unavailable");
+		const posix = resolveSpawnTarget("C:\\tools\\claude", env, "linux");
+		expect(posix).toEqual({ kind: "direct", file: "C:\\tools\\claude" });
+	});
+});
+
+describe("createKillTree", () => {
+	it("on win32 kills the tree via taskkill and falls back to the child", () => {
+		const calls: Array<{ cmd: string; args: string[] }> = [];
+		let errCb: ((err: Error) => void) | undefined;
+		const proc = { pid: 4242, kill: vi.fn() };
+		const kt = createKillTree(proc, "win32", ((cmd: string, args: string[]) => {
+			calls.push({ cmd, args });
+			return { on: (_ev: string, cb: (err: Error) => void) => ((errCb = cb), proc) } as never;
+		}) as never);
+		kt();
+		expect(calls).toEqual([{ cmd: "taskkill", args: ["/pid", "4242", "/T", "/F"] }]);
+		errCb!(new Error("taskkill missing"));
+		expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+	});
+
+	it("on posix signals the process group, arming the SIGKILL fallback once", () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		vi.useFakeTimers();
+		try {
+			const proc = { pid: 999_999, kill: vi.fn() };
+			const kt = createKillTree(proc, "linux");
+			kt();
+			kt();
+			expect(killSpy.mock.calls.filter((c) => c[1] === "SIGTERM")).toEqual([
+				[-999_999, "SIGTERM"],
+				[-999_999, "SIGTERM"],
+			]);
+			vi.advanceTimersByTime(5_000);
+			expect(killSpy.mock.calls.filter((c) => c[1] === "SIGKILL")).toEqual([[-999_999, "SIGKILL"]]);
+		} finally {
+			vi.useRealTimers();
+			killSpy.mockRestore();
+		}
+	});
+});
+
+describe("runProcess — win32 gate", () => {
+	it("rejects before spawning when the target is an npm shim", async () => {
+		await expect(
+			runProcess({ binary: "codex.cmd", args: [], timeoutMs: 1_000, platform: "win32" }),
+		).rejects.toThrow(/shim/i);
 	});
 });

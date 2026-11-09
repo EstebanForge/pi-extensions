@@ -15,6 +15,8 @@ export * from "./peers/codex.js";
 export {
 	runProcess,
 	RunSpawnError,
+	resolveSpawnTarget,
+	createKillTree,
 	MAX_TIMEOUT_MS,
 	MAX_TIMEOUT_MINUTES,
 	GRACE_AFTER_KILL_MS,
@@ -22,6 +24,8 @@ export {
 	DEFAULT_LINE_BUF_MAX_CHARS,
 	type RunProcessOptions,
 	type RunProcessOutcome,
+	type SpawnTarget,
+	type KillTreeProc,
 } from "./run.js";
 export { buildWakeContent, createWakeSender, type WakeInfo, type WakeSenderOptions, type WakeTarget } from "./wake.js";
 export { createStopHandler, type StopHandlerOptions } from "./stop.js";
