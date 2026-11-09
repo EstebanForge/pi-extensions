@@ -34,6 +34,7 @@ import {
 import fs from "node:fs";
 import type { Api } from "@earendil-works/pi-ai";
 import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
+import { looksBackgroundNativeCall } from "./background-watch.js";
 import { SubagentRoster } from "./subagent-roster.js";
 import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
@@ -405,6 +406,8 @@ export interface StreamSimpleDeps {
 	/** Output-only ACP tool events; persisted as TUI entries, never sent to
 	 *  Antigravity or dispatched through Pi's executable tools. */
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	/** agy backgrounded native work this turn (see DriverDeps). */
+	onNativeBackground?: (info: { conversationId: string; turnStartMs: number }) => void;
 	/** Subagent roster (both engines); folded from every activity. */
 	roster?: SubagentRoster;
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
@@ -1101,6 +1104,10 @@ export interface DriverDeps {
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	/** agy backgrounded native work this turn (WaitMsBeforeAsync arg seen).
+	 *  Fired once at the settled OK end of the turn so the extension can arm
+	 *  its task watcher (src/background-watch.ts); never on abort or error. */
+	onNativeBackground?: (info: { conversationId: string; turnStartMs: number }) => void;
 	/** Subagent roster fold target (both engines; best-effort telemetry). */
 	roster?: SubagentRoster;
 	/** Active engine (config), for engine-scoped session keys. */
@@ -1117,6 +1124,9 @@ export interface ActivityFeatures {
 	roundTrips?: ToolRoundTrips;
 	engine?: "stream-json" | "acp";
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	/** Set by runTurnDriver: latches the background arg shape for the arm
+	 *  decision at turn end. */
+	onBackgroundArg?: (args: Record<string, unknown>) => void;
 	roster?: SubagentRoster;
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 }
@@ -1191,6 +1201,7 @@ export function consumeActivity(
 					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "started", callId: callIdArg(activity.args) });
 				} catch { /* UI failure must not fail the generation. */ }
 			}
+			if (looksBackgroundNativeCall(activity.args)) feats.onBackgroundArg?.(activity.args);
 			return "continue";
 /** Bridge callId arg of an MCP tool call (bridge_poll_result requires it). */
 function callIdArg(args: Record<string, unknown>): string | undefined {
@@ -1589,12 +1600,20 @@ async function runTurnDriver(
 
 	ensureStarted(stream, blocks);
 	const diffCtx = new TurnDiffContext(createExecGitOps());
+	// Background latch: one WaitMsBeforeAsync-shaped native call this turn is
+	// enough; the watcher arms at the settled end, filtered by turnStartMs so
+	// the cumulative task dir never re-reports older turns' logs.
+	const turnStartMs = Date.now();
+	let nativeBackgroundSeen = false;
 	const feats: ActivityFeatures = {
 		replay: deps.replay,
 		nativeActive: deps.nativeActive,
 		roundTrips: deps.roundTrips,
 		engine: deps.engine,
 		onNativeEvent: deps.onNativeEvent,
+		onBackgroundArg: () => {
+			nativeBackgroundSeen = true;
+		},
 		roster: deps.roster,
 		log: deps.log,
 	};
@@ -1753,6 +1772,10 @@ async function runTurnDriver(
 	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
 		ensureTextOpen(stream, blocks);
 	}
+	if (nativeBackgroundSeen && outcome.conversationId) {
+		deps.onNativeBackground?.({ conversationId: outcome.conversationId, turnStartMs });
+		deps.log?.("native-background-arm", { conversation: outcome.conversationId, turnStartMs }, "info");
+	}
 	finalize(stream, blocks, "stop");
 }
 
@@ -1839,6 +1862,7 @@ export function createStreamSimple(
 				replay: deps.replay,
 				nativeActive: deps.nativeActive,
 				onNativeEvent: deps.onNativeEvent,
+				onNativeBackground: deps.onNativeBackground,
 				roster: deps.roster,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,

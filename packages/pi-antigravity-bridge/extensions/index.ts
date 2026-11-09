@@ -77,6 +77,8 @@ import { showArtifactsBrowser } from "../src/artifacts-ui.js";
 import { listAgyTasks, tailAgyTaskLog } from "../src/tasks.js";
 import { showTasksBrowser } from "../src/tasks-ui.js";
 import { agyConversationDir } from "../src/agy-paths.js";
+import { armBackgroundWatch, rearmPlansFromEntries, type BackgroundWatchEntry, type BackgroundWatchHandle } from "../src/background-watch.js";
+import { redactText } from "../src/redact.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
@@ -460,6 +462,75 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (ctx.hasUI) ctx.ui.setStatus("agy-native", undefined);
 		});
 	}
+	// agy-native background-task watcher (src/background-watch.ts). The
+	// provider flags turns that used the WaitMsBeforeAsync shape; at the
+	// settled turn end this arms a filesystem watcher over the conversation's
+	// task logs and wakes the model when they go quiet. One watcher per
+	// conversation; armed/settled pi entries survive /resume so a reload
+	// mid-watch re-arms instead of losing the completion notice.
+	const backgroundWatchers = new Map<string, BackgroundWatchHandle>();
+	let backgroundWatchDisposed = false;
+	const sendTaskWake = (content: string): void => {
+		if (backgroundWatchDisposed) return;
+		try {
+			// Custom message at user-role authority: redact secrets, banner and
+			// liveness-only wording come from buildTaskWakeContent.
+			pi.sendMessage({ customType: "agy-background-task", content: redactText(content), display: true }, { triggerTurn: true, deliverAs: "followUp" });
+		} catch {
+			// Stale runtime after shutdown won the race; the notice is lost, stay quiet.
+		}
+	};
+	const armConversationWatcher = (conversationId: string, turnStartMs: number, opts?: { armedAt?: number; recordArmed?: boolean }): void => {
+		const conversationDir = agyConversationDir(engine, conversationId);
+		backgroundWatchers.get(conversationId)?.stop();
+		const armedAt = opts?.armedAt ?? Date.now();
+		if (opts?.recordArmed !== false) {
+			try {
+				pi.appendEntry<BackgroundWatchEntry>("agy-background-watch", { kind: "armed", conversationId, turnStartMs, armedAt });
+			} catch { /* persistence is best-effort; the in-memory watch still works */ }
+		}
+		const handle = armBackgroundWatch({
+			conversationId,
+			conversationDir,
+			turnStartMs,
+			listTasks: listAgyTasks,
+			tail: tailAgyTaskLog,
+			onSettle: (result) => {
+				try {
+					pi.appendEntry<BackgroundWatchEntry>("agy-background-watch", { kind: "settled", conversationId, armedAt, settledAt: Date.now(), taskIds: result.taskIds });
+				} catch { /* best-effort */ }
+			},
+			sendWake: sendTaskWake,
+			log: fileLog.log.bind(fileLog),
+		});
+		backgroundWatchers.set(conversationId, handle);
+	};
+	// Reload resume: pi wipes extension module state on /new, /resume, /fork
+	// and /reload while the agy-side task keeps running. Armed records without
+	// a settled twin re-arm; the settled record prevents any double wake.
+	pi.on("session_start", (event, ctx) => {
+		try {
+			const records: Array<{ customType: string; data: unknown }> = [];
+			for (const e of ctx.sessionManager.getEntries()) {
+				if ("customType" in e && e.customType === "agy-background-watch") {
+					records.push({ customType: e.customType, data: (e as { data?: unknown }).data });
+				}
+			}
+			for (const plan of rearmPlansFromEntries(records)) {
+				if (!backgroundWatchers.has(plan.conversationId)) {
+					armConversationWatcher(plan.conversationId, plan.turnStartMs, { armedAt: plan.armedAt, recordArmed: false });
+					fileLog.log("background-watch-rearm", { conversation: plan.conversationId, armedAt: plan.armedAt }, "info");
+				}
+			}
+		} catch (err) {
+			fileLog.log("background-watch-sweep-error", { error: err instanceof Error ? err.message : String(err) }, "warn");
+		}
+	});
+	pi.on("session_shutdown", () => {
+		backgroundWatchDisposed = true;
+		for (const handle of backgroundWatchers.values()) handle.stop();
+		backgroundWatchers.clear();
+	});
 	const streamSimple = createStreamSimple({
 		entries,
 		store,
@@ -469,6 +540,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		replay,
 		nativeActive,
 		onNativeEvent,
+		onNativeBackground: (info) => armConversationWatcher(info.conversationId, info.turnStartMs),
 		roster,
 		engine,
 		log: fileLog.log.bind(fileLog),
