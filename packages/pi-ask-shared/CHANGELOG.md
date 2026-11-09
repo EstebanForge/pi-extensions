@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-09
+
+### Added
+- `UNTRUSTED_BANNER` is now exported, so consumers wrap peer-run output (wake bodies, task-log tails) in the exact banner string instead of copying it and letting the texts drift.
+
 ### Fixed
 - **Windows: peers can actually run and actually die.** Spawning a bare peer name now probes `PATH` for the native executable (`name.com`/`name.exe`) and honors explicit `*_BIN` paths including extensionless ones; an npm `.cmd`/`.bat` shim is refused with a clear message (even when the shim is the only thing on `PATH`, and with the binary override named) instead of failing with `EINVAL`, because prompt text must never cross a command shell (codex passes its prompt as an argv positional). The kill switch no longer relies on POSIX process groups: Windows kills the tree via `taskkill /pid /T /F` (falling back to the direct child), so timeouts, aborts, and stop terminate the peer instead of orphaning it. New exports `resolveSpawnTarget` and `createKillTree` back both behaviors.
 
