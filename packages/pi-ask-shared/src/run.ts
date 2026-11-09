@@ -103,7 +103,7 @@ function shimReason(binRef: string): string {
 	return (
 		`"${binRef}" resolves to an npm .cmd/.bat shim. Windows cannot spawn command shells from here, ` +
 		"and a shell would corrupt prompt text. Install the native executable (a real .exe) " +
-		"or point the binary override environment variable at it."
+		"or point the tool's binary override (CLAUDE_BIN, CODEX_BIN, or AGY_BIN) at it."
 	);
 }
 
@@ -139,14 +139,36 @@ export function resolveSpawnTarget(
 	// A bare name carrying .exe/.com must hit the real file, not name.exe.EXE:
 	// probe the raw name first, then the suffixed forms.
 	const names = ext ? [binRef, ...WIN32_SPAWNABLE_SUFFIXES.map((s) => binRef + s)] : WIN32_SPAWNABLE_SUFFIXES.map((s) => binRef + s);
-	const searchDirs = (env.PATH ?? env.Path ?? "").split(path.win32.delimiter).filter((d) => d !== "");
+	const rawPath = env.PATH || env.Path || "";
+	const searchDirs = rawPath
+		.split(path.win32.delimiter)
+		// Windows PATH entries may be quoted ("C:\Program Files\x"); strip
+		// the quotes before stat or the probe misses a real install.
+		.map((d) => d.replace(/^"(.*)"$/, "$1"))
+		.filter((d) => d !== "");
 	for (const dir of searchDirs) {
 		for (const name of names) {
 			const candidate = path.join(dir, name);
 			if (isFile(candidate)) return { kind: "direct", file: candidate };
 		}
 	}
+	// A bare name whose only PATH hit is an npm shim must say so: "not found"
+	// would send the user reinstalling into the same shim.
+	for (const dir of searchDirs) {
+		for (const suffix of [".CMD", ".BAT"]) {
+			if (isFile(path.join(dir, binRef + suffix))) return { kind: "unavailable", reason: shimReason(binRef) };
+		}
+	}
 	return { kind: "unavailable", reason: notFoundReason(binRef, base) };
+}
+
+export interface KillTreeHandle {
+	/** Terminate the process tree. Safe to call more than once. */
+	kill(): void;
+	/** Drop the pending SIGKILL fallback timer when the run settles before
+	 *  it fires; without this the timer holds the event loop for the grace
+	 *  period and signals an already-dead (possibly reused) pgid. */
+	dispose(): void;
 }
 
 export type KillTreeProc = Pick<ChildProcess, "pid" | "kill">;
@@ -155,41 +177,53 @@ type SpawnFn = typeof spawn;
 /** Build the kill switch for one spawned peer. POSIX signals the detached
  *  process group (SIGTERM, then SIGKILL after the grace period, armed once).
  *  Windows has no POSIX groups: process.kill(-pid) always fails there, so the
- *  tree dies via taskkill /T /F, falling back to the direct child if taskkill
- *  itself cannot run. */
+ *  tree dies via taskkill /T /F (windowsHide so no console flashes), falling
+ *  back to the direct child if taskkill itself cannot run. */
 export function createKillTree(
 	proc: KillTreeProc,
 	platform: NodeJS.Platform = process.platform,
 	spawnFn: SpawnFn = spawn,
-): () => void {
+): KillTreeHandle {
 	if (platform === "win32") {
-		return () => {
-			if (!proc.pid) return;
-			const fallback = () => {
+		return {
+			kill: () => {
+				if (!proc.pid) return;
+				const fallback = () => {
+					try {
+						proc.kill("SIGKILL");
+					} catch {}
+				};
 				try {
-					proc.kill("SIGKILL");
-				} catch {}
-			};
-			try {
-				spawnFn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" }).on("error", fallback);
-			} catch {
-				fallback();
-			}
+					spawnFn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", fallback);
+				} catch {
+					fallback();
+				}
+			},
+			dispose: () => {},
 		};
 	}
-	let sigkillArmed = false;
-	return () => {
-		try {
-			if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-		} catch {}
-		if (!sigkillArmed) {
-			sigkillArmed = true;
-			setTimeout(() => {
-				try {
-					if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-				} catch {}
-			}, GRACE_AFTER_KILL_MS);
-		}
+	let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+	return {
+		kill: () => {
+			try {
+				if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+			} catch {}
+			if (!sigkillTimer) {
+				sigkillTimer = setTimeout(() => {
+					try {
+						if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+					} catch {}
+				}, GRACE_AFTER_KILL_MS);
+				// Never hold the host's shutdown for the grace period.
+				sigkillTimer.unref?.();
+			}
+		},
+		dispose: () => {
+			if (sigkillTimer) {
+				clearTimeout(sigkillTimer);
+				sigkillTimer = undefined;
+			}
+		},
 	};
 }
 
@@ -273,7 +307,8 @@ export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> 
 		// Kill the whole process group; SIGTERM first, then SIGKILL after a
 		// grace period. Windows routes through taskkill instead (see
 		// createKillTree). The fallback timer arms only once.
-		const killTree = createKillTree(proc, platform);
+		const killHandle = createKillTree(proc, platform);
+		const killTree = killHandle.kill;
 
 		// Hand the kill switch (and the live child handle) to the background
 		// registry before any terminal event can fire.
@@ -281,6 +316,7 @@ export function runProcess(opts: RunProcessOptions): Promise<RunProcessOutcome> 
 
 		const cleanup = () => {
 			if (watchdog) clearTimeout(watchdog);
+			killHandle.dispose();
 			if (signal) signal.removeEventListener("abort", onAbort);
 		};
 

@@ -176,6 +176,16 @@ describe("resolveSpawnTarget — win32", () => {
 		if (t.kind === "unavailable") expect(t.reason).toMatch(/shim/i);
 	});
 
+	it("reports the shim, not not-found, when a bare name resolves only to a shim", () => {
+		const { env } = binFixture(["claude.CMD"]);
+		const t = resolveSpawnTarget("claude", env, "win32");
+		expect(t.kind).toBe("unavailable");
+		if (t.kind === "unavailable") {
+			expect(t.reason).toMatch(/shim/i);
+			expect(t.reason).toMatch(/CLAUDE_BIN/);
+		}
+	});
+
 	it("reports not-found for a bare name with no spawnable artifact", () => {
 		const { env } = binFixture([]);
 		const t = resolveSpawnTarget("claude", env, "win32");
@@ -196,6 +206,18 @@ describe("resolveSpawnTarget — win32", () => {
 		expect(resolveSpawnTarget(binRef, { PATH: "" }, "linux")).toEqual({ kind: "direct", file: binRef });
 	});
 
+	it("strips surrounding quotes from PATH entries", () => {
+		const { dir } = binFixture(["claude.EXE"]);
+		const t = resolveSpawnTarget("claude", { PATH: `"${dir}"` }, "win32");
+		expect(t).toEqual({ kind: "direct", file: path.join(dir, "claude.EXE") });
+	});
+
+	it("falls through from an empty PATH to Path", () => {
+		const { dir } = binFixture(["claude.EXE"]);
+		const t = resolveSpawnTarget("claude", { PATH: "", Path: dir }, "win32");
+		expect(t).toEqual({ kind: "direct", file: path.join(dir, "claude.EXE") });
+	});
+
 	it("routes backslash binRefs to the explicit branch, not the PATH scan", () => {
 		// Falsifiability twin: the fixture sits in the PATH dir under a literal
 		// backslash name, so broken routing (PATH scan) would find it and pass.
@@ -209,15 +231,15 @@ describe("resolveSpawnTarget — win32", () => {
 
 describe("createKillTree", () => {
 	it("on win32 kills the tree via taskkill and falls back to the child", () => {
-		const calls: Array<{ cmd: string; args: string[] }> = [];
+		const calls: Array<{ cmd: string; args: string[]; opts: unknown }> = [];
 		let errCb: ((err: Error) => void) | undefined;
 		const proc = { pid: 4242, kill: vi.fn() };
-		const kt = createKillTree(proc, "win32", ((cmd: string, args: string[]) => {
-			calls.push({ cmd, args });
+		const kt = createKillTree(proc, "win32", ((cmd: string, args: string[], opts: unknown) => {
+			calls.push({ cmd, args, opts });
 			return { on: (_ev: string, cb: (err: Error) => void) => ((errCb = cb), proc) } as never;
 		}) as never);
-		kt();
-		expect(calls).toEqual([{ cmd: "taskkill", args: ["/pid", "4242", "/T", "/F"] }]);
+		kt.kill();
+		expect(calls).toEqual([{ cmd: "taskkill", args: ["/pid", "4242", "/T", "/F"], opts: { stdio: "ignore", windowsHide: true } }]);
 		errCb!(new Error("taskkill missing"));
 		expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
 	});
@@ -228,14 +250,30 @@ describe("createKillTree", () => {
 		try {
 			const proc = { pid: 999_999, kill: vi.fn() };
 			const kt = createKillTree(proc, "linux");
-			kt();
-			kt();
+			kt.kill();
+			kt.kill();
 			expect(killSpy.mock.calls.filter((c) => c[1] === "SIGTERM")).toEqual([
 				[-999_999, "SIGTERM"],
 				[-999_999, "SIGTERM"],
 			]);
 			vi.advanceTimersByTime(5_000);
 			expect(killSpy.mock.calls.filter((c) => c[1] === "SIGKILL")).toEqual([[-999_999, "SIGKILL"]]);
+		} finally {
+			vi.useRealTimers();
+			killSpy.mockRestore();
+		}
+	});
+
+	it("dispose clears a pending SIGKILL timer and unrefs it", () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		vi.useFakeTimers();
+		try {
+			const proc = { pid: 999_999, kill: vi.fn() };
+			const kt = createKillTree(proc, "linux");
+			kt.kill();
+			kt.dispose();
+			vi.advanceTimersByTime(10_000);
+			expect(killSpy.mock.calls.filter((c) => c[1] === "SIGKILL")).toEqual([]);
 		} finally {
 			vi.useRealTimers();
 			killSpy.mockRestore();
