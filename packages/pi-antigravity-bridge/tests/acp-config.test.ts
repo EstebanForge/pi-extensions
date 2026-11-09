@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { legacyAcpBinConfigured, loadConfig, saveConfig } from "../src/config.js";
+import { loadConfig, removeLegacyAcpBin, saveConfig } from "../src/config.js";
 
 function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-cfg-")), "config.json");
@@ -123,42 +123,69 @@ test("escalateLongTools: junk file shapes fall back to empty, strings and env st
 	}
 });
 
-test("legacy ACP binary overrides are ignored and dropped on save", () => {
+test("saveConfig drops the retired acp.bin key", () => {
 	const p = tmpConfig();
-	const prev = process.env.AGY_ACP_BIN;
-	process.env.AGY_ACP_BIN = "/opt/agy-acp/server.par";
 	try {
 		fs.writeFileSync(p, JSON.stringify({ acp: { bin: "/opt/old-server.par", usageEstimate: "estimate" } }));
 		assert.equal("bin" in loadConfig(p).acp, false);
-		assert.equal(legacyAcpBinConfigured(p), true);
 		saveConfig({ digest: true }, p);
 		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> };
 		assert.equal("bin" in raw.acp, false);
-		assert.equal(legacyAcpBinConfigured(p), true, "environment override still needs a warning");
-		delete process.env.AGY_ACP_BIN;
-		assert.equal(legacyAcpBinConfigured(p), false);
 	} finally {
-		if (prev === undefined) delete process.env.AGY_ACP_BIN;
-		else process.env.AGY_ACP_BIN = prev;
 		rm(p);
 	}
 });
 
-test("empty legacy ACP binary defaults do not trigger migration warnings", () => {
+test("removeLegacyAcpBin strips the retired key and keeps the rest of the file", () => {
 	const p = tmpConfig();
-	const prev = process.env.AGY_ACP_BIN;
 	try {
-		fs.writeFileSync(p, JSON.stringify({ acp: { bin: "", usageEstimate: "estimate" } }));
-		delete process.env.AGY_ACP_BIN;
-		assert.equal(legacyAcpBinConfigured(p), false);
-		process.env.AGY_ACP_BIN = "";
-		assert.equal(legacyAcpBinConfigured(p), false);
-		process.env.AGY_ACP_BIN = "  ";
-		assert.equal(legacyAcpBinConfigured(p), false);
+		fs.writeFileSync(p, JSON.stringify({
+			engine: "acp",
+			acp: { bin: "", permissions: "auto", usageEstimate: "estimate" },
+			mode: "accept-edits",
+			patchCleanupNotified: false,
+		}));
+		assert.equal(removeLegacyAcpBin(p), true);
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+		assert.deepEqual(raw.acp, { permissions: "auto", usageEstimate: "estimate" });
+		assert.equal(raw.engine, "acp");
+		assert.equal(raw.mode, "accept-edits");
+		assert.equal(raw.patchCleanupNotified, false);
+		assert.equal("digest" in raw, false, "raw passthrough: no defaults baked in");
+		assert.equal(removeLegacyAcpBin(p), false);
 	} finally {
-		if (prev === undefined) delete process.env.AGY_ACP_BIN;
-		else process.env.AGY_ACP_BIN = prev;
 		rm(p);
+	}
+});
+
+test("removeLegacyAcpBin leaves files without a bin key untouched", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ acp: { usageEstimate: "estimate" }, engine: "stream-json" }));
+		const before = fs.readFileSync(p, "utf8");
+		assert.equal(removeLegacyAcpBin(p), false);
+		assert.equal(fs.readFileSync(p, "utf8"), before);
+		fs.writeFileSync(p, "{ not json");
+		assert.equal(removeLegacyAcpBin(p), false);
+		assert.equal(fs.readFileSync(p, "utf8"), "{ not json");
+	} finally {
+		rm(p);
+	}
+});
+
+test("removeLegacyAcpBin writes through a symlinked config instead of replacing it", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-link-"));
+	const real = path.join(dir, "real.json");
+	const link = path.join(dir, "config.json");
+	try {
+		fs.writeFileSync(real, JSON.stringify({ acp: { bin: "/opt/old-server.par", usageEstimate: "estimate" } }));
+		fs.symlinkSync(real, link);
+		assert.equal(removeLegacyAcpBin(link), true);
+		assert.equal(fs.lstatSync(link).isSymbolicLink(), true, "the symlink itself must survive");
+		assert.deepEqual(JSON.parse(fs.readFileSync(real, "utf8")), { acp: { usageEstimate: "estimate" } });
+		assert.equal(removeLegacyAcpBin(link), false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
 

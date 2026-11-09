@@ -65,7 +65,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { CONFIG_PATH, legacyAcpBinConfigured, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -205,7 +205,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// start when the gate is active; removed at session_shutdown.
 	let gateScriptPath: string | null = null;
 	let managedAcpCleanupRan = false;
-	let legacyAcpWarningShown = false;
+	let legacyConfigCleanupRan = false;
+	let legacyConfigCleanupFailed = false;
+	let legacyEnvAcpWarningShown = false;
+	let legacyFileAcpWarningShown = false;
 	let agySetupOffer: (() => Promise<void>) | null = null;
 	let agyMissingWarned = false;
 	let agyVersionWarned = false;
@@ -616,9 +619,28 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				console.error(`[antigravity-bridge] engine picker failed: ${String(err)}`);
 			}
 		}
-		if (!legacyAcpWarningShown && legacyAcpBinConfigured()) {
-			legacyAcpWarningShown = true;
-			const msg = "Legacy AGY_ACP_BIN/acp.bin settings are ignored. Turns use `agy acp`; remove the stale override.";
+		// The retired acp.bin key heals itself in the config file; the env var
+		// lives outside our reach, so it is the only case that still warns.
+		// Independent once-flags: a failed cleanup must never suppress the
+		// env-var warning (or vice versa) for the rest of the process.
+		if (!legacyConfigCleanupRan) {
+			legacyConfigCleanupRan = true;
+			try {
+				removeLegacyAcpBin();
+			} catch (err) {
+				legacyConfigCleanupFailed = true;
+				fileLog.log("legacy-acp-config-cleanup", { error: String(err) }, "error");
+			}
+		}
+		if (!legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {
+			legacyEnvAcpWarningShown = true;
+			const msg = "AGY_ACP_BIN is set but no longer used; turns run \"agy acp\" from the CLI. Remove it from your shell config, then start a new terminal.";
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+			else console.error(`[antigravity-bridge] ${msg}`);
+		}
+		if (!legacyFileAcpWarningShown && legacyConfigCleanupFailed) {
+			legacyFileAcpWarningShown = true;
+			const msg = `Couldn't remove the old "bin" setting from ${CONFIG_PATH} (details in the bridge log). Delete the "bin" line under "acp" by hand; turns run "agy acp" from the CLI.`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
 		}

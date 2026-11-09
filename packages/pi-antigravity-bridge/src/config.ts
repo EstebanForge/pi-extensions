@@ -251,12 +251,19 @@ function readConfigFile(configPath: string): Partial<AgyConfig> {
 	return {};
 }
 
-export function legacyAcpBinConfigured(configPath: string = CONFIG_PATH): boolean {
-	if (process.env.AGY_ACP_BIN?.trim()) return true;
+/** Strip the retired acp.bin key from the raw config file; returns true when
+ *  removed. Raw passthrough on purpose (no defaults merge): users keep their
+ *  minimal hand-edited shape instead of gaining the full default set. */
+export function removeLegacyAcpBin(configPath: string = CONFIG_PATH): boolean {
 	const file = readConfigFile(configPath) as Record<string, unknown>;
 	if (!file.acp || typeof file.acp !== "object" || Array.isArray(file.acp)) return false;
-	const bin = (file.acp as Record<string, unknown>).bin;
-	return typeof bin === "string" && bin.trim().length > 0;
+	const acp = file.acp as Record<string, unknown>;
+	if (!("bin" in acp)) return false;
+	delete acp.bin;
+	// Rename would replace a dotfiles-managed symlink with a regular file;
+	// write through the resolved target so the link survives.
+	writeConfigJson(fs.realpathSync(configPath), file);
+	return true;
 }
 
 /** Load config merged over defaults. Env vars override the file when set. */
@@ -419,6 +426,24 @@ function narrowEngine(raw: string): Engine {
 	return raw === "acp" || raw === "stream-json" ? raw : DEFAULT_ENGINE;
 }
 
+/** Atomic JSON write (temp + rename, 0600) shared by every config writer. */
+function writeConfigJson(configPath: string, value: unknown): void {
+	const dir = path.dirname(configPath);
+	fs.mkdirSync(dir, { recursive: true });
+	const tmp = `${configPath}.${process.pid}.tmp`;
+	try {
+		fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+		fs.renameSync(tmp, configPath);
+	} catch (err) {
+		try {
+			fs.unlinkSync(tmp);
+		} catch {
+			/* nothing to clean */
+		}
+		throw err;
+	}
+}
+
 /** Atomically persist a config patch (temp + rename). Merges onto the RAW
  *  FILE values, never loadConfig(): env overrides must not be baked into the
  *  file (AGY_READONLY=1 in the env would otherwise persist readOnly: true to
@@ -451,20 +476,7 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFI
 		...patch,
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 	};
-	const dir = path.dirname(configPath);
-	fs.mkdirSync(dir, { recursive: true });
-	const tmp = `${configPath}.${process.pid}.tmp`;
-	try {
-		fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
-		fs.renameSync(tmp, configPath);
-	} catch (err) {
-		try {
-			fs.unlinkSync(tmp);
-		} catch {
-			/* nothing to clean */
-		}
-		throw err;
-	}
+	writeConfigJson(configPath, next);
 	return next;
 }
 
