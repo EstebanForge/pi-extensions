@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Windows: the bridge now finds the installed `agy` CLI.** `isAgyInstalled` probed bare names with a plain `stat`, which never applies `PATHEXT`, so `agy.exe` was invisible on Windows and every start reported the CLI as missing (also looping the self-service installer, whose verify uses the same probe). Bare names on `PATH` now probe `agy.exe` only, the one Windows artifact Google ships: spawns run with `shell: false` and Node throws `EINVAL` on `.bat`/`.cmd` shims (CVE-2024-27980), so a `.cmd` wrapper does not count as installed, and neither does an extensionless file. A bare `AGY_BIN=agy.exe` finds the real file instead of probing `agy.exe.EXE`, and an `AGY_BIN` set with backslashes (`C:\...\agy.exe`) is treated as a file path instead of being mangled into a `PATH` segment (issue #11).
+- **Windows and fresh CLI installs: ACP turns no longer abort on the CLI's empty `mcp_config.json`.** The agy CLI's initial state is a 0-byte `%USERPROFILE%\.gemini\config\mcp_config.json`; staging the isolated ACP home tolerated only a missing file and turned the empty file into `Cannot isolate inherited MCP config: Unexpected end of JSON input`, killing every turn. Empty and whitespace-only files now stage as `{ "mcpServers": {} }`; a leading UTF-8 BOM (a common Windows-editor artifact) is stripped instead of breaking the parse; a file with contents that are not a JSON object still fails closed (issue #11). The same tolerant read now covers stream-json bridge registration, which previously refused to touch an empty or BOM-prefixed file and silently skipped registering the bridge.
+
+### Changed
+
+- **The legacy ACP binary override cleanup is now automatic, and the warning speaks plainly.** Startup strips the retired `acp.bin` key from `~/.pi/agent/antigravity-bridge/config.json` in place, keeping the rest of the file untouched (a symlinked config is written through, not replaced), so the usual case never shows a warning. Only a set `AGY_ACP_BIN` environment variable still warns (the bridge cannot edit shell config), with exact removal instructions. A failed config rewrite warns with the file path and the manual fix instead of failing silently.
+
 ## [1.10.0] - 2026-11-08
 
 ### Changed
