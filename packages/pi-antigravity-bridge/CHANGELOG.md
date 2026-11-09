@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [1.10.2] - 2026-11-09
+
+### Added
+
+- **agy-native background tasks now wake the model when they go quiet.** agy backgrounds shell work itself (`run_command` with `WaitMsBeforeAsync`), announces it, and ends its turn; its RPC never reports the task and a live probe (2026-11-09) confirmed it emits no post-turn `session/update` on completion either, so the model's announced follow-up plan never ran and the session sat idle until the user typed. Turns whose activities carry the `WaitMsBeforeAsync` shape now arm a filesystem watcher over the conversation's `.system_generated/tasks/` logs (turn-window filtered, so the cumulative dir cannot re-report older work). When every watched log goes quiet - no `lsof` holder and no bytes/mtime change across a 30s window - a custom `agy-background-task` message wakes the session (starts a turn when idle, queues as follow-up when busy). Honesty rules: the wake says "no writer observed", never "finished" (a reader holds fds too, and a log unlinked while held reads idle); tails ride the shared `UNTRUSTED_BANNER` and are secret-redacted; a watch that never saw a task log stops silently instead of noise-waking; a 30-minute cap wakes with gave-up wording instead of hanging. Armed/settled `pi.appendEntry` records survive module reloads (/new, /resume, /fork, /reload): `session_start` re-arms records without a settled twin, and the settled twin prevents any double wake. Requires `@estebanforge/pi-ask-shared` 0.1.4 (`UNTRUSTED_BANNER` export); publish shared first.
+
 ## [1.10.1] - 2026-11-09
 
 ### Fixed
