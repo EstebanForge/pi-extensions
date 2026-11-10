@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BackgroundRunRegistry } from "@estebanforge/pi-ask-shared";
 import factory from "../extensions/index.js";
 
 const ENV_AGY_BIN = "AGY_BIN";
@@ -208,20 +209,24 @@ describe("AskAntigravity background mode", () => {
 
 	it("/agy-stop during the finishing window refuses and the answer still wakes", async () => {
 		// No conversation is ever found, so discovery sweeps its full 5×100ms
-		// budget after close: the run stays finishing for ~500ms. A stop at
-		// ~250ms (past close, inside the sweep) must refuse, and the answer
-		// must still arrive as a wake instead of being discarded.
+		// budget after close: the run stays finishing for ~500ms. A stop once
+		// the registry observes the close must refuse, and the answer must
+		// still arrive as a wake instead of being discarded.
 		writeFake(150);
+		const registry = new BackgroundRunRegistry({ toolName: "ask-antigravity" });
 		const { pi, state } = makePi();
-		await factory(pi);
+		await factory(pi, registry);
 		const tool = state.tools.find((t) => t.name === "AskAntigravity");
 		const stop = state.commands.get("agy-stop");
 		expect(stop).toBeDefined();
 
 		const result = await tool.execute("t7", { prompt: "answer on the way", background: true }, undefined, undefined, runCtx());
 		expect(result.content[0].text).toMatch(/Background run bg_[0-9a-f]+ started/);
+		const runId = /bg_[0-9a-f]{8}/.exec(result.content[0].text)?.[0];
+		expect(runId).toBeDefined();
 
-		await new Promise((r) => setTimeout(r, 250));
+		await waitFor(() => registry.get(runId!)?.status === "finishing", "the finishing window");
+
 		const notify = vi.fn();
 		await stop!("", runCtx({ ui: { notify } }));
 		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/already finished/), "info");

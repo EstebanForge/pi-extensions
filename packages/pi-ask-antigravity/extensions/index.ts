@@ -694,7 +694,11 @@ function shapeFinalText(details: AgyDetails, outcome: ProcessRunOutcome, timeout
 	return text + footer;
 }
 
-export default async function (pi: ExtensionAPI) {
+export default async function (
+	pi: ExtensionAPI,
+	// Injectable so tests can await lifecycle phases; production uses the default.
+	registry: BackgroundRunRegistry = new BackgroundRunRegistry({ toolName: "ask-antigravity" }),
+) {
 	// If pi-antigravity-bridge is installed, it owns the AskAntigravity tool
 	// (and the provider). Stay silent and register nothing to avoid a
 	// duplicate-tool clash. Without the bridge, this extension behaves as
@@ -721,7 +725,6 @@ export default async function (pi: ExtensionAPI) {
 	// Pi wipes module state on /new, /resume, /fork and /reload: an in-flight
 	// background run is killed and its result is never delivered. Accepted
 	// trade-off, documented in the README.
-	const registry = new BackgroundRunRegistry({ toolName: "ask-antigravity" });
 	const kills = new Map<string, () => void>();
 	// Staged-artifact cleanup (contextFile + reviewer agent dir), keyed by run:
 	// the session_shutdown backstop runs these when a hard exit would skip the
@@ -730,10 +733,6 @@ export default async function (pi: ExtensionAPI) {
 	// One background run per conversationId at a time: two runs resuming the
 	// same conversation interleave their turns inside agy's SQLite state.
 	const busyHandles = new Set<string>();
-	// The child closed but the answer is not settled yet (discovery +
-	// classification): a stop in this window must refuse instead of settling
-	// failed and discarding a computed answer.
-	const finishing = new Set<string>();
 	const sendWake = createWakeSender(pi, {
 		customType: "ask-antigravity-result",
 		isDisposed: () => registry.isDisposed(),
@@ -749,9 +748,13 @@ export default async function (pi: ExtensionAPI) {
 				error: "stopped via /agy-stop",
 			}),
 		// The guard keeps /agy-stop from discarding an answer that already
-		// finished computing and is riding discovery to its wake.
+		// finished computing and is riding discovery to its wake. `finishing`
+		// lives in the registry (status set at child close), so the window is
+		// observable instead of wall-clock aligned.
 		guard: (run) =>
-			finishing.has(run.runId) ? `Run ${run.runId} already finished; its result is being delivered.` : null,
+			registry.get(run.runId)?.status === "finishing"
+				? `Run ${run.runId} already finished; its result is being delivered.`
+				: null,
 	});
 	pi.on("session_shutdown", () => {
 		// Latch first so close-handler wakes stay silent, then kill children,
@@ -1472,7 +1475,7 @@ export default async function (pi: ExtensionAPI) {
 			onSpawn: (kill) => {
 				kills.set(runId, kill);
 			},
-			onClose: () => finishing.add(runId),
+			onClose: () => registry.markFinishing(runId),
 		})
 			.then((outcome) => {
 				kills.delete(runId);
@@ -1517,7 +1520,6 @@ export default async function (pi: ExtensionAPI) {
 			})
 			.finally(() => {
 				cleanups.delete(runId);
-				finishing.delete(runId);
 				cleanupStaging();
 				if (o.conversationId) busyHandles.delete(o.conversationId);
 			});
