@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **ACP turns no longer report a multiplied context length that fired compaction at a fraction of the real occupancy.** agy's PromptResponse.usage sums input + cacheRead + output over EVERY inference of the prompt (billing totals), and pi reads `Usage.totalTokens` as the live context length, so each tool round-trip re-counted the whole cached prefix: an 18-step turn gauged 107% of the window at ~7% real, and pi's auto-compaction destroyed the session history for no reason (issue #12). The driver keeps the billing fields but replaces the total with the occupancy-shaped value pi expects: the observed `usage_update` occupancy when the server sends it (absent on native agy 1.5.4, probe-calibrated 2026-11-10), otherwise the derived Σinput + Σoutput + ceil(ΣcacheRead / (toolBatches + 1)) where toolBatches counts tool_call batches (a batch opens on the first tool_call after model output and closes on the next output frame, so parallel calls and out-of-order completions cannot inflate the divisor) - exact at one inference (the raw aggregate), and every miscount residual shrinks the divisor, which over-reads, the safe direction; calibrated within +11%..+57% of the real occupancy on live probe turns where the raw aggregate ran +99% (the reported 18-step sessions gauged 107-135% and would land in the low teens). `scripts/probe-acp-usage.mjs` recalibrates the formula against live frames.
+
 ## [1.10.3] - 2026-11-10
 
 ### Added

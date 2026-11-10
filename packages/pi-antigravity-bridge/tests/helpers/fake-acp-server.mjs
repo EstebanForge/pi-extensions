@@ -27,6 +27,23 @@
 //                      (completed, rawOutput only, no content) -> chunk
 //                      "DONE" -> end_turn (Gate C: diff arrives on the
 //                      PENDING frame, run 6:10)
+//   usage-single       prompt -> chunk -> end_turn WITH PromptResponse.usage
+//                      (1 inference: the aggregate IS the occupancy)
+//   usage-total        prompt -> ONE tool_call/tool_call_update pair -> chunk
+//                      -> end_turn WITH the aggregated PromptResponse.usage
+//                      (2 inferences; total must be de-quadratized)
+//   usage-occupancy    prompt -> usage_update (used) -> chunk -> end_turn WITH
+//                      the same aggregate (occupancy override wins)
+//   usage-parallel     prompt -> TWO parallel tool_call frames (one batch) ->
+//                      chunk -> end_turn WITH the same aggregate (batch
+//                      counting: divisor stays 2, not 3)
+//   usage-parallel-split same but u1 COMPLETES before u2 starts (interleaved:
+//                      still one batch, divisor 2)
+//   usage-occ-only     prompt -> usage_update (used) -> chunk -> end_turn
+//                      WITHOUT PromptResponse.usage (occupancy must survive
+//                      the Gate B synthesis)
+//   usage-occ-once     prompt 1 -> usage_update + aggregate; prompt 2 ->
+//                      aggregate only (per-turn occupancy must not leak)
 
 import fs from "node:fs";
 import readline from "node:readline";
@@ -36,6 +53,7 @@ const sessionId = "fake-session-0001";
 let pendingPromptId = null;
 let streaming = false;
 let cancellationIgnored = false;
+let promptCount = 0;
 const timers = [];
 
 // Mimic a slow signal handler: intercept SIGTERM and linger before dying, so
@@ -337,6 +355,7 @@ async function handle(msg) {
 async function streamPrompt() {
   if (streaming) return;
   streaming = true;
+  promptCount += 1;
   if (scenario === "slow") return; // never emits, never completes
   if (scenario === "cancel") {
     notifyChunk("C1");
@@ -397,6 +416,37 @@ async function streamPrompt() {
       result(pendingPromptId, { stopReason: "end_turn" });
       pendingPromptId = null;
     }
+    return;
+  }
+  if (scenario === "usage-single" || scenario === "usage-total" || scenario === "usage-occupancy" || scenario === "usage-parallel" || scenario === "usage-parallel-split" || scenario === "usage-occ-only" || scenario === "usage-occ-once") {
+    // Aggregate shape from the live probe (2026-11-10, values hard-coded so
+    // CI needs no captures): total = in+out+cache = 1850.
+    const usage = { inputTokens: 1000, outputTokens: 50, cachedReadTokens: 800, totalTokens: 1850 };
+    if (scenario === "usage-total" || scenario === "usage-parallel" || scenario === "usage-parallel-split") {
+      const ids = scenario === "usage-total" ? ["u1"] : ["u1", "u2"];
+      if (scenario === "usage-parallel-split") {
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { toolCallId: "u1", title: "Run run_command?", kind: "execute", status: "pending", rawInput: { CommandLine: "echo x" }, sessionUpdate: "tool_call" } } });
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { toolCallId: "u1", status: "completed", rawOutput: "x", sessionUpdate: "tool_call_update" } } });
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { toolCallId: "u2", title: "Run run_command?", kind: "execute", status: "pending", rawInput: { CommandLine: "echo y" }, sessionUpdate: "tool_call" } } });
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { toolCallId: "u2", status: "completed", rawOutput: "y", sessionUpdate: "tool_call_update" } } });
+      } else {
+        for (const id of ids) {
+          send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { toolCallId: id, title: "Run run_command?", kind: "execute", status: "pending", rawInput: { CommandLine: "echo x" }, sessionUpdate: "tool_call" } } });
+        }
+        for (const id of ids) {
+          send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { toolCallId: id, status: "completed", rawOutput: "x", sessionUpdate: "tool_call_update" } } });
+        }
+      }
+    }
+    if ((scenario === "usage-occupancy" || scenario === "usage-occ-only") || (scenario === "usage-occ-once" && promptCount === 1)) {
+      send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "usage_update", used: 42000, size: 1000000 } } });
+    }
+    notifyChunk("DONE");
+    if (pendingPromptId !== null) {
+      result(pendingPromptId, { stopReason: "end_turn", ...(scenario === "usage-occ-only" ? {} : { usage }) });
+      pendingPromptId = null;
+    }
+    streaming = false;
     return;
   }
   // happy / permission

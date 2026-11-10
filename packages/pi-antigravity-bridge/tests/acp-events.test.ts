@@ -294,6 +294,19 @@ describe("acp/events mapStopReason", () => {
 	});
 });
 
+describe("acp/events usage_update occupancy", () => {
+	test("used frame maps to a usage event", () => {
+		assert.deepEqual(mapUpdate({ sessionUpdate: "usage_update", used: 42000 }), { kind: "usage", used: 42000 });
+	});
+
+	test("zero (session setup), missing, and non-numeric used map to null", () => {
+		assert.equal(mapUpdate({ sessionUpdate: "usage_update", used: 0 }), null);
+		assert.equal(mapUpdate({ sessionUpdate: "usage_update" }), null);
+		assert.equal(mapUpdate({ sessionUpdate: "usage_update", used: "42000" }), null);
+		assert.equal(mapUpdate({ sessionUpdate: "usage_update", used: 1.5 }), null);
+	});
+});
+
 describe("acp/events TextAccumulator", () => {
 	test("live deltas pass through unchanged", () => {
 		const acc = new TextAccumulator();

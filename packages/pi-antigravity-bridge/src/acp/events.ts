@@ -34,6 +34,7 @@ export interface AcpEditDiff {
 export type MappedUpdate =
 	| { kind: "text"; delta: string }
 	| { kind: "thought"; delta: string }
+	| { kind: "usage"; used: number }
 	| { kind: "tool_start"; toolCallId: string; name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }
 	| { kind: "tool_done"; toolCallId: string; output?: string; diff?: AcpEditDiff; mcpServer?: string }
 	| { kind: "tool_error"; toolCallId: string; message: string; mcpServer?: string }
@@ -52,6 +53,14 @@ export function mapUpdate(update: unknown): MappedUpdate {
 			return { kind: "thought", delta: chunkText(u.content) };
 		case "user_message_chunk":
 			return { kind: "replay_user" };
+		case "usage_update": {
+			// Context-window occupancy after one inference. Absent on native agy
+			// 1.5.4 (probe 2026-11-10); other ACP runtimes send it per inference.
+			const used = u.used;
+			return typeof used === "number" && Number.isSafeInteger(used) && used > 0
+				? { kind: "usage", used }
+				: null;
+		}
 		case "tool_call": {
 			const id = stringField(u.toolCallId);
 			if (!id) return null;

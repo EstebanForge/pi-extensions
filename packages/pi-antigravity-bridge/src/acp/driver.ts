@@ -83,6 +83,20 @@ interface ActiveTurn {
 	thoughtDeltas: number;
 	/** Estimated once, not re-tokenized for every streaming delta. */
 	estimatedInputTokens: number;
+	/** Native tool_call batches seen this turn: parallel calls in one
+	 *  inference collapse to one batch. A batch opens on the first tool_call
+	 *  after model output (text/thought) and stays open until the next output
+	 *  frame, so interleaved completions cannot split it. Proxies how many
+	 *  times the model inferred; feeds the PromptResponse.usage context
+	 *  correction (issue #12). */
+	toolBatches: number;
+	/** True between the first tool_call of an inference and the next model
+	 *  output frame. tool-only inferences keep it open and merge into the
+	 *  previous batch: the divisor shrinks, the total over-reads (safe). */
+	toolBatchOpen: boolean;
+	/** Last usage_update occupancy this turn. Authoritative over every
+	 *  derived total; native agy 1.5.4 never sends it (probe 2026-11-10). */
+	contextUsed: number | undefined;
 	sawResult: boolean;
 	/** True once the prompt RPC was issued. Abort before this point has
 	 *  nothing to cancel: probing would risk a success-as-noop answer from a
@@ -341,15 +355,20 @@ export class AcpDriver implements TurnDriver {
 			const result = await conn.prompt(turn.sessionId, request.prompt, request.images, request.contextBlock);
 			if (turn.closed) return;
 			turn.sawResult = true;
-			// When a future server fills ACP PromptResponse.usage, exact counts
-			// supersede every partial estimate at the end of the turn.
-			if (result.usage) this.#emit(turn, { type: "usage", usage: result.usage });
+			// Exact PromptResponse.usage supersedes every partial estimate, but
+			// its total is a billing sum over all inferences, not context (see
+			// #derivedContextTokens): correct it before it reaches pi's gauge.
+			let settleUsage: AgyUsage | undefined;
+			if (result.usage) {
+				settleUsage = this.#contextCorrectedUsage(turn, result.usage);
+				this.#emit(turn, { type: "usage", usage: settleUsage });
+			}
 			const mapped = mapStopReason(result.stopReason);
 			this.#settle(turn, {
 				conversationId: turn.sessionId,
 				status: mapped.status,
 				response: turn.response.text,
-				usage: result.usage,
+				usage: settleUsage,
 				error: mapped.error,
 				finished: true,
 				aborted: mapped.aborted,
@@ -404,6 +423,7 @@ export class AcpDriver implements TurnDriver {
 				if (emit) {
 					turn.textDeltas += 1;
 					turn.textTokens += estimateTokens(emit);
+					turn.toolBatchOpen = false;
 					this.#emitLiveEstimate(turn);
 					this.#emit(turn, { type: "text", delta: emit });
 				}
@@ -413,11 +433,29 @@ export class AcpDriver implements TurnDriver {
 				if (!mapped.delta) return;
 				turn.thoughtDeltas += 1;
 				turn.thoughtTokens += estimateTokens(mapped.delta);
+				turn.toolBatchOpen = false;
 				this.#emitLiveEstimate(turn);
 				this.#emit(turn, { type: "thought", delta: mapped.delta });
 				return;
 			}
+			case "usage": {
+				// Occupancy frames are real server data, not the Gate B synthetic:
+				// surface them live so pi's gauge tracks the turn (toPiUsage only
+				// overwrites the fields the activity carries).
+				turn.contextUsed = mapped.used;
+				this.#emit(turn, { type: "usage", usage: { total_tokens: mapped.used } });
+				return;
+			}
 			case "tool_start": {
+				// One inference can issue several calls in parallel (and complete
+				// them out of order); the divisor must count inference batches, not
+				// frames. A batch opens on the first tool_call after model output
+				// and only model output closes it, so interleaved completions and
+				// duplicate tool_call frames never split or re-open one.
+				if (!turn.toolBatchOpen) {
+					turn.toolBatches += 1;
+					turn.toolBatchOpen = true;
+				}
 				const entry = { name: mapped.name, args: mapped.args, diff: mapped.diff, mcpServer: mapped.mcpServer };
 				turn.toolCalls.set(mapped.toolCallId, entry);
 				this.#emit(turn, { type: "tool_start", name: mapped.name, args: mapped.args, mcpServer: mapped.mcpServer, toolCallId: mapped.toolCallId });
@@ -607,8 +645,11 @@ export class AcpDriver implements TurnDriver {
 			textDeltas: 0,
 			thoughtDeltas: 0,
 			estimatedInputTokens: estimateTokens(request.contextBlock?.text ? `${request.prompt}\n${request.contextBlock.text}` : request.prompt),
+			toolBatches: 0,
+			toolBatchOpen: false,
+			contextUsed: undefined,
 			sawResult: false,
-		promptStarted: false,
+			promptStarted: false,
 			aborted: false,
 			abortedBy: null,
 			parks: 0,
@@ -779,7 +820,7 @@ export class AcpDriver implements TurnDriver {
 		// the connection outlives turns and no exact data ever replaces them
 		// on servers without PromptResponse.usage.
 		if (this.#conn?.exactUsageSeen) return undefined;
-		return synthesizeUsage({
+		const usage = synthesizeUsage({
 			mode,
 			prompt: turn.request.prompt,
 			contextText: turn.request.contextBlock?.text,
@@ -789,6 +830,30 @@ export class AcpDriver implements TurnDriver {
 			textDeltas: turn.textDeltas,
 			thoughtDeltas: turn.thoughtDeltas,
 		});
+		// Observed occupancy outranks the synthetic gauge guess; the estimate's
+		// in/out still feed the status line on servers without PromptResponse.usage.
+		if (usage && turn.contextUsed !== undefined) return { ...usage, total_tokens: turn.contextUsed };
+		return usage;
+	}
+
+	/** Keep PromptResponse.usage billing fields, replace only the context
+	 *  total. Occupancy frames win; otherwise derive (issue #12, derivation
+	 *  in AGENTS.md). */
+	#contextCorrectedUsage(turn: ActiveTurn, usage: AgyUsage): AgyUsage {
+		return { ...usage, total_tokens: turn.contextUsed ?? this.#derivedContextTokens(turn, usage) };
+	}
+
+	/** PromptResponse.usage sums input+cacheRead+output over EVERY inference
+	 *  of the prompt, but pi reads Usage.totalTokens as the live context
+	 *  length. Each inference's cacheRead is at least the warm prefix C0, so
+	 *  the batch average lower-bounds C0 and added content reaches the total
+	 *  through the Σinput term; exact at one batch (the raw aggregate). Full
+	 *  derivation in AGENTS.md. */
+	#derivedContextTokens(turn: ActiveTurn, usage: AgyUsage): number {
+		const input = usage.input_tokens ?? 0;
+		const output = usage.output_tokens ?? 0;
+		const cacheRead = usage.cache_read_tokens ?? 0;
+		return input + output + Math.ceil(cacheRead / (turn.toolBatches + 1));
 	}
 
 	#log(msg: string, data?: unknown): void {

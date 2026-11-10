@@ -824,3 +824,128 @@ describe("acp/driver usage synthesis (Gate B stopgap)", () => {
 		assert.equal(run.activities.some((a) => a.type === "usage"), true);
 	});
 });
+
+describe("acp/driver exact-usage context total (issue #12)", () => {
+	test("single-inference aggregate passes through (n=1 is exact)", async () => {
+		const run = await tracked("usage-single", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.deepEqual(outcome.usage, {
+			input_tokens: 1000,
+			output_tokens: 50,
+			cache_read_tokens: 800,
+			total_tokens: 1850,
+		});
+		const usage = run.activities.filter((a) => a.type === "usage").at(-1);
+		assert.ok(usage && usage.type === "usage");
+		assert.equal(usage.usage.total_tokens, 1850);
+	});
+
+	test("multi-step aggregate is de-quadratized by the tool round-trip count", async () => {
+		// Σin 1000 + Σout 50 + ceil(ΣcacheRead 800 / (1 tool call + 1) = 2 = 400).
+		// The raw 1850 would double the true occupancy; pi reads totalTokens as
+		// context length (issue #12: 107% gauge at 10% real).
+		const run = await tracked("usage-total", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.deepEqual(outcome.usage, {
+			input_tokens: 1000,
+			output_tokens: 50,
+			cache_read_tokens: 800,
+			total_tokens: 1450,
+		});
+		const usage = run.activities.filter((a) => a.type === "usage").at(-1);
+		assert.ok(usage && usage.type === "usage");
+		assert.equal(usage.usage.total_tokens, 1450);
+	});
+
+	test("usage_update occupancy overrides the aggregate when the server sends it", async () => {
+		const run = await tracked("usage-occupancy", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		// Billing keeps the aggregate; the gauge keeps the observed occupancy.
+		assert.deepEqual(outcome.usage, {
+			input_tokens: 1000,
+			output_tokens: 50,
+			cache_read_tokens: 800,
+			total_tokens: 42000,
+		});
+		// Live occupancy reached pi mid-turn, and every usage activity after
+		// the occupancy frame keeps it (estimates must not clobber the gauge).
+		const firstLive = run.activities.findIndex((a) => a.type === "usage" && a.usage.total_tokens === 42000);
+		assert.ok(firstLive >= 0, "mid-turn occupancy activity missing");
+		for (const a of run.activities.slice(firstLive)) {
+			if (a.type === "usage") assert.equal(a.usage.total_tokens, 42000);
+		}
+	});
+
+	test("parallel tool calls are one inference batch, not one step each", async () => {
+		// Two tool_call frames inside ONE inference: divisor must stay 2
+		// (1450), not 3 (1317). An inflated divisor under-reads the warm-prefix
+		// cache floor and can hide real occupancy from pi's compaction.
+		const run = await tracked("usage-parallel", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.usage?.total_tokens, 1450);
+	});
+
+	test("interleaved completions cannot split one inference batch", async () => {
+		// u1 completes before u2 starts: still one batch, divisor 2.
+		const run = await tracked("usage-parallel-split", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.usage?.total_tokens, 1450);
+	});
+
+	test("occupancy survives Gate B synthesis when PromptResponse.usage is absent", async () => {
+		const run = await tracked("usage-occ-only", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.ok(outcome.usage, "synthesis still fills the status fields");
+		assert.equal(outcome.usage?.total_tokens, 42000);
+		// The estimate's in/out survive for the status line; the occupancy
+		// stamp covers the total only.
+		assert.ok((outcome.usage?.input_tokens ?? 0) > 0);
+		assert.ok((outcome.usage?.output_tokens ?? 0) > 0);
+		const firstLive = run.activities.findIndex((a) => a.type === "usage" && a.usage.total_tokens === 42000);
+		assert.ok(firstLive >= 0, "mid-turn occupancy activity missing");
+		for (const a of run.activities.slice(firstLive)) {
+			if (a.type === "usage") assert.equal(a.usage.total_tokens, 42000);
+		}
+	});
+
+	test("occupancy does not leak across turns on a reused connection", async () => {
+		let driverRef: AcpDriver | undefined;
+		const first = await tracked("usage-occ-once", {
+			prompt: "hi",
+			onHandle: (_handle, driver) => {
+				driverRef = driver;
+			},
+		});
+		assert.equal((await first.handle.outcome).usage?.total_tokens, 42000);
+		assert.ok(driverRef);
+		const activities: DriverActivity[] = [];
+		const handle = await driverRef.run({
+			cwd: path.dirname(first._logPath),
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			conversationId: null,
+			prompt: "again",
+		});
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+		assert.equal(outcome.status, "OK");
+		// Turn 2 carries no occupancy: the derived path (n=1 raw aggregate),
+		// never turn 1's stale 42000.
+		assert.equal(outcome.usage?.total_tokens, 1850);
+	});
+});
