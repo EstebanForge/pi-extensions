@@ -30,7 +30,7 @@ const TEST_COMMAND_PATTERNS = [
 	/^mocha\b/,
 	/^ava\b/,
 	/^tap\b/,
-	/^node\s+--test\b/,
+	/^node\s+(?:\S+\s+)*--test\b/,
 ] as const;
 
 const TEST_RESULT_PATTERNS = [
@@ -46,6 +46,7 @@ const FAILURE_START_PATTERNS = [
 	/^\s*●\s+/,
 	/^\s*✕\s+/,
 	/^\s*✖\s+(?!failing tests:)/,
+	/^not ok\b/,
 	/test\s+\w+\s+\.\.\.\s*FAILED/,
 	/thread\s+'\w+'\s+panicked/,
 ];
@@ -157,9 +158,11 @@ export function aggregateTestOutput(
 		summary.passed = stats.passed ?? 0;
 		summary.failed = stats.failed ?? 0;
 		summary.skipped = stats.skipped ?? 0;
-	} else {
-		// No summary pattern matched: scan lines, trusting only line-start fail
-		// evidence (see FALLBACK_FAIL_PATTERN).
+	}
+	// All-zero summaries (a cargo binary with zero tests) still scan: the
+	// anchored fail pattern keeps summary lookalikes like "ℹ fail 0" out, so the
+	// scan cannot resurrect phantom failures.
+	if (!stats || (summary.passed === 0 && summary.failed === 0)) {
 		for (const line of lines) {
 			if (FALLBACK_PASS_PATTERN.test(line)) {
 				summary.passed++;

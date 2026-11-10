@@ -6,7 +6,7 @@ import { mock, runTest } from "./helpers";
 import { matchesCommandPatterns, normalizeCommandForDetection } from "../lib/techniques/command-detection";
 import { compactPath } from "../lib/techniques/path-utils";
 import { filterAggressive } from "../lib/techniques/source";
-import { aggregateTestOutput } from "../lib/techniques/test-output";
+import { aggregateTestOutput, isTestCommand } from "../lib/techniques/test-output";
 import { applyWindowsBashCompatibilityFixes } from "../lib/windows-command-helpers";
 import { applyRewrittenCommandShellSafetyFixups } from "../lib/rewrite-pipeline-safety";
 import { applyRtkCommandEnvironment } from "../lib/rtk-command-environment";
@@ -388,6 +388,49 @@ runTest("test output prefers vitest summary over stray node:test summary lines",
 
 	assert.ok(result?.includes("PASS: 39 passed"));
 	assert.ok(result?.includes("FAIL: 4 failed"));
+});
+
+// An all-zero summary (a cargo binary with zero tests, printed first) must not
+// stop the line scan: later binaries' results still need counting. The scan
+// counts each binary's summary "ok" too, so the pass count over-reports by the
+// number of green result lines — still closer to truth than a hard 0.
+runTest("test output scans past an all-zero cargo summary for later binaries", () => {
+	const output = [
+		"running 0 tests",
+		"test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured;",
+		"     Running unittests src/lib.rs",
+		"running 1 test",
+		"test add_works ... ok",
+		"test result: ok. 1 passed; 0 failed; 0 ignored;",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "cargo test");
+
+	assert.ok(result?.includes("PASS: 3 passed"));
+});
+
+runTest("command detection recognizes node --test behind node flags", () => {
+	assert.ok(isTestCommand("node --import tsx --test"));
+	assert.ok(isTestCommand("node --experimental-strip-types --test"));
+});
+
+// TAP reporters print failures as "not ok N - name"; the counts alone are not
+// enough, the failure list must carry the name too.
+runTest("test output surfaces TAP not ok failures", () => {
+	const output = [
+		"TAP version 13",
+		"ok 1 - passes with defaults",
+		"not ok 2 - failover chain",
+		"1..2",
+		"# tests 2",
+		"# pass 1",
+		"# fail 1",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "npm test");
+
+	assert.ok(result?.includes("FAIL: 1 failed"));
+	assert.ok(result?.includes("failover chain"));
 });
 
 runTest("command detection ignores env prefixes, blank lines, and chained suffixes", () => {
