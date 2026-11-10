@@ -41,7 +41,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { Text } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { contentText } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
@@ -861,7 +861,7 @@ export default async function (pi: ExtensionAPI) {
 						},
 					};
 				},
-				DIALOG_OPTIONS,
+				{ ...DIALOG_OPTIONS, blocked: dialogBlocked("AskAntigravity defaults") },
 			);
 
 			if (Object.keys(pending).length === 0) return;

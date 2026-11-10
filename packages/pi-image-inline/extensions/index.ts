@@ -36,7 +36,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { getImageDimensions } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -278,7 +278,7 @@ export default function (pi: ExtensionAPI) {
 					},
 				};
 			},
-			DIALOG_OPTIONS,
+			{ ...DIALOG_OPTIONS, blocked: dialogBlocked("image-inline settings") },
 		);
 
 		// Persist genuine deltas only; net-zero flips never touch the file.

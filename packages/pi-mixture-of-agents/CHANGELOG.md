@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The /moa menu and the model-slot picker report blocked-on-user-input while open.** Pi 1.5.1 lets overlay dialogs declare a blocked program status (OSC 7501); both now pass it, so terminal automation watching the session sees pi waiting on input instead of idle. Pi dependency floor moved to ^1.5.1.
+- New dependency: `@estebanforge/pi-tui-dialogs` ^0.1.2 (the `dialogBlocked` helper both UIs now pass).
+
 ## 1.0.2 — 2026-09-19
 
 ### Fixed

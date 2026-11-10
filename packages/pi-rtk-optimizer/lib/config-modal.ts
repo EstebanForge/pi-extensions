@@ -1,6 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogTab } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogTab } from "@estebanforge/pi-tui-dialogs";
 import { toOnOff } from "./boolean-format.js";
 import type { RtkIntegrationController } from "./command-register.js";
 import {
@@ -490,7 +490,7 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: RtkIn
 				},
 			};
 		},
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked("Pi RTK Optimizer") },
 	);
 }
 

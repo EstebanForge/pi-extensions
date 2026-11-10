@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The options dialog and the usage range picker report blocked-on-user-input while open.** Pi 1.5.1 lets overlay dialogs declare a blocked program status (OSC 7501); both now pass it, so terminal automation watching the session sees pi waiting on input instead of idle. Pi dependency floor moved to ^1.5.1.
+
 ## 1.3.2 — 2026-11-02
 
 ### Added

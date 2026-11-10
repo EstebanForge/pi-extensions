@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
@@ -590,7 +590,7 @@ export default function agentmemoryExtension(pi: ExtensionAPI) {
             },
           };
         },
-        DIALOG_OPTIONS,
+        { ...DIALOG_OPTIONS, blocked: dialogBlocked(`agentmemory — server: ${healthText}`) },
       );
 
       // Dialog closed. ctx is still valid here (reload is the only

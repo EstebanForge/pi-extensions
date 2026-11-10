@@ -12,6 +12,12 @@ Dialog pattern adapted from
 - `frameDialog` / `dialogHeight` / `DIALOG_OPTIONS` — shared rounded frame:
   title in the top border, body, footer line above the bottom border, padded to
   a stable height so centered overlays do not jump between views.
+- `dialogBlocked(title)` — the pi 1.5.1 overlay `blocked` option payload
+  (`{ kind: "question", message: title }`): pi reports the overlay as waiting
+  on user input (OSC 7501) until `done()`, also while hidden. `dialogMenu`,
+  `dialogInput`, and `dialogChoice` pass it for you; hand-rolled overlays can
+  spread it into their own `ctx.ui.custom` options. Hosts older than pi 1.5.1
+  ignore the field.
 - `DialogMenu` / `dialogMenu` — framed menu with `label │ value` rows, a
   counter line, a muted help panel for the selected row, optional tab groups
   (left/right to switch) and type-to-search within the active tab. Rows with

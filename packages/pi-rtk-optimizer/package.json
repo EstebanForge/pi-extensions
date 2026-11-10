@@ -49,7 +49,7 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@earendil-works/pi-coding-agent": "^1.5.1",
     "@earendil-works/pi-tui": "^1.0.0"
   },
   "peerDependenciesMeta": {
@@ -64,6 +64,6 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@estebanforge/pi-tui-dialogs": "^0.1.1"
+    "@estebanforge/pi-tui-dialogs": "^0.1.2"
   }
 }

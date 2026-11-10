@@ -21,7 +21,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { statusTool } from "../lib/tools/status";
 import { diffTool } from "../lib/tools/diff";
 import { logTool } from "../lib/tools/log";
@@ -448,7 +448,7 @@ async function openConfigModal(
         },
       };
     },
-    DIALOG_OPTIONS,
+    { ...DIALOG_OPTIONS, blocked: dialogBlocked("git-me extension settings") },
   );
 
   // Persist genuine deltas only (drop net-zero flips). The generic onChange

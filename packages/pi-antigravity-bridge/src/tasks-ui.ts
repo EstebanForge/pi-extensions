@@ -8,6 +8,7 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
+import { dialogBlocked } from "@estebanforge/pi-tui-dialogs";
 import type { AgyTask } from "./tasks.js";
 
 export type TasksBrowserAction = { type: "rescan" } | { type: "close" };
@@ -84,5 +85,6 @@ export async function showTasksBrowser(
 	}, {
 		overlay: true,
 		overlayOptions: { anchor: "center" as const, width: 72, maxHeight: "85%" as const, margin: 1 },
+		blocked: dialogBlocked(`Antigravity tasks (${tasks.length})`),
 	});
 }

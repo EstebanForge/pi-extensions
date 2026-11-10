@@ -3,7 +3,7 @@
 // from pi-antigravity-bridge's first-run engine picker.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi, type SelectItem, SelectList } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, dialogHeight, dialogText, frameDialog, type DialogHost } from "./frame.js";
+import { DIALOG_OPTIONS, dialogBlocked, dialogHeight, dialogText, frameDialog, type DialogHost } from "./frame.js";
 import type { DialogContext } from "./menu.js";
 
 /** Hard cap on the option list. A closed choice stays scannable; past ten
@@ -148,6 +148,6 @@ export async function dialogChoice(
 	assertChoiceOptions(options.options, options.selected);
 	return ctx.ui.custom<string | undefined>(
 		(host, theme, _keys, done) => new ChoiceView(host, theme, title, options, done),
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked(title) },
 	);
 }

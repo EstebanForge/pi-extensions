@@ -14,6 +14,7 @@ import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@e
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem, getKeybindings, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
+import { dialogBlocked } from "@estebanforge/pi-tui-dialogs";
 import { TurnCache } from "../lib/dedup";
 import { loadConfig, resolvePreset, formatPresetList, upsertPreset, removePreset, renamePreset, saveConfig, normalizePreset, userConfigPath } from "../lib/config";
 import { runPresetTurn } from "../lib/engine";
@@ -381,7 +382,7 @@ async function runMoaScreen(ctx: ExtensionCommandContext): Promise<void> {
 				tui.requestRender();
 			},
 		};
-	});
+	}, { blocked: dialogBlocked("Mixture of Agents") });
 
 	// Menu closed. Run a staged modal action first (each saves + reloads on its
 	// own); otherwise persist enabled/default deltas with a single reload.
@@ -593,7 +594,7 @@ async function pickModelSlot(
 				picker.handleInput?.(data);
 			},
 		};
-	});
+	}, { blocked: dialogBlocked(title) });
 
 	if (!chosen) return undefined;
 	const idx = chosen.indexOf("/");

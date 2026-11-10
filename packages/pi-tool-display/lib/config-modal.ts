@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow, type DialogTab } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow, type DialogTab } from "@estebanforge/pi-tui-dialogs";
 import type { ToolDisplayCapabilities } from "./capabilities.js";
 import { getToolDisplayConfigPath } from "./config-store.js";
 import {
@@ -325,7 +325,7 @@ export async function openSettingsModal(ctx: ExtensionCommandContext, controller
 				},
 			};
 		},
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked("Pi Tool Display settings") },
 	);
 }
 

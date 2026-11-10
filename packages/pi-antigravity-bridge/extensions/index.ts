@@ -28,7 +28,7 @@ import {
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import {
 	entriesFromRaw,
 	FALLBACK_MODELS,
@@ -1829,7 +1829,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 				},
 			};
 		},
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked("Antigravity provider") },
 	);
 
 	if (Object.keys(pending).length === 0) {

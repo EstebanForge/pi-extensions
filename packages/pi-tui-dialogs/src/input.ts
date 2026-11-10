@@ -4,7 +4,7 @@
 // (MIT, Copyright (c) 2026 pi-subagent contributors).
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Input, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, dialogHeight, dialogText, frameDialog, type DialogHost } from "./frame.js";
+import { DIALOG_OPTIONS, dialogBlocked, dialogHeight, dialogText, frameDialog, type DialogHost } from "./frame.js";
 import type { DialogContext } from "./menu.js";
 
 export interface DialogInputOptions {
@@ -102,6 +102,6 @@ export function dialogInput(
 ): Promise<string | undefined> {
 	return ctx.ui.custom<string | undefined>(
 		(host, theme, _keys, done) => new InputView(host, theme, title, options, done),
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked(title) },
 	);
 }

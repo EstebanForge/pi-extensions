@@ -2,7 +2,7 @@
 // the error rendered inline; valid input resolves; esc resolves undefined.
 import { describe, expect, it } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { dialogInput, type DialogContext } from "../src/index.js";
+import { dialogInput, dialogBlocked, DIALOG_OPTIONS, type DialogContext } from "../src/index.js";
 
 const theme = { fg: (_c: string, t: string) => t } as unknown as Theme;
 
@@ -10,6 +10,7 @@ type Captured = {
 	host: { requestRender(): void; terminal: { rows: number } };
 	done: (value: string | undefined) => void;
 	view: { render(width: number): string[]; handleInput(data: string): void };
+	options: unknown;
 };
 
 // pi-tui 1.2 moved its cursor/fake-cursor markers to APC sequences
@@ -19,7 +20,7 @@ const stripAnsi = (text: string) =>
 		.replace(/\x1b\[[0-9;:?]*[a-zA-Z]/g, "")
 		.replace(/\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 
-/** Stand-in for ctx.ui.custom: captures the factory result and its done callback. */
+/** Stand-in for ctx.ui.custom: captures the options, the factory result, and its done callback. */
 function captureCtx(): { ctx: DialogContext; captured: Captured[] } {
 	const captured: Captured[] = [];
 	const ctx: DialogContext = {
@@ -27,12 +28,12 @@ function captureCtx(): { ctx: DialogContext; captured: Captured[] } {
 		mode: "tui",
 		ui: {
 			notify() {},
-			custom<T>(factory: (host: never, theme: Theme, keys: never, done: (v: T) => void) => unknown): Promise<T> {
+			custom<T>(factory: (host: never, theme: Theme, keys: never, done: (v: T) => void) => unknown, options?: unknown): Promise<T> {
 				return new Promise<T>((resolve) => {
 					const done = (value: T) => resolve(value);
 					const host = { requestRender() {}, terminal: { rows: 24 } };
 					const view = factory(host as never, theme, undefined as never, done as never) as Captured["view"];
-					captured.push({ host, done: done as (value: string | undefined) => void, view });
+					captured.push({ host, done: done as (value: string | undefined) => void, view, options });
 				});
 			},
 		},
@@ -41,6 +42,13 @@ function captureCtx(): { ctx: DialogContext; captured: Captured[] } {
 }
 
 describe("dialogInput", () => {
+	it("reports blocked program status with the dialog title (pi 1.5.1 overlay option)", async () => {
+		const { ctx, captured } = captureCtx();
+		void dialogInput(ctx, "Cap", {});
+		await Promise.resolve();
+		expect(captured[0]!.options).toEqual({ ...DIALOG_OPTIONS, blocked: dialogBlocked("Cap") });
+	});
+
 	it("prefills with the cursor at the end, accepts valid input", async () => {
 		const { ctx, captured } = captureCtx();
 		const promise = dialogInput(ctx, "Cap", { initial: "10", validate: (raw) => (/^\d+$/.test(raw) ? undefined : "not a number") });

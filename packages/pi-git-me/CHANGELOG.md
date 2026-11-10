@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The settings dialog reports blocked-on-user-input while open.** Pi 1.5.1 lets overlay dialogs declare a blocked program status (OSC 7501); the dialog now passes it, so terminal automation watching the session sees pi waiting on input instead of idle. Pi dependency floor moved to ^1.5.1.
+
 ## 1.7.1 — 2026-11-05
 
 ### Fixed

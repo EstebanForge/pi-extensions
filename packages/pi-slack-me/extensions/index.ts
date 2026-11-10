@@ -20,7 +20,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { listChannelsTool } from "../lib/tools/list-channels";
 import { readMessagesTool } from "../lib/tools/read-messages";
 import { readThreadTool } from "../lib/tools/read-thread";
@@ -387,7 +387,7 @@ async function openConfigModal(
         },
       };
     },
-    DIALOG_OPTIONS,
+    { ...DIALOG_OPTIONS, blocked: dialogBlocked("Slack extension settings") },
   );
 
   // Persist genuine deltas only (drop net-zero flips). The generic onChange

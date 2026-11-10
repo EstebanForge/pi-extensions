@@ -23,6 +23,14 @@ export const DIALOG_OPTIONS = {
 	},
 } as const;
 
+/** Blocked program status (OSC 7501) for a dialog overlay: pi reports the
+ *  overlay as waiting on user input until done(), also while hidden. Hosts
+ *  older than pi 1.5.1 ignore the field. Pi's own selectors use the same
+ *  convention: kind "question", message = dialog title. */
+export function dialogBlocked(title: string): { kind: "question"; message: string } {
+	return { kind: "question", message: title };
+}
+
 /** Strip ANSI and control characters from untrusted row text. */
 export function dialogText(text: string): string {
 	return stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");

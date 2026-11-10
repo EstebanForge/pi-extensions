@@ -21,7 +21,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { searchObjectsTool } from "../lib/tools/search";
 import { getMeTool } from "../lib/tools/me";
 import { getMyTasksTool } from "../lib/tools/my-tasks";
@@ -359,7 +359,7 @@ async function openConfigModal(
         },
       };
     },
-    DIALOG_OPTIONS,
+    { ...DIALOG_OPTIONS, blocked: dialogBlocked("Asana extension settings") },
   );
 
   // Drop net-zero flips, persist genuine deltas. File-backed setter applies

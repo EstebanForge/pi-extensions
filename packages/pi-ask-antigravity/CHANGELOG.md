@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The AskAntigravity defaults dialog reports blocked-on-user-input while open.** Pi 1.5.1 lets overlay dialogs declare a blocked program status (OSC 7501); the dialog now passes it, so terminal automation watching the session sees pi waiting on input instead of idle. Pi dependency floor moved to ^1.5.1.
+
 ### Fixed
 - Windows: `agy models` discovery now resolves the binary like the shared runner does (native `.exe`/`.com` on `PATH`, explicit `AGY_BIN` paths honored, npm shims reported as unavailable instead of a cryptic spawn failure), and every run kills its process tree via `taskkill` instead of POSIX group signals that never fire on Windows.
 

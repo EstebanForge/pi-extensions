@@ -8,7 +8,7 @@ import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_pr
 import type { Static } from "typebox";
 import { Type } from "typebox";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 
 /**
  * Single source of truth for the CodeGraph settings flags. Drives registerFlag,
@@ -1248,7 +1248,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
             },
           };
         },
-        DIALOG_OPTIONS,
+        { ...DIALOG_OPTIONS, blocked: dialogBlocked("CodeGraph settings") },
       );
 
       // Dialog closed. Drop net-zero flips, persist genuine deltas, reload once.

@@ -43,7 +43,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum, contentText } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { Type } from "typebox";
 import {
 	BackgroundRunRegistry,
@@ -632,7 +632,7 @@ export default async function (pi: ExtensionAPI) {
 						},
 					};
 				},
-				DIALOG_OPTIONS,
+				{ ...DIALOG_OPTIONS, blocked: dialogBlocked("AskCodex defaults") },
 			);
 
 			if (Object.keys(pending).length === 0) return;

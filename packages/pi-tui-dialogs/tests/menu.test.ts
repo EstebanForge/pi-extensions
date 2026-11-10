@@ -4,8 +4,8 @@
 // rendering goes through the real pi-tui paths.
 import { describe, expect, it } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { dialogHeight, dialogText, frameDialog } from "../src/frame.js";
-import { DialogMenu, type DialogRow } from "../src/menu.js";
+import { DIALOG_OPTIONS, dialogBlocked, dialogHeight, dialogText, frameDialog } from "../src/frame.js";
+import { DialogMenu, dialogMenu, type DialogContext, type DialogRow } from "../src/menu.js";
 
 const host = () => ({ requestRender() {}, terminal: { rows: 24 } });
 
@@ -222,5 +222,62 @@ describe("DialogMenu", () => {
 describe("dialogText", () => {
 	it("strips ANSI and replaces control characters with spaces", () => {
 		expect(dialogText("\x1b[31mred\x1b[0m\x07!")).toBe("red !");
+	});
+});
+
+describe("dialogMenu wrapper", () => {
+	const rows: DialogRow[] = [
+		{ id: "a", label: "Alpha", currentValue: "on", values: ["on", "off"] },
+		{ id: "b", label: "Beta", currentValue: "" },
+	];
+
+	/** Stand-in for ctx.ui.custom: captures the options and routes input to the view. */
+	function captureCtx(): { ctx: DialogContext; options: unknown; handleInput(data: string): void; done(value: string | undefined): void } {
+		let capturedOptions: unknown;
+		let view: { handleInput?(data: string): void } | undefined;
+		let resolveDone: ((value: string | undefined) => void) | undefined;
+		const ctx: DialogContext = {
+			hasUI: true,
+			mode: "tui",
+			ui: {
+				notify() {},
+				custom<T>(factory: (host: never, theme: Theme, keys: never, done: (v: T) => void) => unknown, options?: unknown): Promise<T> {
+					capturedOptions = options;
+					return new Promise<T>((resolve) => {
+						resolveDone = resolve as (value: string | undefined) => void;
+						const host = { requestRender() {}, terminal: { rows: 24 } };
+						view = factory(host as never, theme, undefined as never, resolve as never) as { handleInput?(data: string): void };
+					});
+				},
+			},
+		};
+		return {
+			ctx,
+			get options() {
+				return capturedOptions;
+			},
+			handleInput(data: string) {
+				view?.handleInput?.(data);
+			},
+			done(value: string | undefined) {
+				resolveDone?.(value);
+			},
+		};
+	}
+
+	it("reports blocked program status with the dialog title (pi 1.5.1 overlay option)", async () => {
+		const dialog = captureCtx();
+		const promise = dialogMenu(dialog.ctx, "Settings", rows);
+		await Promise.resolve();
+		expect(dialog.options).toEqual({ ...DIALOG_OPTIONS, blocked: dialogBlocked("Settings") });
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\r");
+		await expect(promise).resolves.toBe("b");
+	});
+});
+
+describe("dialogBlocked", () => {
+	it("builds the pi overlay blocked payload from the title", () => {
+		expect(dialogBlocked("AskClaude defaults")).toEqual({ kind: "question", message: "AskClaude defaults" });
 	});
 });

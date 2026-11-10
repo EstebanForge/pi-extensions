@@ -9,6 +9,7 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
+import { dialogBlocked } from "@estebanforge/pi-tui-dialogs";
 import type { AgyArtifact } from "./artifacts.js";
 
 export type ArtifactsBrowserAction =
@@ -82,5 +83,6 @@ export async function showArtifactsBrowser(
 	}, {
 		overlay: true,
 		overlayOptions: { anchor: "center" as const, width: 84, maxHeight: "85%" as const, margin: 1 },
+		blocked: dialogBlocked(`Antigravity artifacts (${artifacts.length})`),
 	});
 }

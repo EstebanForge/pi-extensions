@@ -2,6 +2,7 @@
 // adapted from pi-subagent-manager (MIT); see LICENSE for attribution.
 export {
 	DIALOG_OPTIONS,
+	dialogBlocked,
 	dialogHeight,
 	dialogText,
 	frameDialog,

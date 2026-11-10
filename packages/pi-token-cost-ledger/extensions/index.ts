@@ -41,7 +41,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { appendFile, mkdir, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -1440,7 +1440,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					};
 				},
-				DIALOG_OPTIONS,
+				{ ...DIALOG_OPTIONS, blocked: dialogBlocked(header) },
 			);
 
 			// Dialog closed. ctx is still valid here (reload is the only staleness
@@ -1654,6 +1654,8 @@ export default function (pi: ExtensionAPI) {
 							tui.requestRender();
 						},
 					};
+				}, {
+					blocked: dialogBlocked("Token usage — select a range"),
 				});
 				// Dialog closed. ctx still valid (no reload happened). Run the
 				// chosen range; Esc/cancel → chosen stays null, no-op.

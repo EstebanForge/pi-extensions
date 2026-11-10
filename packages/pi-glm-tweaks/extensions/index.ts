@@ -79,7 +79,7 @@
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "../lib/string-enum";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/models";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { Type } from "typebox";
 import { loadFlagSettings, loadStringSettings, saveSetting, getSettingsPath } from "../lib/flag-settings";
 import { ZaiMcpSearchClient, type ZaiSearchResult, type ZaiWebSearchArgs } from "../lib/zai-search";
@@ -683,11 +683,12 @@ export default function (pi: ExtensionAPI) {
 				})),
 			];
 
+			const header = active
+				? `GLM tweaks — ${ctx.model!.provider}/${ctx.model!.id} active`
+				: "GLM tweaks — inactive (select zai/glm-5.2, zai/glm-5.3, zai/glm-5.3-flash, or a newer glm-5.x)";
+
 			await ctx.ui.custom<void>(
 				(host, theme, _kb, done) => {
-					const header = active
-						? `GLM tweaks — ${ctx.model!.provider}/${ctx.model!.id} active`
-						: "GLM tweaks — inactive (select zai/glm-5.2, zai/glm-5.3, zai/glm-5.3-flash, or a newer glm-5.x)";
 					const menu = new DialogMenu(
 						host,
 						theme,
@@ -715,7 +716,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					};
 				},
-				DIALOG_OPTIONS,
+				{ ...DIALOG_OPTIONS, blocked: dialogBlocked(header) },
 			);
 
 			// Dialog closed. ctx is still valid here (reload is the only

@@ -4,7 +4,7 @@
 // unit-tested; this module also owns the overlay + input-dialog glue.
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, InputView, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { DIALOG_OPTIONS, DialogMenu, InputView, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import { SETTING_LIMITS, type Reviewer, type UnblockSettings } from "./settings.js";
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -384,7 +384,7 @@ export async function openUnblockSettings(
 				},
 			};
 		},
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked("peer-review settings") },
 	);
 
 	return touched ? pending : null;

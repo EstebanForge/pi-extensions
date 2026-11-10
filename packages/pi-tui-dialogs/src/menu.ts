@@ -5,7 +5,7 @@
 // contributors.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi, type SettingItem } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, dialogHeight, dialogText, frameDialog, type DialogHost } from "./frame.js";
+import { DIALOG_OPTIONS, dialogBlocked, dialogHeight, dialogText, frameDialog, type DialogHost } from "./frame.js";
 
 /** A menu row is a pi-tui SettingItem; `onEdit` additionally opens a custom
  *  editor (input dialog, submenu) on Enter and keeps the menu open. Rows with
@@ -250,7 +250,7 @@ export function dialogMenu(
 	return ctx.ui.custom(
 		(host, theme, _keys, done) =>
 			new DialogMenu(host, theme, { title, rows, ...options }, done),
-		DIALOG_OPTIONS,
+		{ ...DIALOG_OPTIONS, blocked: dialogBlocked(title) },
 	);
 }
 

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The Antigravity provider dialog and the /agy artifacts and tasks browsers report blocked-on-user-input while open.** Pi 1.5.1 lets overlay dialogs declare a blocked program status (OSC 7501); all three now pass it, so terminal automation watching the session sees pi waiting on input instead of idle. Pi dependency floor moved to ^1.5.1.
+
 ## [1.10.2] - 2026-11-09
 
 ### Added
