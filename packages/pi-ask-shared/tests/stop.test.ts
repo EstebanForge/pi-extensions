@@ -16,6 +16,30 @@ const makeFixture = (guard?: (run: BackgroundRun) => string | null) => {
 };
 
 describe("createStopHandler", () => {
+	it("a lone finishing run reaches the guard instead of the nothing-running reply", async () => {
+		const { registry, kill, onStopped, stop } = makeFixture(
+			() => "Run bg_001 already finished; its result is being delivered.",
+		);
+		const run = registry.start("one");
+		registry.markFinishing(run.runId);
+		const message = await stop("");
+		expect(message).toMatch(/already finished/);
+		expect(kill).not.toHaveBeenCalled();
+		expect(onStopped).not.toHaveBeenCalled();
+		expect(registry.get(run.runId)?.status).toBe("finishing");
+	});
+
+	it("a named finishing run reaches the guard, not the not-running reply", async () => {
+		const { registry, kill, stop } = makeFixture(
+			() => "Run bg_001 already finished; its result is being delivered.",
+		);
+		const run = registry.start("one");
+		registry.markFinishing(run.runId);
+		const message = await stop("001");
+		expect(message).toMatch(/already finished/);
+		expect(kill).not.toHaveBeenCalled();
+	});
+
 	it("stops the only running run when no arg is given and reports it", async () => {
 		const { registry, kill, onStopped, stop } = makeFixture();
 		const run = registry.start("review foo");

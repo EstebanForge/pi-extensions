@@ -9,7 +9,8 @@ export interface BackgroundRun {
 	summary: string;
 	startedAt: number;
 	settledAt?: number;
-	status: "running" | "done" | "failed";
+	/** `finishing` = child closed, answer discovery still riding to settle; a stop in this window must refuse. */
+	status: "running" | "finishing" | "done" | "failed";
 	/** Full peer answer, set on done. */
 	output?: string;
 	/** Resume-handle line, e.g. `sessionId=abc`. Fresh runs have none until close. */
@@ -77,11 +78,12 @@ export class BackgroundRunRegistry {
 
 	/**
 	 * Settles a run exactly once. Later settles are rejected so timeout, abort
-	 * and close handlers can all fire without double-sending a wake.
+	 * and close handlers can all fire without double-sending a wake. The normal
+	 * route settles from `finishing` (child closed, discovery done).
 	 */
 	settle(runId: string, patch: { status: "done" | "failed"; output?: string; handle?: string; error?: string }): boolean {
 		const run = this.#runs.get(runId);
-		if (!run || run.status !== "running") {
+		if (!run || (run.status !== "running" && run.status !== "finishing")) {
 			return false;
 		}
 		run.status = patch.status;
@@ -89,6 +91,20 @@ export class BackgroundRunRegistry {
 		run.handle = patch.handle;
 		run.error = patch.error;
 		run.settledAt = Date.now();
+		return true;
+	}
+
+	/**
+	 * Latches the child-closed-but-not-settled window. Runs in `finishing` hold
+	 * no process anymore (their concurrency slot is free) and are never TTL-
+	 * swept: the answer still owes a wake.
+	 */
+	markFinishing(runId: string): boolean {
+		const run = this.#runs.get(runId);
+		if (!run || run.status !== "running") {
+			return false;
+		}
+		run.status = "finishing";
 		return true;
 	}
 

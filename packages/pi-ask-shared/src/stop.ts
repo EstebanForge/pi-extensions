@@ -19,7 +19,7 @@ export interface StopHandlerOptions {
  * owning package wires it to pi.registerCommand and displays the reply.
  *
  * Behavior:
- * - no arg, one running run: stop it
+ * - no arg, one running run: stop it (a finishing run reaches the guard first)
  * - no arg, several running: list them, stop nothing
  * - no arg, none running: say so
  * - arg: unique id-prefix match, stop it; settled matches report as not running
@@ -41,22 +41,25 @@ export function createStopHandler(
 			}
 			return `No run matches "${query}" and nothing is running.`;
 		}
-		if (run.status !== "running") {
+		if (!stoppable(run)) {
 			return `Run ${run.runId} is not running (status: ${run.status}).`;
 		}
 		return stopRun(registry, options, run);
 	};
 }
 
+/** The child may still be stopped: running, or closed but riding discovery to its settle. */
+const stoppable = (run: BackgroundRun): boolean => run.status === "running" || run.status === "finishing";
+
 function stopBestMatch(registry: BackgroundRunRegistry, options: StopHandlerOptions): string {
-	const running = registry.list("running");
-	if (running.length === 0) {
+	const active = registry.list().filter(stoppable);
+	if (active.length === 0) {
 		return "No running background runs.";
 	}
-	if (running.length > 1) {
-		return `Several runs are active, name one: ${running.map((r) => `${r.runId} (${r.summary})`).join(", ")}`;
+	if (active.length > 1) {
+		return `Several runs are active, name one: ${active.map((r) => `${r.runId} (${r.summary})`).join(", ")}`;
 	}
-	return stopRun(registry, options, running[0]);
+	return stopRun(registry, options, active[0]);
 }
 
 function stopRun(registry: BackgroundRunRegistry, options: StopHandlerOptions, run: BackgroundRun): string {

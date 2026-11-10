@@ -2,7 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.1.5] - 2026-11-10
+
+### Added
+- **Background runs now track the child-closed window as explicit registry state.** `BackgroundRun.status` gains `finishing` and `markFinishing()` latches the running-to-finishing transition at child close; `settle()` accepts settling from it. The concurrency cap frees the slot once the child closed (finishing runs hold no process), and the TTL sweep never drops a finishing run because its answer still owes a wake.
 
 ## [0.1.4] - 2026-11-09
 

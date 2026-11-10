@@ -97,6 +97,51 @@ describe("BackgroundRunRegistry.sweep", () => {
 	});
 });
 
+describe("BackgroundRunRegistry.markFinishing", () => {
+	it("latches running -> finishing once, and settle stays legal from there", () => {
+		const reg = makeRegistry();
+		reg.start("one");
+		expect(reg.markFinishing("bg_001")).toBe(true);
+		expect(reg.get("bg_001")?.status).toBe("finishing");
+		expect(reg.markFinishing("bg_001")).toBe(false);
+		// The close path settles after discovery: settling from finishing is the normal route.
+		expect(reg.settle("bg_001", { status: "done", output: "answer" })).toBe(true);
+		expect(reg.get("bg_001")?.status).toBe("done");
+	});
+
+	it("refuses finishing for unknown or already-settled runs", () => {
+		const reg = makeRegistry();
+		reg.start("one");
+		expect(reg.markFinishing("nope")).toBe(false);
+		reg.settle("bg_001", { status: "failed", error: "stopped" });
+		expect(reg.markFinishing("bg_001")).toBe(false);
+	});
+
+	it("sweep never drops a finishing run: discovery owns that window", () => {
+		const ttlMs = 1000;
+		const reg = makeRegistry({ ttlMs });
+		reg.start("one");
+		reg.markFinishing("bg_001");
+		expect(reg.sweep(Date.now() + ttlMs + 1)).toEqual([]);
+		expect(reg.get("bg_001")).toBeDefined();
+	});
+
+	it("dispose returns only running runs: a finishing child has nothing left to kill", () => {
+		const reg = makeRegistry();
+		reg.start("one");
+		reg.start("two");
+		reg.markFinishing("bg_001");
+		expect(reg.dispose().map((r) => r.runId)).toEqual(["bg_002"]);
+	});
+
+	it("frees the concurrency slot once the child closed", () => {
+		const reg = makeRegistry({ maxConcurrent: 1 });
+		reg.start("one");
+		reg.markFinishing("bg_001");
+		expect(reg.start("two").runId).toBe("bg_002");
+	});
+});
+
 describe("BackgroundRunRegistry.find", () => {
 	it("matches a unique id prefix and refuses an ambiguous one", () => {
 		const reg = makeRegistry();
