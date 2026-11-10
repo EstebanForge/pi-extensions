@@ -281,6 +281,115 @@ runTest("test output stays clean when exit passed with zero parsed failures", ()
 	assert.ok(!result?.includes("WARNING"));
 });
 
+// node:test spec reporter: the summary block is ground truth. Before it was
+// recognized, every run fell to line counting and the summary line "ℹ fail 0"
+// itself matched the fallback fail pattern - a fully green run printed a
+// phantom "FAIL: 1 failed" and the exit-status warning stayed silent.
+runTest("test output trusts node:test spec summary over fail-titled tests", () => {
+	const output = [
+		"✔ depth config fails open on malformed values (1.3ms)",
+		"✔ failover chain tries each upstream once (0.2ms)",
+		"ℹ tests 2",
+		"ℹ suites 0",
+		"ℹ pass 2",
+		"ℹ fail 0",
+		"ℹ cancelled 0",
+		"ℹ skipped 0",
+		"ℹ duration_ms 117.8",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "npm test");
+
+	assert.ok(result?.includes("PASS: 2 passed"));
+	assert.ok(!result?.includes("FAIL:"));
+});
+
+// The TAP reporter prefixes the same summary with "#". Also proves bare
+// `node --test` is detected as a test command.
+runTest("test output trusts node:test TAP summary under node --test", () => {
+	const output = [
+		"TAP version 13",
+		"ok 1 - depth config fails open",
+		"not ok 2 - failover chain",
+		"1..2",
+		"# tests 2",
+		"# pass 1",
+		"# fail 1",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "node --test");
+
+	assert.ok(result?.includes("PASS: 1 passed"));
+	assert.ok(result?.includes("FAIL: 1 failed"));
+});
+
+// node:test repeats each failure name under "✖ failing tests:"; the repeats
+// must not crowd the five-slot failure list, and the repeated block (which
+// carries the assertion detail) should win over the name-only inline block.
+runTest("test output surfaces node:test failures once with their details", () => {
+	const output = [
+		"✔ passes with defaults (1.2ms)",
+		"✖ rejects malformed config (1.5ms)",
+		"ℹ tests 2",
+		"ℹ pass 1",
+		"ℹ fail 1",
+		"",
+		"✖ failing tests:",
+		"✖ rejects malformed config (1.5ms)",
+		"  AssertionError [ERR_ASSERTION]: 1 !== 2",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "npm test");
+
+	assert.ok(result?.includes("FAIL: 1 failed"));
+	assert.ok(result?.includes("AssertionError"));
+	assert.equal(result?.split("rejects malformed config").length ?? 0, 2);
+});
+
+// The corrected fallback anchors fail evidence to line starts so prose and
+// hyphenated titles cannot inflate the count; Go's per-test failures and
+// summary lines must survive that tightening.
+runTest("test output fallback still counts go per-test failures", () => {
+	const output = [
+		"=== RUN TestSplit",
+		"--- FAIL: TestSplit (0.00s)",
+		"    split_test.go:12: got 3, want 2",
+		"FAIL",
+		"FAIL\texample.com/pkg 0.01s",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "go test ./...");
+
+	assert.ok(result?.includes("FAIL: 3 failed"));
+});
+
+runTest("test output fallback ignores hyphenated fail titles", () => {
+	const result = aggregateTestOutput("✓ depth config fail-open on malformed values\n✓ warns on empty config\n", "bun test");
+
+	assert.ok(result?.includes("PASS: 2 passed"));
+	assert.ok(!result?.includes("FAIL:"));
+});
+
+runTest("test output fallback ignores mid-line standalone fail words", () => {
+	const result = aggregateTestOutput("✓ can fail gracefully under load\n", "bun test");
+
+	assert.ok(result?.includes("PASS: 1 passed"));
+	assert.ok(!result?.includes("FAIL:"));
+});
+
+// Stray summary-lookalike lines logged by tests must not override a vitest run.
+runTest("test output prefers vitest summary over stray node:test summary lines", () => {
+	const output = [
+		"logged: ℹ pass 99",
+		" Tests  4 failed | 39 passed (43) ",
+	].join("\n");
+
+	const result = aggregateTestOutput(output, "npx vitest run");
+
+	assert.ok(result?.includes("PASS: 39 passed"));
+	assert.ok(result?.includes("FAIL: 4 failed"));
+});
+
 runTest("command detection ignores env prefixes, blank lines, and chained suffixes", () => {
 	assert.equal(normalizeCommandForDetection("NODE_ENV=test FOO=bar npm test && echo done"), "npm test");
 	assert.equal(normalizeCommandForDetection("\n\n PYTHONPATH=src git status\n echo later"), "git status");

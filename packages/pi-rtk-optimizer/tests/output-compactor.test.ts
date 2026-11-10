@@ -12,6 +12,7 @@ mock.module("@earendil-works/pi-coding-agent", {
 });
 
 const { compactToolResult } = await import("../lib/output-compactor");
+const { truncate } = await import("../lib/techniques/truncate");
 
 function buildReadContent(lineCount: number): string {
 	const lines: string[] = [];
@@ -60,6 +61,22 @@ function compactGrepOutput(text: string): string {
 	const result = compactToolResult(
 		{
 			toolName: "grep",
+			input: { pattern: "match" },
+			content: [{ type: "text", text }],
+		},
+		cloneDefaultConfig(),
+	);
+
+	assert.equal(result.changed, true);
+	return firstTextBlock(result.content);
+}
+
+// Some pi installs register the built-in grep tool under the alias "search"
+// (same ripgrep-backed behavior); both names must compact identically.
+function compactSearchOutput(text: string): string {
+	const result = compactToolResult(
+		{
+			toolName: "search",
 			input: { pattern: "match" },
 			content: [{ type: "text", text }],
 		},
@@ -664,6 +681,47 @@ runTest("quoted hook warning text is preserved as payload", () => {
 	assert.equal(result.changed, false);
 	assert.equal(result.content, undefined);
 	assert.deepEqual(result.techniques, []);
+});
+
+// pi forks register the built-in grep tool under "search"; a single oversized
+// rg match line (minified file, no breaks) must still hit truncation instead
+// of passing through uncompacted and spiking the turn's token count.
+runTest("toolName search is compacted same as grep", () => {
+	const hugeLine = `docs/mockups/huge.html:1: ${"x".repeat(1_200_000)}`;
+	const compacted = compactSearchOutput(hugeLine);
+
+	assert.ok(compacted.length < hugeLine.length, "search output must be compacted, not passed through unchanged");
+});
+
+// Hard truncation used to be prefix-only, so when output still exceeded the
+// budget after compaction the model lost exactly the tail where failure
+// summaries and exit status live. Head/tail keeps both ends; the marker
+// discloses the omitted middle.
+runTest("truncate keeps head and tail inside the budget", () => {
+	const text = `${"a".repeat(10000)}\nbuild error: exit 1\n${"b".repeat(10000)}`;
+	const result = truncate(text, 12000);
+
+	assert.equal(result.length, 12000);
+	assert.ok(result.startsWith("aaaa"));
+	assert.ok(result.includes("[RTK truncated middle]"));
+	assert.ok(result.endsWith("bbbb"));
+});
+
+runTest("truncate preserves trailing failure evidence", () => {
+	const suffix = "\nError: build failed (exit code 1)";
+	const result = truncate(`${"x".repeat(20000)}${suffix}`, 12000);
+
+	assert.ok(result.endsWith(suffix));
+});
+
+runTest("truncate keeps short text unchanged", () => {
+	assert.equal(truncate("hello world", 100), "hello world");
+	assert.equal(truncate("abcdef", 6), "abcdef");
+});
+
+runTest("truncate keeps the legacy head-only form on tiny budgets", () => {
+	assert.equal(truncate("abcdef", 5), "ab...");
+	assert.equal(truncate("abcdef", 2), "...");
 });
 
 console.log("All output-compactor tests passed.");

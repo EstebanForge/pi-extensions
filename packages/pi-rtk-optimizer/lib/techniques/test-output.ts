@@ -30,6 +30,7 @@ const TEST_COMMAND_PATTERNS = [
 	/^mocha\b/,
 	/^ava\b/,
 	/^tap\b/,
+	/^node\s+--test\b/,
 ] as const;
 
 const TEST_RESULT_PATTERNS = [
@@ -44,17 +45,53 @@ const FAILURE_START_PATTERNS = [
 	/^FAILED\s+/,
 	/^\s*●\s+/,
 	/^\s*✕\s+/,
+	/^\s*✖\s+(?!failing tests:)/,
 	/test\s+\w+\s+\.\.\.\s*FAILED/,
 	/thread\s+'\w+'\s+panicked/,
 ];
 const FALLBACK_PASS_PATTERN = /(?:\b(?:ok|PASS)\b|[✓✔])/;
-const FALLBACK_FAIL_PATTERN = /(?:\b(?:FAIL|fail)\b|[✗✕])/;
+// Anchored to line starts so titles and prose containing "fail" cannot inflate
+// the count; `--- FAIL:` keeps Go per-test failures countable.
+const FALLBACK_FAIL_PATTERN = /^\s*(?:[✗✖✕❌]|(?:---\s+)?(?:FAIL|FAILED)\b)/;
+
+// node:test prints an authoritative summary block for every reporter: the spec
+// and dot reporters prefix lines with "ℹ", the TAP reporter with "#". When it
+// is present, the line-scanning fallback must be skipped entirely (the summary
+// line "ℹ fail 0" itself matches the fail pattern; a green run must not
+// report phantom failures).
+const NODE_TEST_SUMMARY_LINE = /^\s*(?:ℹ|#)\s*(tests|pass|fail|cancelled|skipped|todo)\s+(\d+)\s*$/;
 
 function isFailureStart(line: string): boolean {
 	return FAILURE_START_PATTERNS.some((pattern) => pattern.test(line));
 }
 
-function extractTestStats(output: string): Partial<TestSummary> {
+function extractNodeTestSummary(output: string): Partial<TestSummary> | null {
+	let passed: number | undefined;
+	let failed: number | undefined;
+	let skipped: number | undefined;
+
+	for (const line of output.split("\n")) {
+		const match = NODE_TEST_SUMMARY_LINE.exec(line);
+		if (!match) {
+			continue;
+		}
+		const count = Number.parseInt(match[2] ?? "0", 10);
+		if (match[1] === "pass") {
+			passed = count;
+		} else if (match[1] === "fail") {
+			failed = count;
+		} else if (match[1] === "skipped") {
+			skipped = count;
+		}
+	}
+
+	if (passed === undefined && failed === undefined) {
+		return null;
+	}
+	return { passed: passed ?? 0, failed: failed ?? 0, skipped: skipped ?? 0 };
+}
+
+function extractTestStats(output: string): Partial<TestSummary> | null {
 	const vitestMatch = output.match(VITEST_SUMMARY_PATTERN);
 	if (vitestMatch) {
 		const stats: Partial<TestSummary> = {};
@@ -74,6 +111,12 @@ function extractTestStats(output: string): Partial<TestSummary> {
 		}
 		return stats;
 	}
+	// Checked after vitest: a test logging a stray "ℹ pass 99" line must not
+	// override a vitest summary parsed from the same output.
+	const nodeSummary = extractNodeTestSummary(output);
+	if (nodeSummary) {
+		return nodeSummary;
+	}
 	for (const pattern of TEST_RESULT_PATTERNS) {
 		const match = output.match(pattern);
 		if (!match) {
@@ -85,7 +128,7 @@ function extractTestStats(output: string): Partial<TestSummary> {
 			skipped: Number.parseInt(match[3] ?? "0", 10) || 0,
 		};
 	}
-	return {};
+	return null;
 }
 
 export function isTestCommand(command: string | undefined | null): boolean {
@@ -110,11 +153,13 @@ export function aggregateTestOutput(
 	};
 
 	const stats = extractTestStats(output);
-	summary.passed = stats.passed ?? 0;
-	summary.failed = stats.failed ?? 0;
-	summary.skipped = stats.skipped ?? 0;
-
-	if (summary.passed === 0 && summary.failed === 0) {
+	if (stats) {
+		summary.passed = stats.passed ?? 0;
+		summary.failed = stats.failed ?? 0;
+		summary.skipped = stats.skipped ?? 0;
+	} else {
+		// No summary pattern matched: scan lines, trusting only line-start fail
+		// evidence (see FALLBACK_FAIL_PATTERN).
 		for (const line of lines) {
 			if (FALLBACK_PASS_PATTERN.test(line)) {
 				summary.passed++;
@@ -172,6 +217,18 @@ export function aggregateTestOutput(
 			summary.failures.push(currentFailure.join("\n"));
 		}
 	}
+
+	// node:test repeats each failure under "✖ failing tests:"; keep the richest
+	// block per name so repeats never crowd the five-slot failure list.
+	const byFirstLine = new Map<string, string>();
+	for (const failure of summary.failures) {
+		const firstLine = failure.split("\n")[0] ?? "";
+		const existing = byFirstLine.get(firstLine);
+		if (!existing || failure.length > existing.length) {
+			byFirstLine.set(firstLine, failure);
+		}
+	}
+	summary.failures = [...byFirstLine.values()];
 
 	const result: string[] = ["Test Results:"];
 	if (isError && summary.failed === 0) {

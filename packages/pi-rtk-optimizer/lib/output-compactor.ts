@@ -654,7 +654,9 @@ export function compactToolResult(
 				config,
 				shouldPreserveExactReadOutput(contentBlock.text, input, config),
 			);
-		} else if (event.toolName === "grep") {
+		} else if (event.toolName === "grep" || event.toolName === "search") {
+			// Some pi installs register the built-in grep tool under the alias
+			// "search" (same ripgrep-backed behavior); compact both.
 			transformed = compactGrepText(contentBlock.text, config);
 		}
 

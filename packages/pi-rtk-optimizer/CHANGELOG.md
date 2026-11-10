@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Truncation now keeps the tail of oversized output.** The hard cap was prefix-only, so failure summaries and exit status sitting at the end of long command output were cut. Output over the cap now keeps head and tail around an explicit middle-omission marker, within the same character budget.
+- **node:test runs report true counts.** The spec (`ℹ`) and TAP (`#`) summary blocks are now parsed; before, every node:test run fell to line counting and the summary line itself (`ℹ fail 0`) counted as a failure, so fully green runs printed a phantom `FAIL: 1 failed`. Failure names repeated under "failing tests:" no longer crowd the failure list, and the line-counting fallback is anchored to line starts so titles and prose containing "fail" cannot inflate counts while Go's `--- FAIL:` lines still count. Bare `node --test` is now detected as a test command.
+- **Search-tool output is compacted on installs that alias grep as `search`.** The compactor only recognized the literal tool name `grep`, so a fork registering the built-in grep as `search` bypassed truncation entirely on oversized match lines.
+
 ## [1.0.5] - 2026-11-10
 
 ### Added
