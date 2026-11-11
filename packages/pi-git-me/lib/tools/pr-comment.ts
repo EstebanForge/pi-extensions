@@ -3,7 +3,8 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeReviewPayload, repoContextLabel, gateRepoSuffix } from "../format";
-import { ghPrForCurrentBranch, extractUrl } from "../git";
+import { extractUrl } from "../git";
+import { resolvePrForBranch, branchPrRefusal, ghPrByNumber, verifyPrTarget, prTargetLabel, branchLabel } from "../pr-target";
 import type { GhPullRequest } from "../types";
 import { ghRepoView } from "../github";
 import { parseRepoParam, repoParamConflict } from "../repo-target";
@@ -80,39 +81,61 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
         "git-me: a pr number is required when repo is set: a current-branch PR only resolves in your own checkout. Pass pr explicitly.",
       );
     }
-    const targetRepo = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
 
-    // Resolve PR number: explicit > current-branch PR > fail closed. The
-    // branch-resolved PR's url is kept as a fallback for the result's url
-    // line (the comment URL gh prints on stdout is preferred - it is more
-    // precise - but that stdout can be empty on unusual gh versions).
-    let prNumber = params.pr;
-    let resolved: GhPullRequest | null = null;
-    if (prNumber === undefined) {
-      resolved = ghPrForCurrentBranch(cwd);
-      if (resolved === null) {
-        return toToolResult(
-          "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
-        );
-      }
-      prNumber = resolved.number;
-    }
-
-    // Fail fast on bad attachment paths BEFORE the review dialog: stat +
-    // extension checks are local and cheap, and reviewing a doomed comment
-    // wastes the user's attention.
+    // Fail fast on bad attachment paths BEFORE any network call (snapshot
+    // fetch included): stat + extension checks are local and cheap, and
+    // reviewing a doomed comment wastes the user's attention.
     const imagePaths = params.images ?? [];
     if (imagePaths.length > 0) {
       const problems = await validateAttachmentPaths(imagePaths);
       if (problems.length > 0) {
+        const prLabel = params.pr !== undefined ? `PR #${params.pr}` : "the current branch's PR";
         return toToolResult(
-          `git-me: refused to post comment (PR #${prNumber}) - attachment problem(s):\n- ${problems.join("\n- ")}`,
+          `git-me: refused to post comment (${prLabel}) - attachment problem(s):\n- ${problems.join("\n- ")}`,
         );
       }
     }
 
+    const targetRepo = repoInput.kind === "ok" ? repoInput.slug : ghRepoView(cwd)?.nameWithOwner ?? null;
+
+    // Resolve the PR number and SNAPSHOT the target before the gate.
+    //   - explicit `pr`: fetched by number (-R-addressed with a repo slug);
+    //     not-found refuses before the gate instead of failing after approval.
+    //   - omitted `pr`: branch-bound resolution binds only an OPEN PR whose
+    //     headRefName equals the checked-out branch; closed/mismatched/
+    //     ambiguous targets refuse with a pass-`pr`-explicitly message.
+    // The snapshot's identity (number, state, head, base, repo) is what the
+    // gate shows and what apply-time verification compares.
+    let prNumber = params.pr;
+    let resolved: GhPullRequest | null = null;
+    let branch: string | null = null;
+    if (prNumber === undefined) {
+      const res = resolvePrForBranch(cwd);
+      const refusal = branchPrRefusal(res);
+      if (refusal) return toToolResult(refusal);
+      if (res.kind !== "ok") {
+        return toToolResult(
+          "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
+        );
+      }
+      resolved = res.pr;
+      branch = res.branch;
+      prNumber = resolved.number;
+    } else {
+      resolved = ghPrByNumber(prNumber, cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
+      if (!resolved) {
+        const where = repoInput.kind === "ok" ? repoInput.slug : "the current repository";
+        return toToolResult(
+          `git-me: PR #${prNumber} not found in ${where} (\`gh pr view ${prNumber}\` failed). Nothing was posted; check the number.`,
+        );
+      }
+      // The gate names the checked-out branch too (rule: full target
+      // identity), even though the number is the binding.
+      branch = repoInput.kind === "ok" ? null : branchLabel(cwd);
+    }
+
     const decision = await confirmWrite(ctx, {
-      title: `Post this comment on PR #${prNumber}${gateRepoSuffix(targetRepo)}?${repoContextLabel(cwd, ctx.cwd)}`,
+      title: `Post this comment on ${prTargetLabel(resolved, branch)}${gateRepoSuffix(targetRepo)}?${repoContextLabel(cwd, ctx.cwd)}`,
       editableText: params.body,
       summary:
         describeReviewPayload(params.body) +
@@ -136,6 +159,12 @@ export const prCommentTool: ToolDefinition<typeof Params, GitDetails> = {
         "git-me: PR comment body is empty after edit; nothing was posted.",
       );
     }
+
+    // Apply-time target check BEFORE any upload or post: the human approved
+    // the gate's identity, and a human can close/merge/retarget the PR while
+    // the dialog is open. Any drift aborts with nothing sent.
+    const verified = verifyPrTarget(resolved, cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
+    if (!verified.ok) return toToolResult(verified.message);
 
     // Upload attachments AFTER the gate (cancel = zero side effects) and
     // BEFORE the gh post (a failed upload must not leave a comment whose body

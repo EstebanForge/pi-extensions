@@ -6,6 +6,7 @@
 // pr-comment, review-comment, issue-comment) use the confirm gate then call
 // these for the apply step.
 
+import { createHash } from "node:crypto";
 import { isGitRepo, runGit, runGh } from "./auth";
 import type {
   GhPullRequest,
@@ -147,6 +148,38 @@ export function gitLog(
   return parseGitLog(result.stdout);
 }
 
+/**
+ * SHA-256 of the staged diff (index vs HEAD) — the exact content `git commit`
+ * would record. Shared checkouts change under the agent: a human can stage,
+ * unstaged, or move HEAD while a gate dialog is open (this race already bit
+ * once: the staging area was reset mid-dialog). commit.ts hashes before the
+ * gate and re-hashes after acceptance; any drift aborts. null when git
+ * fails — callers refuse rather than commit blind.
+ */
+export function stagedDiffDigest(cwd: string): string | null {
+  // Snapshot = HEAD SHA + index tree SHA. A `git diff --cached` hash cannot
+  // see a HEAD move that leaves the index empty (the --amend attack: a human
+  // commits mid-dialog and the agent's amend rewrites their commit), and a
+  // full-diff hash also trips runGit's spawnSync maxBuffer on large diffs.
+  const head = runGit(["rev-parse", "HEAD"], cwd);
+  let headSha: string;
+  if (head.exitCode === 0) {
+    headSha = head.stdout.trim();
+  } else if (head.exitCode === 128) {
+    // In a validated repo, rev-parse HEAD exits 128 for an unborn branch
+    // (no commits yet — a legitimate first-commit target) OR a broken
+    // repo. symbolic-ref still resolves on unborn, fails on broken.
+    const ref = runGit(["symbolic-ref", "--short", "HEAD"], cwd);
+    if (ref.exitCode !== 0) return null;
+    headSha = "unborn";
+  } else {
+    return null;
+  }
+  const tree = runGit(["write-tree"], cwd);
+  if (tree.exitCode !== 0) return null;
+  return createHash("sha256").update(`${headSha}\n${tree.stdout.trim()}`, "utf8").digest("hex");
+}
+
 /** Current branch name. Detached HEAD returns "HEAD (detached)". */
 export function gitCurrentBranch(cwd: string = process.cwd()): string {
   if (!isGitRepo(cwd)) return "";
@@ -169,8 +202,14 @@ export function gitToplevel(cwd: string): string | null {
 
 // -------------------------------------------------- gh helpers ------------
 
-/** Resolve the PR for the current branch. Returns null when there is no PR. */
-export function ghPrForCurrentBranch(
+/**
+ * Raw `gh pr view` for the current branch, ANY state. READ TOOL PATH ONLY
+ * (git_pr_info displays closed/merged PRs legitimately). Its resolution is
+ * gh-opaque and can bind closed PRs on other branch pairs — exactly the
+ * 2026-11-11 incident shape — so WRITE tools must use resolvePrForBranch()
+ * from lib/pr-target.ts instead.
+ */
+export function ghPrViewCurrentBranch(
   cwd: string = process.cwd(),
 ): GhPullRequest | null {
   if (!isGitRepo(cwd)) return null;
@@ -281,25 +320,6 @@ export function gitCommitWebUrl(cwd: string, sha: string): string | null {
 export function extractUrl(stdout: string): string | null {
   const m = stdout.match(/https?:\/\/\S+/);
   return m ? m[0].replace(/[.,:;!?)'\"]+$/, "") : null;
-}
-
-/**
- * Web URL for a PR by number (`gh pr view <n> --json url`). With slug the
- * lookup is repo-addressed (-R owner/name) so a foreign-repo review can
- * resolve its PR url from an unrelated cwd. null on any failure - callers
- * omit the url line rather than erroring.
- */
-export function ghPrUrlByNumber(number: number, cwd: string, slug?: string): string | null {
-  const args = ["pr", "view", String(number), "--json", "url"];
-  if (slug) args.push("-R", slug);
-  const result = runGh(args, cwd);
-  if (result.exitCode !== 0) return null;
-  try {
-    const url = (JSON.parse(result.stdout) as { url?: unknown }).url;
-    return typeof url === "string" && url ? url : null;
-  } catch {
-    return null;
-  }
 }
 
 // -------------------------------------------------- gh JSON parsing --------

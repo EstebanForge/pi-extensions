@@ -32,6 +32,12 @@ export interface GhPullRequest {
   isDraft: boolean;
   author?: { login: string };
   reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+  // Present only in list/view rows fetched with the extended field set.
+  // gh pr list --head filters by bare branch name across ALL forks, so the
+  // head repo owner is the only way to tell a stranger's same-named fork
+  // branch from this checkout's own branch.
+  isCrossRepository?: boolean;
+  headRepositoryOwner?: { login: string };
 }
 
 // `gh pr view --json files` subset: one entry per changed file in the PR.

@@ -56,8 +56,11 @@ type Route = { match: (c: string, a: string[]) => boolean; result: () => { stdou
 function baseRoutes(): Route[] {
   return [
     { match: (c, a) => c === "git" && a[0] === "rev-parse" && a.includes("--is-inside-work-tree"), result: () => ({ stdout: "true", stderr: "", status: 0 }) },
+    { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: "feat\n", stderr: "", status: 0 }) },
     { match: (c, a) => c === "gh" && a[0] === "--version", result: () => ({ stdout: "gh version 2.100.0", stderr: "", status: 0 }) },
     { match: (c, a) => c === "gh" && a[0] === "auth" && a[1] === "status", result: () => ({ stdout: "", stderr: "", status: 0 }) },
+    // PR #1 snapshot for the pr-comment resolve/verify fetches.
+    { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "1", result: () => ({ stdout: JSON.stringify({ number: 1, title: "t", body: "", state: "OPEN", url: "https://github.com/octo/repo/pull/1", baseRefName: "main", headRefName: "feat", isDraft: false }), stderr: "", status: 0 }) },
     { match: (c, a) => c === "gh" && a[0] === "auth" && a[1] === "token", result: () => ({ stdout: "tok-test\n", stderr: "", status: 0 }) },
     { match: (c, a) => c === "gh" && a[0] === "api" && a[1] === "repos/octo/repo", result: () => ({ stdout: "12345", stderr: "", status: 0 }) },
     { match: (c, a) => c === "gh" && a[0] === "api" && a[1] === "graphql" && a.some((arg) => arg.startsWith("query=") && arg.includes("discussion(")), result: () => ({ stdout: JSON.stringify({ data: { repository: { discussion: { id: "DIC1", title: "T", url: "https://github.com/octo/repo/discussions/3" } } } }), stderr: "", status: 0 }) },

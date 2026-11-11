@@ -122,6 +122,8 @@ export const PR_UPSERT_DESCRIPTION = `**OPENS a new pull request, or EDITS the e
 
 PRs are branch-bound, so there is no repo param: the target is the repo gh resolves from cwd's remotes. To work on another repository's PR you need a checkout of that repo and cwd pointed at it. The dialog names the target repo — read it before accepting.
 
+WRONG-TARGET GUARD: the edit target binds only when an OPEN PR's head branch equals the checked-out branch (resolved via \`gh pr list --head <branch>\`, never a bare \`gh pr view\`). A closed or merged PR on the branch is never edited — the tool creates a new PR instead. The gate title states the full target identity (PR number, state, head -> base, checked-out branch). After you accept the dialog, the tool re-fetches the PR by number and aborts if its state, head, base, or repo changed while the dialog was open.
+
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers (GitLab \`glab\`, Gitea / Forgejo \`tea\`, Bitbucket, MCP servers, direct REST) are NOT covered by this extension; the user wires those up themselves.
 
 DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the title and body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the title/body should say, and do NOT ask for approval before calling. Do NOT run \`gh pr create\` or \`gh pr edit\` through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
@@ -146,6 +148,8 @@ export const PR_COMMENT_DESCRIPTION = `**POSTS a top-level comment on a GitHub p
 
 Distinct from \`git_pr_review\`: that posts a REVIEW event (COMMENT / APPROVE / REQUEST_CHANGES) on the PR's review summary and updates the review state; THIS tool posts a plain comment on the PR conversation via \`gh pr comment\` without touching the review state. Reach for this when you only want to leave a note; reach for \`git_pr_review\` when you want to formally approve, request changes, or summarize a code review.
 
+WRONG-TARGET GUARD: with \`pr\` omitted, the target binds only an OPEN PR whose head branch equals the checked-out branch; a closed, merged, or mismatched branch PR refuses — pass \`pr\` explicitly to target it on purpose. An explicit \`pr\` is fetched by number before the gate (not-found refuses before any dialog). The gate title states the full target identity (PR number, state, head -> base, checked-out branch). After you accept the dialog, the tool re-fetches the PR by number and aborts if its state, head, base, or repo changed while the dialog was open.
+
 ${CROSS_REPO_RULE}
 
 Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are not covered by this extension. Attach local images/videos with images (png/jpg/gif/webp/svg/mp4/mov/webm): each file uploads to the repo's user-attachments and the resulting markdown is appended to the body; uploads need write access to the repo.
@@ -156,7 +160,7 @@ export const PR_COMMENT_BODY_DESCRIPTION =
   "Comment body in Markdown. Posted as a top-level conversation comment on the GitHub PR. The user can edit this in the review dialog.";
 
 export const PR_COMMENT_NUMBER_DESCRIPTION =
-  "Optional PR number. Defaults to the PR for the current branch. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
+  "Optional PR number. When omitted, the tool binds only an OPEN PR whose head branch equals the checked-out branch; a closed, merged, or mismatched branch PR refuses — pass the number explicitly. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
 
 // Shared by pr/issue/discussion comment tools: one param, one upload path
 // (lib/attachment-upload.ts), so the three surfaces stay behaviorally identical.
@@ -171,6 +175,8 @@ export const PR_REVIEW_DESCRIPTION = `**POSTS a PR review event on GitHub** (a r
 
 Distinct from \`git_pr_comment\`: that posts a plain conversation comment without touching the review state; THIS tool posts a REVIEW event via \`gh pr review\` and MAY change the PR review state. APPROVE and REQUEST_CHANGES are stateful and always open an editor for explicit confirmation even when the review gate is off — use them only when the user has agreed to the verdict. For non-review notes on the PR, reach for \`git_pr_comment\` instead.
 
+WRONG-TARGET GUARD: with \`pr\` omitted, the target binds only an OPEN PR whose head branch equals the checked-out branch; a closed, merged, or mismatched branch PR refuses — pass \`pr\` explicitly to target it on purpose. An explicit \`pr\` is fetched by number before the gate (not-found refuses before any dialog). The gate title states the full target identity (PR number, state, head -> base, checked-out branch). After you accept the dialog, the tool re-fetches the PR by number and aborts if its state, head, base, or repo changed while the dialog was open.
+
 LIMITATION: this tool posts a review SUMMARY body only. It CANNOT post inline, line-level comments on specific diff hunks (what GitHub calls a "review comment"). If the user asks for a comment on a specific file and line, say so explicitly and put the file:line reference in the summary body instead.
 
 ${CROSS_REPO_RULE}
@@ -183,7 +189,7 @@ export const PR_REVIEW_BODY_DESCRIPTION =
   "Review body in Markdown. Posted as the body of the review event (or as a COMMENT review when event is unset). The user can edit this in the review dialog.";
 
 export const PR_REVIEW_PR_DESCRIPTION =
-  "Optional PR number. Defaults to the PR for the current branch. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
+  "Optional PR number. When omitted, the tool binds only an OPEN PR whose head branch equals the checked-out branch; a closed, merged, or mismatched branch PR refuses — pass the number explicitly. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
 
 export const PR_REVIEW_EVENT_DESCRIPTION =
   'Review event. One of "COMMENT" (default), "APPROVE", or "REQUEST_CHANGES". APPROVE / REQUEST_CHANGES change the PR review state; prefer COMMENT when you only want to leave feedback.';
@@ -221,7 +227,7 @@ export const COMMENT_EDIT_CWD_DESCRIPTION = CWD_DESCRIPTION;
 
 export const ISSUE_COMMENT_EDIT_TITLE = "git: Edit Issue Comment (GitHub via gh)";
 
-export const ISSUE_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comments on a GitHub issue — this tool runs \`gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>\`, it is not a text generator.** USE THIS when your posted issue comment needs a correction or an update: it replaces the comment body in place, keeping the comment's position in the thread (no delete-and-repost noise). By default it targets your LAST comment on the issue; pass commentId to edit an older one. The extension fetches the current comment first, refuses if the comment is not yours, skips the call entirely when the new body is identical, and shows the replacement in an editable preview dialog, applying it only after the user accepts.
+export const ISSUE_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comments on a GitHub issue — this tool runs \`gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>\`, it is not a text generator.** USE THIS when your posted issue comment needs a correction or an update: it replaces the comment body in place, keeping the comment's position in the thread (no delete-and-repost noise). By default it targets your LAST comment on the issue; pass commentId to edit an older one. The extension fetches the current comment first, refuses if the comment is not yours, re-verifies the comment (still present, still yours, still on the stated thread) immediately before the PATCH, skips the call entirely when the new body is identical, and shows the replacement in an editable preview dialog, applying it only after the user accepts.
 
 Only YOUR OWN comments are editable (the authenticated user must be the author). This tool never creates a comment: posting stays with git_issue_comment.
 
@@ -236,7 +242,7 @@ export const ISSUE_COMMENT_EDIT_NUMBER_DESCRIPTION =
 
 export const PR_COMMENT_EDIT_TITLE = "git: Edit PR Comment (GitHub via gh)";
 
-export const PR_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comments on a GitHub pull request conversation — this tool runs \`gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>\`, it is not a text generator.** USE THIS when your posted PR conversation comment needs a correction or an update: it replaces the comment body in place, keeping the comment's position in the thread (no delete-and-repost noise). By default it targets your LAST comment on the PR; pass commentId to edit an older one. The extension fetches the current comment first, refuses if the comment is not yours, skips the call entirely when the new body is identical, and shows the replacement in an editable preview dialog, applying it only after the user accepts.
+export const PR_COMMENT_EDIT_DESCRIPTION = `**EDITS one of YOUR existing comments on a GitHub pull request conversation — this tool runs \`gh api --method PATCH repos/<owner>/<repo>/issues/comments/<id>\`, it is not a text generator.** USE THIS when your posted PR conversation comment needs a correction or an update: it replaces the comment body in place, keeping the comment's position in the thread (no delete-and-repost noise). By default it targets your LAST comment on the PR; pass commentId to edit an older one. The extension fetches the current comment first, refuses if the comment is not yours, re-verifies the comment (still present, still yours, still on the stated thread) immediately before the PATCH, skips the call entirely when the new body is identical, and shows the replacement in an editable preview dialog, applying it only after the user accepts.
 
 Only YOUR OWN comments are editable (the authenticated user must be the author). This tool never creates a comment: posting stays with git_pr_comment, and review-state events stay with git_pr_review.
 
@@ -247,7 +253,7 @@ Scope: GitHub only — this tool drives the \`gh\` CLI. Other git providers are 
 DRAFTING IS YOUR JOB, NOT THE USER'S. Draft the replacement body yourself and call this tool; the editable dialog is where the user reviews, edits, and approves. Do NOT ask the user in chat what the new body should say, and do NOT ask for approval before calling. Do NOT run \`gh api\` PATCH calls (or \`gh pr comment --edit-last\`) through the bash/shell tool yourself; this tool is the only sanctioned path this extension provides and bypassing its preview is a policy violation.`;
 
 export const PR_COMMENT_EDIT_NUMBER_DESCRIPTION =
-  "Optional PR number. Defaults to the PR for the current branch. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
+  "Optional PR number. When omitted, the tool binds only an OPEN PR whose head branch equals the checked-out branch; a closed, merged, or mismatched branch PR refuses — pass the number explicitly. For a different PR, supply the number explicitly (git_pr_info only inspects the current branch).";
 
 // -------------------------------------------------- git issue create ------
 

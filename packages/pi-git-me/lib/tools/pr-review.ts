@@ -3,7 +3,7 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeReviewPayload, repoContextLabel, gateRepoSuffix } from "../format";
-import { ghPrForCurrentBranch, ghPrUrlByNumber } from "../git";
+import { resolvePrForBranch, branchPrRefusal, ghPrByNumber, verifyPrTarget, prTargetLabel, branchLabel } from "../pr-target";
 import type { GhPullRequest } from "../types";
 import { ghRepoView } from "../github";
 import { parseRepoParam, repoParamConflict } from "../repo-target";
@@ -89,28 +89,46 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
 
     const event = parseReviewEvent(params.event);
 
-    // Resolve PR number: explicit > current-branch PR > fail closed. The
-    // branch-resolved PR's url is kept so the result can show it without a
-    // second gh call; an explicit `pr` param resolves the url after the
-    // review posts (gh pr review prints nothing itself).
+    // Resolve the PR number and SNAPSHOT the target before the gate, same
+    // contract as git_pr_comment: explicit `pr` is fetched by number
+    // (not-found refuses before the gate); omitted `pr` binds only an OPEN
+    // PR whose head equals the checked-out branch, everything else refuses
+    // with a pass-`pr`-explicitly message. The snapshot is what the gate
+    // shows and what apply-time verification compares.
     let prNumber = params.pr;
     let resolved: GhPullRequest | null = null;
+    let branch: string | null = null;
     if (prNumber === undefined) {
-      resolved = ghPrForCurrentBranch(cwd);
-      if (resolved === null) {
+      const res = resolvePrForBranch(cwd);
+      const refusal = branchPrRefusal(res);
+      if (refusal) return toToolResult(refusal);
+      if (res.kind !== "ok") {
         return toToolResult(
           "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
         );
       }
+      resolved = res.pr;
+      branch = res.branch;
       prNumber = resolved.number;
+    } else {
+      resolved = ghPrByNumber(prNumber, cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
+      if (!resolved) {
+        const where = repoInput.kind === "ok" ? repoInput.slug : "the current repository";
+        return toToolResult(
+          `git-me: PR #${prNumber} not found in ${where} (\`gh pr view ${prNumber}\` failed). Nothing was reviewed; check the number.`,
+        );
+      }
+      // The gate names the checked-out branch too (rule: full target
+      // identity), even though the number is the binding.
+      branch = repoInput.kind === "ok" ? null : branchLabel(cwd);
     }
 
     const eventLabel =
       (event === "APPROVE"
-        ? "Approve this PR"
+        ? `Approve ${prTargetLabel(resolved, branch)}`
         : event === "REQUEST_CHANGES"
-          ? "Request changes on this PR"
-          : "Post this review comment on this PR") + gateRepoSuffix(targetRepo) + "?" + repoContextLabel(cwd, ctx.cwd);
+          ? `Request changes on ${prTargetLabel(resolved, branch)}`
+          : `Post this review comment on ${prTargetLabel(resolved, branch)}`) + gateRepoSuffix(targetRepo) + "?" + repoContextLabel(cwd, ctx.cwd);
 
     const decision = await confirmWrite(ctx, {
       title: eventLabel,
@@ -140,6 +158,12 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
       );
     }
 
+    // Apply-time target check BEFORE the review event: the human approved
+    // the gate's identity, and a human can close/merge/retarget the PR while
+    // the dialog is open. Any drift aborts with nothing sent.
+    const verified = verifyPrTarget(resolved, cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
+    if (!verified.ok) return toToolResult(verified.message);
+
     try {
       // Map event -> gh flag. COMMENT is the default review (no --approve /
       // --request-changes), and just needs --body. -R names the target repo
@@ -167,10 +191,9 @@ export const prReviewTool: ToolDefinition<typeof Params, GitDetails> = {
           : event === "REQUEST_CHANGES"
             ? "Requested changes on"
             : "Posted review comment on";
-      // gh pr review prints nothing on success; resolve the PR url ourselves
-      // (free when the branch lookup above already has it, one cheap gh call
-      // otherwise).
-      const url = resolved?.url ?? ghPrUrlByNumber(prNumber, cwd, repoInput.kind === "ok" ? repoInput.slug : undefined);
+      // gh pr review prints nothing on success; the resolve-time snapshot
+      // already carries the PR url for both resolution paths.
+      const url = resolved?.url;
       const urlLine = url ? `\n  url: ${url}` : "";
       const { extraText, details } = postedContentExtras(body, decision.edited ?? false);
       return toToolResult(`${verb} PR #${prNumber}.${urlLine}${extraText}`, details);

@@ -90,6 +90,8 @@ const DEFAULT_ROUTES: Route[] = [
   { match: (c, a) => c === "gh" && a[0] === "--version", result: () => ({ stdout: "gh version 2.40.0", stderr: "", status: 0 }) },
   { match: (c, a) => c === "gh" && a[0] === "auth" && a[1] === "status", result: () => ({ stdout: "", stderr: "", status: 0 }) },
   { match: (c, a) => c === "git" && a[0] === "diff" && a.includes("--cached") && a.includes("--quiet"), result: () => ({ stdout: "", stderr: "", status: 1 }) },
+  { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: "feat\n", stderr: "", status: 0 }) },
+  { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: "", stderr: "", status: 0 }) },
   { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: "", stderr: "no pull requests found", status: 1 }) },
 ];
 
@@ -147,6 +149,28 @@ function discussionCreateRoutes(): Route[] {
     graphqlRoute("createDiscussion", { createDiscussion: { discussion: { number: 5, url: "https://github.com/octo/repo/discussions/5" } } }),
   ];
 }
+
+// Full PR snapshot for the number-addressed resolve/verify fetches
+// (`gh pr view <n> --json ...`). result() per call, so one route serves both
+// the resolve-time snapshot and the apply-time re-fetch.
+function prSnapshotRoute(n: number, row: Record<string, unknown>): Route {
+  return {
+    match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === String(n),
+    result: () => ({ stdout: JSON.stringify(row), stderr: "", status: 0 }),
+  };
+}
+
+const OPEN_PR = (n: number, overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  number: n,
+  title: "t",
+  body: "",
+  state: "OPEN",
+  url: `https://github.com/octo/repo/pull/${n}`,
+  baseRefName: "main",
+  headRefName: "feat",
+  isDraft: false,
+  ...overrides,
+});
 
 function discussionCommentRoutes(): Route[] {
   return [
@@ -236,6 +260,7 @@ describe("git_commit - gate wiring", () => {
 
 describe("git_pr_comment - gate wiring", () => {
   it("user cancels -> 'PR comment cancelled' message", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: undefined });
     const result = await invokeWithCtx(
       prCommentTool,
@@ -248,6 +273,7 @@ describe("git_pr_comment - gate wiring", () => {
   });
 
   it("headless + no opt-in -> headless refused message", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ hasUI: false });
     const result = await invokeWithCtx(
       prCommentTool,
@@ -258,9 +284,9 @@ describe("git_pr_comment - gate wiring", () => {
     expect(firstText(result)).toContain("/git headless on");
   });
 
-  it("default PR number resolution falls back to gh pr view; surfaces 'no PR' when none exists", async () => {
-    // `pr` omitted -> the tool calls ghPrForCurrentBranch, which the default
-    // route answers with status 1 (no PR). Deterministic: no real gh.
+  it("branch resolution finds nothing -> surfaces 'no PR' before the gate", async () => {
+    // `pr` omitted -> resolvePrForBranch; the default routes answer the
+    // --head search with zero rows. Deterministic: no real gh.
     const ui = makeStubUI({ editorResponse: undefined });
     const result = await invokeWithCtx(
       prCommentTool,
@@ -271,7 +297,42 @@ describe("git_pr_comment - gate wiring", () => {
     expect(ui.prompts).toHaveLength(0); // gate never fired
   });
 
-  it("title mentions the PR number when one is supplied", async () => {
+  it("branch resolution gh failure -> refuses with 'resolution failed', not 'no PR'", async () => {
+    // Peer review (claude 2026-11-11): a gh failure used to masquerade as
+    // "no PR"; it must refuse instead of guessing.
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: "", stderr: "network down", status: 1 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: undefined });
+    const result = await invokeWithCtx(prCommentTool, { body: "lgtm" }, makeCtx(ui));
+    expect(firstText(result)).toContain("resolution failed");
+    expect(ui.prompts).toHaveLength(0);
+  });
+
+  it("explicit pr that does not exist -> refuses before the gate with the number", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "4212", result: () => ({ stdout: "", stderr: "Could not resolve to a PullRequest", status: 1 }) },
+    ]);
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prCommentTool, { body: "b", pr: 4212 }, makeCtx(ui));
+    expect(firstText(result)).toContain("PR #4212 not found");
+    expect(ui.prompts).toHaveLength(0);
+  });
+
+  it("closed PR on the current branch -> refuses with a pass-pr-explicitly message, no gate", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([OPEN_PR(9, { state: "CLOSED" })]), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prCommentTool, { body: "b" }, makeCtx(ui));
+    expect(firstText(result)).toContain("is CLOSED");
+    expect(firstText(result)).toContain("pr` explicitly");
+    expect(ui.prompts).toHaveLength(0);
+    expect(findCall("gh", ["pr", "comment"])).toBeUndefined();
+  });
+
+  it("title states the full target identity (number, state, head -> base, branch)", async () => {
+    setupRoutes([prSnapshotRoute(123, OPEN_PR(123))]);
     const ui = makeStubUI({ editorResponse: undefined });
     await invokeWithCtx(
       prCommentTool,
@@ -279,9 +340,13 @@ describe("git_pr_comment - gate wiring", () => {
       makeCtx(ui),
     );
     expect(ui.prompts[0].title).toContain("123");
+    expect(ui.prompts[0].title).toContain("OPEN");
+    expect(ui.prompts[0].title).toContain("feat -> main");
+    expect(ui.prompts[0].title).toContain('branch "feat"');
   });
 
   it("posts `gh pr comment <number> --body <body>` on accept", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: "ship it" });
     const result = await invokeWithCtx(
       prCommentTool,
@@ -300,6 +365,7 @@ describe("git_pr_comment - gate wiring", () => {
   });
 
   it("edits in the dialog -> posts the edited body and reports edited=yes", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: "ship it (edited)" });
     const result = await invokeWithCtx(
       prCommentTool,
@@ -318,9 +384,28 @@ describe("git_pr_comment - gate wiring", () => {
     });
   });
 
+  it("race: PR closed between gate approval and apply -> aborts, no comment posted", async () => {
+    let views = 0;
+    setupRoutes([
+      {
+        match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "42",
+        result: () => {
+          views++;
+          return { stdout: JSON.stringify(OPEN_PR(42, views === 1 ? {} : { state: "CLOSED" })), stderr: "", status: 0 };
+        },
+      },
+    ]);
+    const ui = makeStubUI({ editorResponse: "ship it" });
+    const result = await invokeWithCtx(prCommentTool, { body: "ship it", pr: 42 }, makeCtx(ui));
+    expect(firstText(result)).toContain("state changed OPEN -> CLOSED");
+    expect(firstText(result)).toContain("Nothing was sent");
+    expect(findCall("gh", ["pr", "comment"])).toBeUndefined();
+  });
+
   it("surfaces the comment URL gh prints on stdout", async () => {
     const commentUrl = "https://github.com/octo/repo/pull/42#issuecomment-777";
     setupRoutes([
+      prSnapshotRoute(42, OPEN_PR(42)),
       { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "comment", result: () => ({ stdout: `${commentUrl}\n`, stderr: "", status: 0 }) },
     ]);
     const ui = makeStubUI({ editorResponse: "ship it" });
@@ -332,16 +417,14 @@ describe("git_pr_comment - gate wiring", () => {
     expect(firstText(result)).toContain(`  url: ${commentUrl}`);
   });
 
-  it("falls back to the branch-resolved PR url when stdout has none", async () => {
-    const prJson = JSON.stringify({
-      number: 7, title: "t", body: "", state: "OPEN",
-      url: "https://github.com/o/r/pull/7", baseRefName: "main",
-      headRefName: "feat", isDraft: false,
-    });
+  it("falls back to the snapshot url when stdout has none (branch-resolved)", async () => {
     setupRoutes([
+      // Branch lookup resolves PR #7 (default routes bind branch "feat").
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([OPEN_PR(7)]), stderr: "", status: 0 }) },
+      // Apply-time re-fetch must see the same identity.
+      prSnapshotRoute(7, OPEN_PR(7)),
       // gh pr comment succeeded but printed no URL (unusual gh versions).
       { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "comment", result: () => ({ stdout: "", stderr: "", status: 0 }) },
-      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: prJson, stderr: "", status: 0 }) },
     ]);
     const ui = makeStubUI({ editorResponse: "ship it" });
     const result = await invokeWithCtx(
@@ -350,7 +433,7 @@ describe("git_pr_comment - gate wiring", () => {
       makeCtx(ui),
     );
     expect(firstText(result)).toContain("Posted comment on PR #7");
-    expect(firstText(result)).toContain("  url: https://github.com/o/r/pull/7");
+    expect(firstText(result)).toContain("  url: https://github.com/octo/repo/pull/7");
   });
 });
 
@@ -704,6 +787,56 @@ describe("git_discussion_comment - gate wiring", () => {
     expect(firstText(result)).toContain("comment 999 not found");
     expect(ui.prompts).toHaveLength(0);
   });
+
+  it("race: discussion deleted between gate approval and apply -> aborts, no mutation", async () => {
+    let lookups = 0;
+    setupRoutes([
+      REPO_VIEW_ROUTE,
+      {
+        match: (c, a) =>
+          c === "gh" && a[0] === "api" && a[1] === "graphql" &&
+          a.some((arg) => arg.startsWith("query=") && arg.includes("discussion(number:")),
+        result: () => {
+          lookups++;
+          return lookups === 1
+            ? { stdout: JSON.stringify({ data: { repository: { discussion: { id: "DISC1", title: "How to X", url: "https://github.com/octo/repo/discussions/3" } } } }), stderr: "", status: 0 }
+            : { stdout: JSON.stringify({ data: { repository: { discussion: null } } }), stderr: "", status: 0 };
+        },
+      },
+      graphqlRoute("addDiscussionComment", { addDiscussionComment: { comment: { url: "u" } } }),
+    ]);
+    const ui = makeStubUI({ editorResponse: "ans" });
+    const result = await invokeWithCtx(discussionCommentTool, { number: 3, body: "ans" }, makeCtx(ui));
+    expect(firstText(result)).toContain("changed or was deleted");
+    expect(firstText(result)).toContain("Nothing was posted");
+    expect(findGraphqlCall("addDiscussionComment")).toBeUndefined();
+  });
+
+  it("race: numeric replyTo deleted between gate approval and apply -> aborts, no mutation", async () => {
+    let resolves = 0;
+    setupRoutes([
+      REPO_VIEW_ROUTE,
+      graphqlRoute("discussion(number:", { repository: { discussion: { id: "DISC1", title: "How to X", url: "u" } } }),
+      {
+        match: (c, a) => c === "gh" && a[0] === "api" && (a[1] ?? "").startsWith("repos/octo/repo/discussions/comments/"),
+        result: () => {
+          resolves++;
+          return resolves === 1
+            ? { stdout: "NODE123\n", stderr: "", status: 0 }
+            : { stdout: "", stderr: "Not Found", status: 1 };
+        },
+      },
+      graphqlRoute("addDiscussionComment", { addDiscussionComment: { comment: { url: "u" } } }),
+    ]);
+    const ui = makeStubUI({ editorResponse: "ans" });
+    const result = await invokeWithCtx(
+      discussionCommentTool,
+      { number: 3, body: "ans", replyTo: "1766402" },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("Nothing was posted");
+    expect(findGraphqlCall("addDiscussionComment")).toBeUndefined();
+  });
 });
 
 // -------------------------------------------------- git_pr_review -----
@@ -715,6 +848,7 @@ describe("git_discussion_comment - gate wiring", () => {
 describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
   it("APPROVE opens the editor even when git-confirm-write is off", async () => {
     setConfirmWriteEnabled(false);
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: undefined }); // cancel
     const result = await invokeWithCtx(
       prReviewTool,
@@ -730,6 +864,7 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
 
   it("REQUEST_CHANGES is also forced (editor opens with gate off)", async () => {
     setConfirmWriteEnabled(false);
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: undefined });
     const result = await invokeWithCtx(
       prReviewTool,
@@ -743,6 +878,7 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
 
   it("APPROVE is refused in headless even with git-allow-headless-write on", async () => {
     setAllowHeadlessWriteEnabled(true);
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ hasUI: false });
     const result = await invokeWithCtx(
       prReviewTool,
@@ -755,7 +891,40 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
     expect(firstText(result)).not.toContain("/git headless on");
   });
 
+  it("explicit pr that does not exist -> refuses before the gate", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "4212", result: () => ({ stdout: "", stderr: "Could not resolve to a PullRequest", status: 1 }) },
+    ]);
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prReviewTool, { body: "lgtm", pr: 4212 }, makeCtx(ui));
+    expect(firstText(result)).toContain("PR #4212 not found");
+    expect(ui.prompts).toHaveLength(0);
+  });
+
+  it("closed PR on the current branch -> refuses with a pass-pr-explicitly message", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([OPEN_PR(9, { state: "MERGED" })]), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prReviewTool, { body: "lgtm" }, makeCtx(ui));
+    expect(firstText(result)).toContain("is MERGED");
+    expect(firstText(result)).toContain("pr` explicitly");
+    expect(ui.prompts).toHaveLength(0);
+    expect(findCall("gh", ["pr", "review"])).toBeUndefined();
+  });
+
+  it("APPROVE gate title states the full target identity", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
+    const ui = makeStubUI({ editorResponse: undefined });
+    await invokeWithCtx(prReviewTool, { body: "lgtm", pr: 42, event: "APPROVE" }, makeCtx(ui));
+    expect(ui.prompts[0].title).toMatch(/approve/i);
+    expect(ui.prompts[0].title).toContain("#42");
+    expect(ui.prompts[0].title).toContain("OPEN");
+    expect(ui.prompts[0].title).toContain("feat -> main");
+  });
+
   it("APPROVE on accept posts `gh pr review <n> --approve --body <body>`", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: "lgtm" });
     const result = await invokeWithCtx(
       prReviewTool,
@@ -769,6 +938,7 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
   });
 
   it("REQUEST_CHANGES on accept posts `gh pr review <n> --request-changes --body`", async () => {
+    setupRoutes([prSnapshotRoute(8, OPEN_PR(8))]);
     const ui = makeStubUI({ editorResponse: "fix the leak" });
     await invokeWithCtx(
       prReviewTool,
@@ -780,6 +950,7 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
   });
 
   it("COMMENT (default) on accept posts `gh pr review <n> --comment --body`", async () => {
+    setupRoutes([prSnapshotRoute(3, OPEN_PR(3))]);
     const ui = makeStubUI({ editorResponse: "nit: typo" });
     await invokeWithCtx(
       prReviewTool,
@@ -790,11 +961,26 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
     expect(call!.args).toEqual(["pr", "review", "3", "--comment", "--body", "nit: typo"]);
   });
 
-  it("surfaces the PR url after the review posts (gh pr review prints none)", async () => {
+  it("race: PR merged between gate approval and apply -> aborts, no review posted", async () => {
+    let views = 0;
     setupRoutes([
-      // ghPrUrlByNumber addresses the PR by number: `gh pr view 42 --json url`.
-      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "42", result: () => ({ stdout: JSON.stringify({ url: "https://github.com/o/r/pull/42" }), stderr: "", status: 0 }) },
+      {
+        match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "42",
+        result: () => {
+          views++;
+          return { stdout: JSON.stringify(OPEN_PR(42, views === 1 ? {} : { state: "MERGED" })), stderr: "", status: 0 };
+        },
+      },
     ]);
+    const ui = makeStubUI({ editorResponse: "lgtm" });
+    const result = await invokeWithCtx(prReviewTool, { body: "lgtm", pr: 42 }, makeCtx(ui));
+    expect(firstText(result)).toContain("state changed OPEN -> MERGED");
+    expect(firstText(result)).toContain("Nothing was sent");
+    expect(findCall("gh", ["pr", "review"])).toBeUndefined();
+  });
+
+  it("surfaces the PR url from the snapshot after the review posts (gh pr review prints none)", async () => {
+    setupRoutes([prSnapshotRoute(42, OPEN_PR(42))]);
     const ui = makeStubUI({ editorResponse: "lgtm" });
     const result = await invokeWithCtx(
       prReviewTool,
@@ -802,28 +988,179 @@ describe("git_pr_review - APPROVE / REQUEST_CHANGES are forced", () => {
       makeCtx(ui),
     );
     expect(firstText(result)).toContain("Approved PR #42");
-    expect(firstText(result)).toContain("  url: https://github.com/o/r/pull/42");
+    expect(firstText(result)).toContain("  url: https://github.com/octo/repo/pull/42");
   });
 
-  it("branch-resolved PR: reuses the lookup url without a second gh call", async () => {
-    const prJson = JSON.stringify({
-      number: 9, title: "t", body: "", state: "OPEN",
-      url: "https://github.com/o/r/pull/9", baseRefName: "main",
-      headRefName: "feat", isDraft: false,
-    });
+  it("branch-resolved PR: result url comes from the resolve-time snapshot", async () => {
     setupRoutes([
-      // Branch lookup only. No by-number route exists: if the tool wrongly
-      // called ghPrUrlByNumber it would get null and drop the url line.
-      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "--json", result: () => ({ stdout: prJson, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([OPEN_PR(9)]), stderr: "", status: 0 }) },
+      prSnapshotRoute(9, OPEN_PR(9)),
     ]);
     const ui = makeStubUI({ editorResponse: "lgtm" });
     const result = await invokeWithCtx(prReviewTool, { body: "lgtm" }, makeCtx(ui));
     expect(firstText(result)).toContain("Posted review comment on PR #9");
-    expect(firstText(result)).toContain("  url: https://github.com/o/r/pull/9");
+    expect(firstText(result)).toContain("  url: https://github.com/octo/repo/pull/9");
   });
 });
 
 // -------------------------------------------------- git_pr_upsert -----------
+
+// Incident 2026-11-11 (real data loss): a bare `gh pr view` resolved PR #85 —
+// CLOSED, authored by someone else, head/base a different branch pair — as
+// "the PR for the current branch", and pr-upsert overwrote its title + body.
+// The guard: branch-bound resolution only ever binds an OPEN PR whose
+// headRefName equals the checked-out branch; a closed PR on the branch is a
+// CREATE target, never an edit target.
+describe("git_pr_upsert - wrong-target hardening (incident 2026-11-11)", () => {
+  const CURRENT_BRANCH = "fix/membership-create-optional-woo-meta";
+  const VICTIM = {
+    number: 85,
+    title: "old",
+    body: "old body",
+    state: "CLOSED",
+    url: "https://github.com/industrialdev/wicket-wp-memberships/pull/85",
+    baseRefName: "feature/users-multi-tier-renewal-subscriptions-merged-membership-groups",
+    headRefName: "feature/users-multi-tier-renewal-subscriptions-merged",
+    isDraft: false,
+  };
+  const incidentRoutes = (): Route[] => [
+    { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+    // Pre-fix wiring: the opaque bare `gh pr view` "resolves" the victim.
+    { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: JSON.stringify(VICTIM), stderr: "", status: 0 }) },
+    // Post-fix wiring: the explicit --head search; real gh returns nothing
+    // here because the victim's head is a different branch pair.
+    { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: "[]", stderr: "", status: 0 }) },
+    { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "create", result: () => ({ stdout: "https://github.com/industrialdev/wicket-wp-memberships/pull/107\n", stderr: "", status: 0 }) },
+  ];
+
+  it("incident repro: closed PR on another branch pair is never the edit target; the tool creates instead", async () => {
+    setupRoutes(incidentRoutes());
+    const ui = makeStubUI({ editorResponse: "T\n\n---\n\nB" });
+    const result = await invokeWithCtx(prUpsertTool, { title: "T", body: "B" }, makeCtx(ui));
+    // #85 must never be edited: no `gh pr edit` argv may exist.
+    expect(findCall("gh", ["pr", "edit"])).toBeUndefined();
+    expect(findCall("gh", ["pr", "create"])).toBeDefined();
+    expect(firstText(result)).toContain("Opened PR");
+    // The gate must not have offered the victim as an overwrite target.
+    expect(ui.prompts[0].title).not.toContain("#85");
+  });
+
+  it("HEAD on the victim PR's head branch + PR closed -> still a create, never an edit", async () => {
+    setupRoutes([
+      // The victim's head IS the checked-out branch this time, and the search
+      // hands back the CLOSED PR (the unverified gh behavior under test).
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([{ ...VICTIM, headRefName: CURRENT_BRANCH }]), stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "create", result: () => ({ stdout: "https://github.com/industrialdev/wicket-wp-memberships/pull/107\n", stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "T\n\n---\n\nB" });
+    const result = await invokeWithCtx(prUpsertTool, { title: "T", body: "B" }, makeCtx(ui));
+    expect(findCall("gh", ["pr", "edit"])).toBeUndefined();
+    expect(findCall("gh", ["pr", "create"])).toBeDefined();
+    expect(firstText(result)).toContain("Opened PR");
+  });
+
+  it("branch flipped mid-dialog before a create -> aborts, nothing created (peer review)", async () => {
+    // Peer review (claude 2026-11-11): the create path re-verified nothing;
+    // a branch flip while the gate was open published the PR from whatever
+    // branch the checkout landed on.
+    let refs = 0;
+    setupRoutes([
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => {
+        refs++;
+        return { stdout: refs === 1 ? "feat\n" : "main\n", stderr: "", status: 0 };
+      } },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: "", stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "create", result: () => ({ stdout: "https://github.com/octo/repo/pull/5\n", stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "T\n\n---\n\nB" });
+    const result = await invokeWithCtx(prUpsertTool, { title: "T", body: "B" }, makeCtx(ui));
+    expect(firstText(result)).toContain("checked-out branch changed");
+    expect(firstText(result)).toContain("feat");
+    expect(firstText(result)).toContain("main");
+    expect(firstText(result)).toContain("Nothing was created");
+    expect(findCall("gh", ["pr", "create"])).toBeUndefined();
+  });
+
+  it("poison row: a PR whose headRefName is not the checked-out branch is a hard refuse, naming branch + PR identity", async () => {
+    setupRoutes([
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([{ ...VICTIM, state: "OPEN" }]), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prUpsertTool, { title: "T", body: "B" }, makeCtx(ui));
+    expect(firstText(result)).toContain("does not match");
+    expect(firstText(result)).toContain("#85");
+    expect(firstText(result)).toContain(CURRENT_BRANCH);
+    expect(ui.prompts).toHaveLength(0); // refused before the gate
+    expect(findCall("gh", ["pr", "create"])).toBeUndefined();
+    expect(findCall("gh", ["pr", "edit"])).toBeUndefined();
+  });
+
+  it("two open PRs from one head -> ambiguous refuse listing both numbers", async () => {
+    const openRow = { ...VICTIM, state: "OPEN", headRefName: CURRENT_BRANCH };
+    setupRoutes([
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([openRow, { ...openRow, number: 92, baseRefName: "other-base" }]), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI();
+    const result = await invokeWithCtx(prUpsertTool, { title: "T", body: "B" }, makeCtx(ui));
+    expect(firstText(result)).toContain("#85");
+    expect(firstText(result)).toContain("#92");
+    expect(ui.prompts).toHaveLength(0);
+    expect(findCall("gh", ["pr", "edit"])).toBeUndefined();
+  });
+
+  it("edit path: gate title states full target identity (repo, number, state, head -> base, branch)", async () => {
+    const openPr = { ...VICTIM, state: "OPEN", headRefName: CURRENT_BRANCH, number: 99, url: "https://github.com/industrialdev/wicket-wp-memberships/pull/99", baseRefName: "main" };
+    setupRoutes([
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([openPr]), stderr: "", status: 0 }) },
+      // Apply-time re-fetch must see the SAME identity for the edit to run.
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "99", result: () => ({ stdout: JSON.stringify(openPr), stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "edit", result: () => ({ stdout: "", stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "T2\n\n---\n\nB2" });
+    const result = await invokeWithCtx(prUpsertTool, { title: "T2", body: "B2" }, makeCtx(ui));
+    expect(ui.prompts[0].title).toContain("#99");
+    expect(ui.prompts[0].title).toContain("OPEN");
+    expect(ui.prompts[0].title).toContain(`${CURRENT_BRANCH} -> main`);
+    expect(ui.prompts[0].title).toContain(CURRENT_BRANCH);
+    const edit = findCall("gh", ["pr", "edit"]);
+    expect(edit).toBeDefined();
+    expect(edit!.args).toEqual(["pr", "edit", "99", "--title", "T2", "--body", "B2"]);
+    expect(firstText(result)).toContain("Updated PR #99");
+  });
+
+  it("race: PR state changes between gate approval and apply -> abort, no gh pr edit", async () => {
+    const openPr = { ...VICTIM, state: "OPEN", headRefName: CURRENT_BRANCH, number: 99, baseRefName: "main" };
+    setupRoutes([
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([openPr]), stderr: "", status: 0 }) },
+      // The human merged the PR while the dialog was open.
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "99", result: () => ({ stdout: JSON.stringify({ ...openPr, state: "MERGED" }), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "T2\n\n---\n\nB2" });
+    const result = await invokeWithCtx(prUpsertTool, { title: "T2", body: "B2" }, makeCtx(ui));
+    expect(firstText(result)).toContain("changed");
+    expect(firstText(result)).toContain("MERGED");
+    expect(firstText(result)).toContain("Nothing was sent");
+    expect(findCall("gh", ["pr", "edit"])).toBeUndefined();
+  });
+
+  it("race: PR head changes between gate approval and apply -> abort, no gh pr edit", async () => {
+    const openPr = { ...VICTIM, state: "OPEN", headRefName: CURRENT_BRANCH, number: 99, baseRefName: "main" };
+    setupRoutes([
+      { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: `${CURRENT_BRANCH}\n`, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([openPr]), stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view" && a[2] === "99", result: () => ({ stdout: JSON.stringify({ ...openPr, headRefName: "rebased-elsewhere" }), stderr: "", status: 0 }) },
+    ]);
+    const ui = makeStubUI({ editorResponse: "T2\n\n---\n\nB2" });
+    const result = await invokeWithCtx(prUpsertTool, { title: "T2", body: "B2" }, makeCtx(ui));
+    expect(firstText(result)).toContain("head changed");
+    expect(findCall("gh", ["pr", "edit"])).toBeUndefined();
+  });
+});
 
 describe("git_pr_upsert - create vs edit", () => {
   it("no existing PR -> dialog says 'Open a new PR' and runs `gh pr create`", async () => {
@@ -845,13 +1182,10 @@ describe("git_pr_upsert - create vs edit", () => {
   });
 
   it("existing PR -> dialog says 'Overwrite PR #N' and runs `gh pr edit <number>`", async () => {
-    const prJson = JSON.stringify({
-      number: 99, title: "old", body: "", state: "OPEN",
-      url: "https://github.com/o/r/pull/99", baseRefName: "main",
-      headRefName: "feat", isDraft: false,
-    });
     setupRoutes([
-      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: prJson, stderr: "", status: 0 }) },
+      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify([OPEN_PR(99)]), stderr: "", status: 0 }) },
+      // Apply-time re-fetch must see the SAME identity for the edit to run.
+      prSnapshotRoute(99, OPEN_PR(99)),
       { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "edit", result: () => ({ stdout: "", stderr: "", status: 0 }) },
     ]);
     const ui = makeStubUI({ editorResponse: "T2\n\n---\n\nB2" });
@@ -891,6 +1225,7 @@ describe("git_pr_upsert - create vs edit", () => {
 describe("gate wiring - confirm-write off", () => {
   it("a COMMENT review SKIPS the dialog and proceeds when git-confirm-write is off", async () => {
     setConfirmWriteEnabled(false);
+    setupRoutes([prSnapshotRoute(5, OPEN_PR(5))]);
     const ui = makeStubUI({ editorResponse: undefined }); // would cancel, but gate is off
     const result = await invokeWithCtx(
       prReviewTool,
@@ -905,6 +1240,7 @@ describe("gate wiring - confirm-write off", () => {
 
   it("APPROVE still opens the dialog when git-confirm-write is off (forced)", async () => {
     setConfirmWriteEnabled(false);
+    setupRoutes([prSnapshotRoute(5, OPEN_PR(5))]);
     const ui = makeStubUI({ editorResponse: undefined }); // cancel
     await invokeWithCtx(
       prReviewTool,
@@ -1029,20 +1365,21 @@ describe("cwd routing: write tools", () => {
     expect(findCall("git", ["diff"])?.cwd).toBe(TARGET_CWD);
   });
 
-  it("git_pr_upsert: preflight gh pr view carries explicit cwd (gate cancelled)", async () => {
+  it("git_pr_upsert: preflight branch resolution carries explicit cwd (gate cancelled)", async () => {
     const ui = makeStubUI({ editorResponse: undefined });
     await invokeWithCtx(prUpsertTool, { title: "t", body: "b", cwd: TARGET_CWD }, makeCtx(ui));
-    expect(findCall("gh", ["pr", "view"])?.cwd).toBe(TARGET_CWD);
+    expect(findCall("git", ["symbolic-ref"])?.cwd).toBe(TARGET_CWD);
+    expect(findCall("gh", ["pr", "list"])?.cwd).toBe(TARGET_CWD);
   });
 
   it("git_pr_comment: current-branch PR lookup carries explicit cwd (fails closed, no gate)", async () => {
     await invokeWithCtx(prCommentTool, { body: "b", cwd: TARGET_CWD }, makeCtx(makeStubUI()));
-    expect(findCall("gh", ["pr", "view"])?.cwd).toBe(TARGET_CWD);
+    expect(findCall("gh", ["pr", "list"])?.cwd).toBe(TARGET_CWD);
   });
 
   it("git_pr_review: current-branch PR lookup carries explicit cwd (fails closed, no gate)", async () => {
     await invokeWithCtx(prReviewTool, { body: "b", cwd: TARGET_CWD }, makeCtx(makeStubUI()));
-    expect(findCall("gh", ["pr", "view"])?.cwd).toBe(TARGET_CWD);
+    expect(findCall("gh", ["pr", "list"])?.cwd).toBe(TARGET_CWD);
   });
 
   it("git_issue_comment: apply gh issue comment carries explicit cwd (gate accepted)", async () => {
@@ -1173,8 +1510,10 @@ describe("cross-repo targeting (repo param)", () => {
     expect(ui.prompts).toHaveLength(0);
   });
 
-  it("git_pr_comment: repo + pr -> -R on the apply argv, no branch lookup", async () => {
+  it("git_pr_comment: repo + pr -> -R snapshot + -R on the apply argv, no branch lookup", async () => {
     setupRoutes([
+      // Number-addressed snapshot fetch (resolve-time and apply-time re-check).
+      prSnapshotRoute(5, OPEN_PR(5, { url: "https://github.com/foo/bar/pull/5" })),
       { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "comment", result: () => ({ stdout: "https://github.com/foo/bar/pull/5#issuecomment-1\n", stderr: "", status: 0 }) },
     ]);
     const ui = makeStubUI({ editorResponse: "note" });
@@ -1182,7 +1521,12 @@ describe("cross-repo targeting (repo param)", () => {
     const call = findCall("gh", ["pr", "comment"]);
     expect(call).toBeDefined();
     expect(call!.args).toEqual(["pr", "comment", "5", "-R", "foo/bar", "--body", "note"]);
-    expect(cpMock.state.calls.some((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "view")).toBe(false);
+    // Targeting is number + slug only: no branch-bound `pr list` lookup.
+    expect(cpMock.state.calls.some((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "list")).toBe(false);
+    // The snapshot fetch is slug-addressed too.
+    const view = cpMock.state.calls.find((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "view");
+    expect(view?.args).toContain("-R");
+    expect(view?.args[view.args.indexOf("-R") + 1]).toBe("foo/bar");
   });
 
   it("git_commit: gate title names the working tree toplevel", async () => {
@@ -1222,8 +1566,8 @@ describe("cross-repo targeting (repo param)", () => {
 
   it("git_pr_review: repo + pr -> -R after the number on the review argv, title names the repo", async () => {
     setupRoutes([
+      prSnapshotRoute(5, OPEN_PR(5, { url: "https://github.com/foo/bar/pull/5" })),
       { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "review", result: () => ({ stdout: "", stderr: "", status: 0 }) },
-      { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view", result: () => ({ stdout: "https://github.com/foo/bar/pull/5\n", stderr: "", status: 0 }) },
     ]);
     const ui = makeStubUI({ editorResponse: "lgtm" });
     await invokeWithCtx(prReviewTool, { body: "lgtm", pr: 5, repo: "foo/bar" }, makeCtx(ui));

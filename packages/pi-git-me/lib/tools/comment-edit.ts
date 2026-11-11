@@ -29,7 +29,7 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeReviewPayload, repoContextLabel } from "../format";
-import { ghPrForCurrentBranch } from "../git";
+import { resolvePrForBranch, branchPrRefusal } from "../pr-target";
 import type { GhPullRequest } from "../types";
 import { ghRepoView } from "../github";
 import { parseRepoParam, repoParamConflict } from "../repo-target";
@@ -127,6 +127,34 @@ function commentById(nameWithOwner: string, id: number, cwd: string): GhComment 
   );
   if (result.exitCode !== 0) return null;
   return parseComment(result.stdout);
+}
+
+/**
+ * Authorship + thread-boundary checks, shared by the resolve-time fetch and
+ * the apply-time re-verify. Returns the refusal text, or null when the
+ * comment is a safe edit target.
+ */
+function commentTargetRefusal(
+  comment: GhComment,
+  login: string,
+  number: number | undefined,
+  kindNoun: string,
+): string | null {
+  // GitHub logins are case-insensitive; compare that way so a differently
+  // cased display login can never reject the user's own comment.
+  if (
+    typeof comment.user?.login !== "string" ||
+    comment.user.login.toLowerCase() !== login.toLowerCase()
+  ) {
+    return `git-me: comment ${String(comment.id)} was authored by @${String(comment.user?.login ?? "unknown")}, not by @${login}. git-me edits only your own comments.`;
+  }
+  // commentId is repo-scoped: guard the thread boundary so a stated
+  // number cannot pair with a commentId that lives on another thread.
+  const issueUrl = typeof comment.issue_url === "string" ? comment.issue_url : "";
+  if (number !== undefined && issueUrl && !issueUrl.endsWith(`/${String(number)}`)) {
+    return `git-me: comment ${String(comment.id)} belongs to ${issueUrl}, not ${kindNoun} #${String(number)}. Nothing was edited.`;
+  }
+  return null;
 }
 
 export interface CommentEditKindConfig {
@@ -238,13 +266,20 @@ export function buildCommentEditTool(
         }
       } else {
         if (number === undefined && cfg.kind === "pr") {
-          resolvedPr = ghPrForCurrentBranch(cwd);
-          if (resolvedPr === null) {
+          // Branch-bound resolution: only an OPEN PR whose head equals the
+          // checked-out branch is bindable (see lib/pr-target.ts). Closed/
+          // mismatched/ambiguous targets refuse; the agent passes `pr`
+          // explicitly to target them on purpose.
+          const res = resolvePrForBranch(cwd);
+          const refusal = branchPrRefusal(res);
+          if (refusal) return toToolResult(refusal);
+          if (res.kind !== "ok") {
             return toToolResult(
               "git-me: no PR found for the current branch. Pass `pr` explicitly or open a PR first (git_pr_upsert with create).",
             );
           }
-          number = resolvedPr.number;
+          resolvedPr = res.pr;
+          number = res.pr.number;
         }
         if (number === undefined) {
           return toToolResult(`git-me: a ${kindNoun} number is required.`);
@@ -256,24 +291,10 @@ export function buildCommentEditTool(
           );
         }
       }
-      // GitHub logins are case-insensitive; compare that way so a differently
-      // cased display login can never reject the user's own comment.
-      if (
-        typeof target.user?.login !== "string" ||
-        target.user.login.toLowerCase() !== login.toLowerCase()
-      ) {
-        return toToolResult(
-          `git-me: comment ${String(target.id)} was authored by @${String(target.user?.login ?? "unknown")}, not by @${login}. git-me edits only your own comments.`,
-        );
-      }
-      // commentId is repo-scoped: guard the thread boundary so a stated
-      // number cannot pair with a commentId that lives on another thread.
-      const issueUrl = typeof target.issue_url === "string" ? target.issue_url : "";
-      if (number !== undefined && issueUrl && !issueUrl.endsWith(`/${String(number)}`)) {
-        return toToolResult(
-          `git-me: comment ${String(target.id)} belongs to ${issueUrl}, not ${kindNoun} #${String(number)}. Nothing was edited.`,
-        );
-      }
+      // Authorship + thread-boundary checks (the same checks re-run at
+      // apply time against a fresh fetch).
+      const resolveRefusal = commentTargetRefusal(target, login, number, kindNoun);
+      if (resolveRefusal) return toToolResult(resolveRefusal);
       const currentBody = typeof target.body === "string" ? target.body : "";
 
       // No-op guard before the gate: a body identical to the current one
@@ -311,6 +332,17 @@ export function buildCommentEditTool(
       }
 
       try {
+        // Apply-time re-verify: fetch the comment by id immediately before
+        // the PATCH. A human can delete the comment while the dialog is
+        // open; the PATCH must never resurrect a stale target.
+        const fresh = commentById(repoNameWithOwner, target.id, cwd);
+        if (!fresh || typeof fresh.id !== "number") {
+          return toToolResult(
+            `git-me: comment ${String(target.id)} in ${repoNameWithOwner} no longer exists (deleted while the dialog was open). Nothing was edited.`,
+          );
+        }
+        const freshRefusal = commentTargetRefusal(fresh, login, number, kindNoun);
+        if (freshRefusal) return toToolResult(freshRefusal);
         const result = runGh(
           [
             "api",

@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { requireGitRepo, requireGh, GitMeEnvError } from "../auth";
-import { ghPrForCurrentBranch } from "../git";
+import { ghPrViewCurrentBranch } from "../git";
 import { toToolResult, type GitDetails } from "../result";
 import {
   GIT_PR_INFO_TITLE,
@@ -35,7 +35,7 @@ export const prInfoTool: ToolDefinition<typeof Params, GitDetails> = {
       if (err instanceof GitMeEnvError) return toToolResult(err.message);
       throw err;
     }
-    const pr = ghPrForCurrentBranch(cwd);
+    const pr = ghPrViewCurrentBranch(cwd);
     if (!pr) {
       return toToolResult(
         "git-me: no PR found for the current branch. Use git_pr_upsert to open one, or pass a different branch.",

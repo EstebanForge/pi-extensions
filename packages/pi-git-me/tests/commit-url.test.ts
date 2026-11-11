@@ -150,3 +150,80 @@ describe("git_commit - success result web url", () => {
     expect(firstText(result)).not.toContain("url:");
   });
 });
+
+// Staged-state race guard (incident lore: a human reset the staging area
+// while a commit dialog was open). The tool snapshots the state as sha-256
+// over `git rev-parse HEAD` + `git write-tree` before the gate and
+// re-snapshots after acceptance; any change aborts with nothing committed.
+// Hashing HEAD too catches the amend attack a diff-only hash misses: a side
+// commit by the human while the index is empty leaves the index unchanged
+// but moves HEAD, so `--amend` would otherwise rewrite the human's commit.
+describe("git_commit - staged-state race guard (shared checkout)", () => {
+  const HEAD_1 = "abc1234567890";
+  const HEAD_2 = "deadbeef1234567";
+  const TREE_EMPTY = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  const TREE_A = "treeaaaa";
+  const TREE_B = "treebbbb";
+
+  function headRoute(payloads: string[], status = 0): Route {
+    let calls = 0;
+    return {
+      match: (c, a) => c === "git" && a[0] === "rev-parse" && a[1] === "HEAD",
+      result: () => ({ stdout: payloads[Math.min(calls++, payloads.length - 1)], stderr: status === 0 ? "" : "fatal: bad", status }),
+    };
+  }
+
+  function writeTreeRoute(payloads: string[], status = 0): Route {
+    let calls = 0;
+    return {
+      match: (c, a) => c === "git" && a[0] === "write-tree",
+      result: () => ({ stdout: payloads[Math.min(calls++, payloads.length - 1)], stderr: status === 0 ? "" : "fatal: conflict", status }),
+    };
+  }
+
+  it("stable HEAD + index between gate and apply -> commits normally", async () => {
+    setupRoutes([headRoute([HEAD_1]), writeTreeRoute([TREE_A]), ...baseRoutes("git@github.com:octo/repo.git")]);
+    const ui = makeStubUI({ editorResponse: "feat: x" });
+    const result = await invokeWithCtx(commitTool, { subject: "feat: x" }, makeCtx(ui));
+    expect(firstText(result)).toContain("Committed staged changes with message.");
+    expect(cpMock.state.commits).toHaveLength(1);
+  });
+
+  it("index changed while the dialog was open -> aborts, nothing committed", async () => {
+    setupRoutes([headRoute([HEAD_1]), writeTreeRoute([TREE_A, TREE_B]), ...baseRoutes()]);
+    const ui = makeStubUI({ editorResponse: "feat: x" });
+    const result = await invokeWithCtx(commitTool, { subject: "feat: x" }, makeCtx(ui));
+    expect(firstText(result)).toContain("staged changes changed");
+    expect(firstText(result)).toContain("Nothing was committed");
+    expect(cpMock.state.commits).toHaveLength(0);
+  });
+
+  it("HEAD moved with an EMPTY index (amend attack) -> aborts, nothing committed", async () => {
+    // Peer review (claude 2026-11-11): a diff-only hash is blind to a human
+    // side commit while the index is empty — the agent's --amend would then
+    // rewrite the human's new commit. The HEAD SHA in the snapshot closes it.
+    setupRoutes([headRoute([HEAD_1, HEAD_2]), writeTreeRoute([TREE_EMPTY, TREE_EMPTY]), ...baseRoutes()]);
+    const ui = makeStubUI({ editorResponse: "fix: tweaked" });
+    const result = await invokeWithCtx(commitTool, { subject: "fix: tweaked", amend: true }, makeCtx(ui));
+    expect(firstText(result)).toContain("staged changes changed");
+    expect(cpMock.state.commits).toHaveLength(0);
+  });
+
+  it("staged-state snapshot failure -> refuses closed, nothing committed", async () => {
+    // write-tree exits 1 on a conflicted index — a real snapshot failure
+    // (rev-parse HEAD 128 is the unborn-branch case, not a failure).
+    setupRoutes([headRoute([HEAD_1]), writeTreeRoute([TREE_A], 1), ...baseRoutes()]);
+    const ui = makeStubUI({ editorResponse: "feat: x" });
+    const result = await invokeWithCtx(commitTool, { subject: "feat: x" }, makeCtx(ui));
+    expect(firstText(result)).toContain("could not be hashed");
+    expect(cpMock.state.commits).toHaveLength(0);
+  });
+
+  it("amend path is guarded too: staging appearing mid-dialog aborts", async () => {
+    setupRoutes([headRoute([HEAD_1]), writeTreeRoute([TREE_EMPTY, TREE_A]), ...baseRoutes()]);
+    const ui = makeStubUI({ editorResponse: "fix: tweaked" });
+    const result = await invokeWithCtx(commitTool, { subject: "fix: tweaked", amend: true }, makeCtx(ui));
+    expect(firstText(result)).toContain("staged changes changed");
+    expect(cpMock.state.commits).toHaveLength(0);
+  });
+});

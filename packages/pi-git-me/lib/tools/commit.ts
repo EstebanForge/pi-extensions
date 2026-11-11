@@ -2,7 +2,7 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { runGit, requireGitRepo, GitMeEnvError } from "../auth";
-import { gitCommitWebUrl, gitToplevel } from "../git";
+import { gitCommitWebUrl, gitToplevel, stagedDiffDigest } from "../git";
 import { confirmWrite } from "../confirm";
 import { formatCommitMessage, oneLine, repoContextLabel } from "../format";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
@@ -82,6 +82,17 @@ export const commitTool: ToolDefinition<typeof Params, GitDetails> = {
       }
     }
 
+    // Snapshot HEAD + the staged index BEFORE the gate. A human sharing
+    // this checkout can stage/unstage (or move HEAD) while the dialog is
+    // open; the accepted message must not be applied to content nobody
+    // reviewed.
+    const stagedDigestBefore = stagedDiffDigest(cwd);
+    if (stagedDigestBefore === null) {
+      return toToolResult(
+        "git-me: the staged state could not be hashed (`git rev-parse HEAD` / `git write-tree` failed). Nothing was committed; inspect the repo state and retry.",
+      );
+    }
+
     const prefill = formatCommitMessage(params.subject, params.body);
     const summary = `commit message:\n${oneLine(prefill)}`;
 
@@ -114,6 +125,16 @@ export const commitTool: ToolDefinition<typeof Params, GitDetails> = {
     if (!message.trim()) {
       return toToolResult(
         "git-me: commit message is empty after edit; nothing committed.",
+      );
+    }
+
+    // Apply-time re-hash: the accepted message belongs to the content the
+    // gate showed. Any drift (human staging/resetting, HEAD moved by a side
+    // commit) aborts with nothing committed.
+    const stagedDigestAfter = stagedDiffDigest(cwd);
+    if (stagedDigestAfter === null || stagedDigestAfter !== stagedDigestBefore) {
+      return toToolResult(
+        "git-me: the staged changes changed while the dialog was open (a human staged or unstaged files, or moved HEAD, in this shared checkout). Nothing was committed; re-stage and re-run git_commit.",
       );
     }
 

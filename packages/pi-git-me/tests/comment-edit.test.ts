@@ -75,17 +75,6 @@ const ROUTES: Record<string, Route> = {
     match: (c, a) => c === "gh" && a[0] === "api" && a[1] === "user",
     result: () => ({ stdout: "me\n", stderr: "", status: 0 }),
   },
-  prView: {
-    match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "view",
-    result: () => ({
-      stdout: JSON.stringify({
-        number: 9,
-        url: "https://github.com/octo/repo/pull/9",
-      }),
-      stderr: "",
-      status: 0,
-    }),
-  },
   // requireGitRepo() must pass: `git rev-parse --is-inside-work-tree` -> true.
   repoProbe: {
     match: (c, a) => c === "git" && a[0] === "rev-parse",
@@ -165,6 +154,25 @@ const THEIRS = {
   user: { login: "someone-else" },
 };
 
+// Branch-bound PR resolution fixtures for the PR flavor (resolver contract:
+// `gh pr list --head <branch> --state all`, branch "feat").
+const PR9 = {
+  number: 9,
+  title: "t",
+  body: "",
+  state: "OPEN",
+  url: "https://github.com/octo/repo/pull/9",
+  baseRefName: "main",
+  headRefName: "feat",
+  isDraft: false,
+};
+function branchPrRoutes(rows: object[]): Route[] {
+  return [
+    { match: (c, a) => c === "git" && a[0] === "symbolic-ref", result: () => ({ stdout: "feat\n", stderr: "", status: 0 }) },
+    { match: (c, a) => c === "gh" && a[0] === "pr" && a[1] === "list", result: () => ({ stdout: JSON.stringify(rows), stderr: "", status: 0 }) },
+  ];
+}
+
 beforeEach(() => {
   cpMock.state.routes = [];
   cpMock.state.calls = [];
@@ -187,6 +195,8 @@ describe("git_issue_comment_edit", () => {
         JSON.stringify(THEIRS),
         JSON.stringify(MY_LAST),
       ]),
+      // Apply-time re-verify re-fetches the comment by id before the PATCH.
+      routeCommentById(98, MY_LAST),
       patchRoute,
     ];
     const ui = makeStubUI({ editorResponse: "new text from me" });
@@ -319,6 +329,7 @@ describe("git_issue_comment_edit", () => {
       ROUTES.repoView,
       ROUTES.login,
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      routeCommentById(98, MY_LAST),
       patchRoute,
     ];
     const ui = makeStubUI({ editorResponse: "line1\nline2 --flag 'quoted'" });
@@ -346,6 +357,8 @@ describe("git_pr_comment_edit", () => {
       ROUTES.repoView,
       ROUTES.login,
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      // Apply-time re-verify re-fetches the comment by id before the PATCH.
+      routeCommentById(98, MY_LAST),
       patchRoute,
     ];
     const ui = makeStubUI({ editorResponse: "fix" });
@@ -394,8 +407,10 @@ describe("git_pr_comment_edit", () => {
       ROUTES.repoProbe,
       ROUTES.repoView,
       ROUTES.login,
-      ROUTES.prView,
+      ...branchPrRoutes([PR9]),
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      // Apply-time re-verify re-fetches the comment by id before the PATCH.
+      routeCommentById(98, MY_LAST),
       patchRoute,
     ];
     const ui = makeStubUI({ editorResponse: "pr fix" });
@@ -423,8 +438,9 @@ describe("git_pr_comment_edit", () => {
       ROUTES.repoProbe,
       ROUTES.repoView,
       ROUTES.login,
-      ROUTES.prView,
+      ...branchPrRoutes([PR9]),
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      routeCommentById(98, MY_LAST),
       route,
     ];
     const ui = makeStubUI({ editorResponse: "x" });
@@ -493,6 +509,7 @@ describe("comment-edit hardening", () => {
         JSON.stringify(olderMine),
         JSON.stringify(MY_LAST),
       ]),
+      routeCommentById(98, MY_LAST),
       patchRoute,
     ];
     const ui = makeStubUI({ editorResponse: "newest" });
@@ -522,12 +539,75 @@ describe("comment-edit hardening", () => {
     expect(cpMock.state.calls.some((c) => c.args.includes("PATCH"))).toBe(false);
   });
 
+  it("PR flavor: closed PR on the current branch refuses with a pass-pr-explicitly message", async () => {
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      ...branchPrRoutes([{ ...PR9, state: "CLOSED" }]),
+    ];
+    const ui = makeStubUI({ editorResponse: "x" });
+    const result = await invokeWithCtx(prCommentEditTool, { body: "x" }, makeCtx(ui));
+    expect(firstText(result)).toContain("is CLOSED");
+    expect(firstText(result)).toContain("pr` explicitly");
+    expect(ui.prompts).toHaveLength(0);
+    expect(cpMock.state.calls.some((c) => c.args.includes("PATCH"))).toBe(false);
+  });
+
+  it("apply-time: comment deleted while the dialog was open -> nothing edited", async () => {
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+      {
+        // The ONLY by-id fetch happens at apply time (the pre-gate target
+        // comes from the listing); it must find the comment deleted.
+        match: (c, a) => c === "gh" && a[0] === "api" && a[1] === "repos/octo/repo/issues/comments/98" && !a.includes("--method"),
+        result: () => ({ stdout: "", stderr: "Not Found", status: 1 }),
+      },
+    ];
+    const ui = makeStubUI({ editorResponse: "new text" });
+    const result = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "new text", number: 7 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("no longer exists");
+    expect(firstText(result)).toContain("Nothing was edited");
+    expect(cpMock.state.calls.some((c) => c.args.includes("PATCH"))).toBe(false);
+  });
+
+  it("apply-time: comment moved to another thread mid-dialog -> nothing edited", async () => {
+    cpMock.state.routes = [
+      ROUTES.repoProbe,
+      ROUTES.repoView,
+      ROUTES.login,
+      routeThreadComments([JSON.stringify(MY_LAST)]),
+      {
+        // Apply-time fetch sees the comment relocated to issue 9 while the
+        // stated thread is 7 -> the thread-boundary guard refuses.
+        match: (c, a) => c === "gh" && a[0] === "api" && a[1] === "repos/octo/repo/issues/comments/98" && !a.includes("--method"),
+        result: () => ({ stdout: JSON.stringify({ ...MY_LAST, issue_url: "https://github.com/octo/repo/issues/9" }), stderr: "", status: 0 }),
+      },
+    ];
+    const ui = makeStubUI({ editorResponse: "new text" });
+    const result = await invokeWithCtx(
+      issueCommentEditTool,
+      { body: "new text", number: 7 },
+      makeCtx(ui),
+    );
+    expect(firstText(result)).toContain("belongs to");
+    expect(cpMock.state.calls.some((c) => c.args.includes("PATCH"))).toBe(false);
+  });
+
   it("surfaces a PATCH failure with the gh stderr detail", async () => {
     cpMock.state.routes = [
       ROUTES.repoProbe,
       ROUTES.repoView,
       ROUTES.login,
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      routeCommentById(98, MY_LAST),
       {
         match: (c, a) =>
           c === "gh" && a[0] === "api" && a[1] === "--method" && a[2] === "PATCH",
@@ -550,6 +630,7 @@ describe("comment-edit hardening", () => {
       ROUTES.repoView,
       ROUTES.login,
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      routeCommentById(98, MY_LAST),
     ];
     const editedUi = makeStubUI({ editorResponse: "human-touched text" });
     const { route: patchRoute } = recordingPatch(98);
@@ -566,6 +647,7 @@ describe("comment-edit hardening", () => {
       ROUTES.repoView,
       ROUTES.login,
       routeThreadComments([JSON.stringify(MY_LAST)]),
+      routeCommentById(98, MY_LAST),
       recordingPatch(98).route,
     ];
     const verbatimUi = makeStubUI({ editorResponse: "verbatim draft" });

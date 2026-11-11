@@ -3,8 +3,8 @@ import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-
 import { runGh, requireGitRepo, requireGh, GitMeEnvError } from "../auth";
 import { confirmWrite } from "../confirm";
 import { describeTitleBodyPayload, repoContextLabel, gateRepoSuffix, toTitleBodyPrefill, fromTitleBodyPrefill } from "../format";
-import { ghPrForCurrentBranch } from "../git";
 import { ghRepoView } from "../github";
+import { resolvePrForBranch, branchPrRefusal, verifyPrTarget, prTargetLabel, branchLabel } from "../pr-target";
 import { toToolResult, errorText, postedContentExtras, type GitDetails } from "../result";
 import {
   PR_UPSERT_TITLE,
@@ -56,12 +56,26 @@ export const prUpsertTool: ToolDefinition<typeof Params, GitDetails> = {
       throw err;
     }
 
-    // Resolve existing PR BEFORE the gate (requireGh above ruled out
-    // gh-missing / gh-unauthed, so null genuinely means "no PR"). This lets
-    // the dialog tell the user whether they are CREATING a new public PR or
-    // OVERWRITING an existing one - materially different consequences that
-    // used to share one vague prompt.
-    const existing = ghPrForCurrentBranch(cwd);
+    // Resolve the target BEFORE the gate (requireGh above ruled out
+    // gh-missing / gh-unauthed). Branch-bound resolution only ever binds an
+    // OPEN PR whose headRefName equals the checked-out branch; anything else
+    // refuses (mismatch/ambiguous/error) or falls through to CREATE
+    // (none/closed). This lets the dialog tell the user whether they are
+    // CREATING a new public PR or OVERWRITING an existing one - materially
+    // different consequences that used to share one vague prompt.
+    const resolution = resolvePrForBranch(cwd);
+    // mismatch/ambiguous are hard refuses (gh state is confusing; creating
+    // or editing blind could hit the wrong PR). error refuses because a gh
+    // failure must not silently become a duplicate create. none and closed
+    // fall through to CREATE below; a new PR from the branch is the intended
+    // upsert.
+    if (resolution.kind === "mismatch" || resolution.kind === "ambiguous" || resolution.kind === "error") {
+      return toToolResult(branchPrRefusal(resolution)!);
+    }
+    // CLOSED or MERGED PRs are never edit targets: a new PR from the branch
+    // is the intended upsert (gh allows it once the old one is closed).
+    const existing = resolution.kind === "ok" ? resolution.pr : null;
+    const branch = resolution.branch;
     const base = params.base ?? "main";
     // A PR is branch-bound (no repo param), but the dialog must still name
     // the repo it will open/edit the PR in.
@@ -73,8 +87,8 @@ export const prUpsertTool: ToolDefinition<typeof Params, GitDetails> = {
     const decision = await confirmWrite(ctx, {
       title:
         existing === null
-          ? `Open a new PR${gateRepoSuffix(targetRepo)} (${base} <- HEAD) with this title + body?${repoContextLabel(cwd, ctx.cwd)}`
-          : `Overwrite PR #${existing.number}${gateRepoSuffix(targetRepo)} title + body?${repoContextLabel(cwd, ctx.cwd)}`,
+          ? `Open a new PR${gateRepoSuffix(targetRepo)} (${base} <- HEAD${branch ? `, branch "${branch}"` : ""}) with this title + body?${repoContextLabel(cwd, ctx.cwd)}`
+          : `Overwrite ${prTargetLabel(existing, branch)}${gateRepoSuffix(targetRepo)} title + body?${repoContextLabel(cwd, ctx.cwd)}`,
       editableText: prefill,
       summary,
       // gh receives the title and body as separate, trimmed fields. Mirror that
@@ -107,7 +121,15 @@ export const prUpsertTool: ToolDefinition<typeof Params, GitDetails> = {
 
     try {
       if (existing === null) {
-        // CREATE branch.
+        // CREATE branch. The branch-bound resolution named the checked-out
+        // branch in the gate; if the human flipped branches while the dialog
+        // was open, `gh pr create` would publish from whatever HEAD is now.
+        const branchNow = resolution.branch !== null ? branchLabel(cwd) : null;
+        if (resolution.branch !== null && branchNow !== resolution.branch) {
+          return toToolResult(
+            `git-me: the checked-out branch changed while the dialog was open ("${resolution.branch}" -> "${branchNow ?? "detached HEAD"}"). Nothing was created; re-run git_pr_upsert from the branch you want to publish.`,
+          );
+        }
         const args = [
           "pr",
           "create",
@@ -135,7 +157,12 @@ export const prUpsertTool: ToolDefinition<typeof Params, GitDetails> = {
       }
 
       // EDIT branch. Address the PR by NUMBER (not the current branch) so a
-      // branch checkout between resolve and apply cannot edit the wrong PR.
+      // branch checkout between resolve and apply cannot edit the wrong PR,
+      // and re-verify the identity the gate showed right before the write:
+      // the human can merge, close, or retarget the PR while the dialog is
+      // open (incident 2026-11-11 class). Any drift aborts; nothing is sent.
+      const verified = verifyPrTarget(existing, cwd);
+      if (!verified.ok) return toToolResult(verified.message);
       const result = runGh([
         "pr",
         "edit",

@@ -152,6 +152,34 @@ export const discussionCommentTool: ToolDefinition<typeof Params, GitDetails> = 
         );
       }
 
+      // Apply-time re-verify, immediately before the mutation: the human
+      // approved discussion #N as it existed at gate time, and a human can
+      // delete it or the reply target while the dialog is open. Any drift
+      // aborts with nothing posted.
+      const freshDiscussion = parseDiscussion(
+        ghGraphql(
+          DISCUSSION_BY_NUMBER_QUERY,
+          { owner: repo.owner, name: repo.name, number: params.number },
+          cwd,
+        ),
+      );
+      if (!freshDiscussion || freshDiscussion.id !== discussion.id) {
+        return toToolResult(
+          `git-me: discussion #${params.number} in ${repo.nameWithOwner} changed or was deleted while the dialog was open. Nothing was posted.`,
+        );
+      }
+      if (replyToId !== undefined && params.replyTo && /^\d+$/.test(params.replyTo)) {
+        const reResolved = resolveDiscussionCommentNodeId(params.replyTo, repo, cwd);
+        if ("error" in reResolved) {
+          return toToolResult(`${reResolved.error} Nothing was posted.`);
+        }
+        if (reResolved.nodeId !== replyToId) {
+          return toToolResult(
+            `git-me: reply target ${params.replyTo} changed while the dialog was open. Nothing was posted.`,
+          );
+        }
+      }
+
       // Upload AFTER the gate (cancel = zero side effects), BEFORE the
       // mutation (a failed upload must not leave a comment with dangling
       // references). The repo is already resolved above.
