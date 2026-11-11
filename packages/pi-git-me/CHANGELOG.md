@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Wrong-target hardening after the 2026-11-11 PR-overwrite incident.** A bare `gh pr view` resolved a CLOSED PR on a different branch pair as "the PR for the current branch" and `git_pr_upsert` overwrote its title and body with unrelated text. Branch-bound PR resolution now runs `gh pr list --head <branch> --state all` and binds only an OPEN PR whose `headRefName` equals the checked-out branch (`lib/pr-target.ts`); any row whose head does not match the checkout is a hard refuse that names the current branch and the resolved PR's number, head, and base.
+- **Cross-fork false bind (peer review, claude 2026-11-11).** `gh pr list --head` filters by bare branch name across all forks (`<owner>:<branch>` is unsupported), so a stranger's fork PR with a same-named head branch passed the equality check — the incident shape again. Resolution now also fetches `headRepositoryOwner` / `isCrossRepository` and binds cross-repository rows only when the head owner matches the repo gh resolves in the checkout; all cross-repo rows are skipped when that lookup fails (fail closed).
+- **`git_commit` amend-over-human-commit (peer review, claude 2026-11-11).** The staged-state snapshot was a `git diff --cached` hash only, which cannot see a HEAD move that leaves the index empty: a human side commit mid-dialog made `--amend` rewrite the human's new commit. The snapshot is now sha-256 over `git rev-parse HEAD` + `git write-tree` (HEAD identity + index identity, no large-output fragility); an unborn branch (first commit ever) stays allowed via a symbolic-ref check.
+
+### Changed
+
+- `git_pr_upsert`: closed or merged PRs on the branch are never edit targets — the tool takes the create path instead; multiple open PRs from one head refuse before the gate; the gate title states the full target identity (PR number, state, head -> base, checked-out branch); the edit re-fetches the PR by number immediately before `gh pr edit` and aborts if its state, head, base, or repo changed while the dialog was open; the CREATE path now re-checks the checked-out branch after the gate and aborts ("Nothing was created") if it flipped mid-dialog (peer review).
+- `git_pr_comment` / `git_pr_review`: an explicit `pr` number is fetched by number before the gate (not-found refuses before any dialog; a typo'd number can no longer post blind), branch-resolved targets refuse on closed/merged/mismatched/ambiguous with a pass-`pr`-explicitly message, gate titles state state + head -> base + branch, and the apply re-verifies the target by number, aborting on drift between approval and post.
+- `git_pr_comment` / `git_pr_review` / `git_pr_comment_edit` / `git_pr_upsert`: a `gh pr list` failure now refuses as a resolution error instead of masquerading as "no PR" (peer review — a transient gh failure previously fell through to a duplicate `gh pr create`); the head search window moved `--limit 20` -> `--limit 50`.
+- `git_commit`: the staged state is hashed before the gate and re-hashed at apply; a human staging, unstaging, or moving HEAD in the shared checkout while the dialog is open aborts the commit with nothing committed.
+- `git_issue_comment_edit` / `git_pr_comment_edit`: the target comment is re-fetched by REST id immediately before the PATCH and the authorship/thread checks re-run — a comment deleted or moved mid-dialog no longer edits; the PR flavor resolves the current-branch PR through the same hardened binding.
+- `git_discussion_comment`: the discussion and a numeric `replyTo` target are re-resolved immediately before the mutation; a discussion or reply target deleted mid-dialog aborts with nothing posted.
+- Read tool `git_pr_info` is unchanged (it still displays any-state PRs); the raw `gh pr view` helper it uses is renamed `ghPrViewCurrentBranch` and documented read-only — write tools resolve through `lib/pr-target.ts` instead.
+
+### Tests
+
+- 298 -> 357 in this package. New `tests/pr-target.test.ts` (resolver matrix: open/none/closed/merged/ambiguous/mismatch/error/detached, cross-fork same-name false bind, cross-repo owner binding, number-addressed snapshot fetch, apply-time drift verification, target labels), incident regression + race tests in `tests/tools.test.ts` (the 2026-11-11 shape refuses/creates instead of editing; state/head drift between gate and apply aborts; full-identity gate titles; create-path branch-flip abort; gh-failure refuses instead of "no PR"), staged-state race tests in `tests/commit-url.test.ts` (index change, empty-index HEAD move amend attack, write-tree failure), and comment deletion/thread-move mid-dialog tests in `tests/comment-edit.test.ts`.
+
 ## 1.7.2 — 2026-11-10
 
 ### Added
