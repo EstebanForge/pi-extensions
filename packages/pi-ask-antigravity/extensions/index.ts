@@ -95,7 +95,7 @@ const DISCOVERY_POLL_MS = 100;
 const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
 
-const DEFAULT_MODEL = "flash";
+const DEFAULT_MODEL = "gemini-4-hydrogen";
 const DEFAULT_THINKING = "medium";
 // Default on: without --dangerously-skip-permissions, any run_command hangs in
 // non-interactive -p mode (accept-edits auto-approves edits, NOT commands).
@@ -769,7 +769,7 @@ export default async function (
 
 	// Friendly model options offered in the picker. Exact strings also work
 	// if typed, but the menu presents the common aliases.
-	const MODEL_OPTIONS = ["flash", "pro", "gemini"];
+	const MODEL_OPTIONS = ["flash", "pro", "gemini", "gemini-4-hydrogen"];
 	const THINKING_OPTIONS: ThinkingTier[] = ["low", "medium", "high"];
 
 	pi.registerCommand("agy", {
@@ -804,7 +804,7 @@ export default async function (
 					id: "defaultModel",
 					label: "Default model",
 					description:
-						"Friendly alias resolved to the latest matching agy model. 'flash' = latest Flash, 'pro' = latest Pro, 'gemini' = latest Flash.",
+						"Friendly alias resolved to the latest matching agy model. 'flash' = latest Flash, 'pro' = latest Pro, 'gemini' = latest Flash, 'gemini-4-hydrogen' = Hydrogen at the chosen tier.",
 					currentValue: `${config.defaultModel} → ${currentResolved}`,
 					values: MODEL_OPTIONS.map((m) => {
 						const r = resolveAgyModel(m, discovered, config.defaultThinking)?.model ?? m;

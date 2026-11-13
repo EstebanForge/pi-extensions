@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The default model is now `gemini-4-hydrogen` (was `flash`).** The default resolves as a catalog tiered base: the tier suffix comes from `defaultThinking` or the call's thinking param (`gemini-4-hydrogen-medium` at the default medium), so the default no longer tracks the newest Flash generation. To make that resolution possible the shared resolver (`@estebanforge/pi-ask-shared`) now resolves a single-base catalog tiered slug BEFORE the bare-"gemini" Flash fallthrough — before, any unrecognized `gemini-<line>` base silently resolved as Flash. Sequencing: publish shared first, then bump this package's shared floor to the version carrying that change and run npm install, then publish this package (a floor must point at a version npm has). The `/agy` picker offers the exact slug alongside the aliases.
+
 ## [1.3.4] - 2026-11-10
 
 ### Added

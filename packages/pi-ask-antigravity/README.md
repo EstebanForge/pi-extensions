@@ -89,14 +89,14 @@ Set `digest: true` to prefix the prompt with `(Use compact digests, not full fil
 
 ```json
 {
-  "defaultModel": "flash",
+  "defaultModel": "gemini-4-hydrogen",
   "defaultThinking": "medium"
 }
 ```
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `defaultModel` | `flash` | Alias or exact id used when the tool call omits `model`. |
+| `defaultModel` | `gemini-4-hydrogen` | Alias or exact id used when the tool call omits `model`. A bare base id picks its tier from `defaultThinking`. |
 | `defaultThinking` | `medium` | Tier used when an alias doesn't name one. Applies only if the family offers it; otherwise the family default (Pro → High). |
 
 ### `/agy` command
