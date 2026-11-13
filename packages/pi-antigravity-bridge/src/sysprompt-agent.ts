@@ -59,7 +59,15 @@ export function syspromptAgentMd(name: string, body: string): string {
 		"model: inherit",
 		"subagent: false",
 		"agents: []",
-		"tools: [read_file, edit_file, write_file, run_command, manage_task, search_web]",
+		"tools:",
+		// Block style, not flow: the web delegates (web-tools.ts) prove agy
+		// parses this shape; flow style is only proven in the issue report.
+		"  - read_file",
+		"  - edit_file",
+		"  - write_file",
+		"  - run_command",
+		"  - manage_task",
+		"  - search_web",
 		"---",
 		"",
 		body,
