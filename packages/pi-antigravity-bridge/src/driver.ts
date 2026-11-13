@@ -830,10 +830,6 @@ export class StreamDriver implements TurnDriver {
 
 	async close(reason: "recycle" | "shutdown", cause?: string): Promise<void> {
 		const child = this.#child;
-		if (!child) {
-			this.#state = reason === "shutdown" ? "dead" : "idle";
-			return;
-		}
 		if (reason === "recycle" && cause) {
 			this.#stats.recycles += 1;
 			this.#stats.lastRecycleReason = cause;
@@ -844,9 +840,13 @@ export class StreamDriver implements TurnDriver {
 		if (turn && !turn.closed) {
 			this.#failTurn(turn, `agy driver ${reason === "recycle" ? "recycled" : "shut down"} mid-turn${cause ? ` (${cause})` : ""}`);
 		}
+		// Home disposal must NOT be gated on a live child: the child can exit
+		// (or be deadline-killed) well before close runs, and an early return
+		// would strand the staged home with its stale own entry (issue #14
+		// review round 2, blocker 2).
 		const home = this.#stagedHomePath;
-		const homePid = child.pid;
-		this.#killChild();
+		const homePid = child?.pid;
+		if (child) this.#killChild();
 		this.#state = reason === "shutdown" ? "dead" : "idle";
 		if (home && this.releaseStagedHome) {
 			// Leader death is not group death: agy's own subprocesses can

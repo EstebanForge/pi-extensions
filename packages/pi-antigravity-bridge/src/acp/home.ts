@@ -116,6 +116,18 @@ export function sweepStagedAgyHomes(baseDir: string = agyHomeStagingDir(), alive
 	}
 }
 
+/** Add or refresh this session's own bridge entry in an ALREADY-STAGED
+ *  home (the bridge was enabled after the first spawn staged the home
+ *  without one). Single-writer file (our pid owns the session), plain
+ *  write is fine. */
+export function writeOwnBridgeEntry(staged: string, entry: { pid: number; port: number; token: string; tokenHeader: string }): void {
+	const cfgPath = path.join(staged, "config", "mcp_config.json");
+	const cfg = record(readGlobalMcpConfig(cfgPath), cfgPath);
+	const servers = record(cfg.mcpServers ?? {}, `${cfgPath} mcpServers`);
+	servers[bridgeServerName(entry.pid)] = bridgeServerEntry({ ...entry, disabled: false });
+	fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, mcpServers: servers }), { mode: 0o600 });
+}
+
 export function removeStagedAgyHome(staged: string): void {
 	const base = path.basename(staged);
 	if (!base.startsWith("acp-home-") && !base.startsWith("agy-home-")) return;

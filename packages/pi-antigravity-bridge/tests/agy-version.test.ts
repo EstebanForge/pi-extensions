@@ -21,6 +21,7 @@ import {
 	MIN_GEMINI_DIR_VERSION,
 	parseAgyVersionTriple,
 	probeGeminiDirFlag,
+	resolveStreamHomeMode,
 	resetAgyVersionCache,
 	resetGeminiDirProbeCache,
 } from "../src/agy-version.js";
@@ -208,4 +209,63 @@ test("probeGeminiDirFlag: memoized per binary until reset", async () => {
 		restore();
 		resetGeminiDirProbeCache();
 	}
+});
+
+test("probeGeminiDirFlag: a noisy success stays supported (exit 0 wins over stderr text)", async () => {
+	resetGeminiDirProbeCache();
+	const restore = withProbeEnv({ NOISY_STDERR: "1" });
+	try {
+		const r = await probeGeminiDirFlag(PROBE_BIN);
+		assert.equal(r.supported, true);
+		assert.equal(r.version, "1.5.8");
+	} finally {
+		restore();
+		resetGeminiDirProbeCache();
+	}
+});
+
+test("probeGeminiDirFlag: refusal carries the fallback detail", async () => {
+	resetGeminiDirProbeCache();
+	const restore = withProbeEnv({ REFUSE_GEMINI_DIR: "1" });
+	try {
+		const r = await probeGeminiDirFlag(PROBE_BIN);
+		assert.equal(r.supported, false);
+		assert.equal(r.detail, "refused");
+	} finally {
+		restore();
+		resetGeminiDirProbeCache();
+	}
+});
+
+test("probeGeminiDirFlag: an unwritable tmp root falls back instead of throwing", async () => {
+	resetGeminiDirProbeCache();
+	const r = await probeGeminiDirFlag(PROBE_BIN, { tmpRoot: path.join("/nonexistent-agy-probe-root", "x") });
+	assert.equal(r.supported, false);
+	assert.equal(r.detail, "spawn-failure");
+});
+
+test("resolveStreamHomeMode: the AGY_AGENTS_ROOT override wins over a supported probe", () => {
+	assert.equal(
+		resolveStreamHomeMode({ engine: "stream-json", agentsRootOverride: true, probe: { supported: true, version: "1.5.8", unverifiedVersion: false } }),
+		"override-skip",
+	);
+});
+
+test("resolveStreamHomeMode: probe-gated isolation and legacy fallback", () => {
+	assert.equal(
+		resolveStreamHomeMode({ engine: "stream-json", agentsRootOverride: false, probe: { supported: true, version: "1.5.8", unverifiedVersion: false } }),
+		"isolated",
+	);
+	assert.equal(
+		resolveStreamHomeMode({ engine: "stream-json", agentsRootOverride: false, probe: { supported: false, unverifiedVersion: false, detail: "refused" } }),
+		"legacy",
+	);
+	assert.equal(
+		resolveStreamHomeMode({ engine: "stream-json", agentsRootOverride: false, probe: undefined }),
+		"legacy",
+	);
+	assert.equal(
+		resolveStreamHomeMode({ engine: "acp", agentsRootOverride: false, probe: undefined }),
+		"legacy",
+	);
 });

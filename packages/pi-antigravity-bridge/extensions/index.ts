@@ -59,7 +59,7 @@ import { detectPermissionGateExtensions, resolveGateMode } from "../src/approval
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
-import { removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes } from "../src/acp/home.js";
+import { removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes, writeOwnBridgeEntry } from "../src/acp/home.js";
 import { cleanupManagedAcpInstall } from "../src/acp/setup.js";
 import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
@@ -67,7 +67,7 @@ import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
-import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag } from "../src/agy-version.js";
+import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
 import { spawn } from "node:child_process";
@@ -255,14 +255,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// every foreign bridge, plus this session's own entry (enabled - the
 	// suppression marker never applies to our own home, a private-home agy
 	// does not read the global file at all).
+	const agentsRootOverride = Boolean(process.env.AGY_AGENTS_ROOT);
+	// The override must gate the PROBE too, not just staging: carriers stage
+	// under AGY_AGENTS_ROOT, outside the home's live agents view.
+	const streamHomeProbe = engine === "stream-json" && !agentsRootOverride ? await probeGeminiDirFlag(binary) : undefined;
+	const homeMode = resolveStreamHomeMode({ engine, agentsRootOverride, probe: streamHomeProbe });
 	const streamHome: { isolated: boolean; path: string | undefined; fallbackReason?: string } = {
-		isolated: false,
+		isolated: homeMode === "isolated",
 		path: undefined,
 	};
-	const streamHomeProbe = engine === "stream-json" ? await probeGeminiDirFlag(binary) : undefined;
-	if (streamHomeProbe?.supported) {
-		streamHome.isolated = true;
-		if (streamHomeProbe.unverifiedVersion) {
+	if (homeMode === "isolated") {
+		if (streamHomeProbe?.unverifiedVersion) {
 			fileLog.log("gemini-dir-unverified", { version: streamHomeProbe.version, verifiedFloor: MIN_GEMINI_DIR_VERSION }, "info");
 		}
 		streamDriver.stagedHome = () => {
@@ -276,6 +279,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				});
 			} catch (err) {
 				fileLog.log("stream-home-stage-failed", { error: String(err) }, "warn");
+				// The per-pid --add-dir config is not the stream-json delivery
+				// path; restore the global registration so the bridge stays
+				// reachable when the staged home is unusable.
+				if (mcpHandle) {
+					registerBridgeServer({ pid: process.pid, port: mcpHandle.port, token: mcpHandle.token, tokenHeader: TOKEN_HEADER });
+				}
 				return undefined;
 			}
 			return streamHome.path;
@@ -284,15 +293,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (streamHome.path === home) streamHome.path = undefined;
 			removeStagedAgyHome(home);
 		};
+	} else if (homeMode === "override-skip") {
+		fileLog.log("stream-home-skipped", { reason: "AGY_AGENTS_ROOT override" }, "info");
 	} else if (engine === "stream-json") {
-		if (process.env.AGY_AGENTS_ROOT) {
-			// Sandbox override moves the agents root outside the staged home's
-			// live agents view; keep the legacy global path there.
-			fileLog.log("stream-home-skipped", { reason: "AGY_AGENTS_ROOT override" }, "info");
-		} else {
-			streamHome.fallbackReason = `agy ${streamHomeProbe?.version ?? "unknown"} refused --gemini_dir`;
-			fileLog.log("gemini-dir-refused", { version: streamHomeProbe?.version ?? "unknown" }, "warn");
-		}
+		const version = streamHomeProbe?.version ?? "unknown";
+		const why =
+			streamHomeProbe?.detail === "timeout"
+				? `the agy --gemini_dir probe timed out (agy ${version})`
+				: streamHomeProbe?.detail === "spawn-failure"
+					? `the agy --gemini_dir probe failed to run (agy ${version})`
+					: `agy ${version} refused --gemini_dir`;
+		streamHome.fallbackReason = why;
+		fileLog.log("gemini-dir-refused", { version, detail: streamHomeProbe?.detail ?? "refused" }, "warn");
 	}
 	const acpLog = (msg: string, data?: unknown): void => {
 		const expectedExit =
@@ -961,6 +973,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					token: r.handle.token,
 					tokenHeader: TOKEN_HEADER,
 				});
+			} else if (streamHome.path) {
+				// Bridge enabled after the home was staged without one: refresh
+				// the staged copy directly. agy reads the home once at spawn;
+				// the running child sees it on its next start.
+				writeOwnBridgeEntry(streamHome.path, { pid: process.pid, port: r.handle.port, token: r.handle.token, tokenHeader: TOKEN_HEADER });
 			}
 			if (streamHome.fallbackReason) {
 				// Isolation degraded to the legacy global path: say so once.
@@ -1337,6 +1354,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				if (engine === "acp") lines.push("  acp transport: agy acp (shared CLI authentication, isolated MCP home)");
 				if (engine === "stream-json" && ctx.streamIsolated) lines.push("  stream transport: agy stream-json (shared CLI authentication, isolated MCP home)");
+				if (engine === "stream-json" && !ctx.streamIsolated) lines.push("  stream transport: agy stream-json (shared CLI authentication, GLOBAL MCP registration: isolation unavailable)");
 				const retiredAuth = path.join(os.homedir(), ".gemini", "antigravity-acp");
 				if (fs.existsSync(retiredAuth)) lines.push(`  retired auth:  ${retiredAuth} is unused; remove it manually when no longer needed`);
 				// The config surface lives here too, so doctor is the ONE status

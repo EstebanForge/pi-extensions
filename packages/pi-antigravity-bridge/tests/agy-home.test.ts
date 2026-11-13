@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "vitest";
-import { agyHomeStagingDir, removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes } from "../src/acp/home.js";
+import { agyHomeStagingDir, removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes, writeOwnBridgeEntry } from "../src/acp/home.js";
 import { sweepStaleBridgeDirs } from "../src/mcp-server.js";
 
 const fixtureRoots: string[] = [];
@@ -207,5 +207,20 @@ test("home removal refuses non-staged basenames", () => {
 		assert.equal(fs.existsSync(foreign), true);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("writeOwnBridgeEntry adds the own entry to an already-staged bridgeless home", () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-late-entry-"));
+	try {
+		const staged = stageAgyHome({ geminiHome: home, parentDir: path.join(os.tmpdir(), "agy-home-late-root") });
+		writeOwnBridgeEntry(staged, { pid: 4242, port: 5000, token: "tok", tokenHeader: "x-bridge-token" });
+		const raw = fs.readFileSync(path.join(staged, "config", "mcp_config.json"), "utf8");
+		const config = JSON.parse(raw) as { mcpServers: Record<string, { serverUrl: string; headers?: Record<string, string> }> };
+		assert.equal(config.mcpServers["pi-bridge-4242"]?.serverUrl, "http://127.0.0.1:5000/mcp");
+		assert.equal(config.mcpServers["pi-bridge-4242"]?.headers?.["x-bridge-token"], "tok");
+		removeStagedAgyHome(staged);
+	} finally {
+		fs.rmSync(home, { recursive: true, force: true });
 	}
 });

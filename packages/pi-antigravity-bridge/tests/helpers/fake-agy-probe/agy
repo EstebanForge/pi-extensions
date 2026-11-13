@@ -2,10 +2,15 @@
 # Fake agy for the --gemini_dir capability probe (tests/agy-version.test.ts).
 # REFUSE_GEMINI_DIR=1 mimics a CLI without the flag: Go flag-package error,
 # nonzero exit, nothing on stdout.
+# NOISY_STDERR=1 prints the refusal text on stderr but exits 0 with a
+# version: a noisy success must stay supported (deprecation warnings).
 # FAKE_AGY_VERSION overrides the printed version triple (default 1.5.8).
 if [[ "${REFUSE_GEMINI_DIR:-0}" == "1" ]]; then
-	echo 'flags provided but not defined: -gemini_dir' >&2
+	echo 'flag provided but not defined: -gemini_dir' >&2
 	exit 2
+fi
+if [[ "${NOISY_STDERR:-0}" == "1" ]]; then
+	echo 'flag provided but not defined' >&2
 fi
 echo "${FAKE_AGY_VERSION:-1.5.8}"
 exit 0

@@ -141,6 +141,35 @@ export interface GeminiDirProbe {
 	 *  unreadable): the parse probe cannot detect a flag that is accepted but
 	 *  ignored, so the caller should warn once. */
 	unverifiedVersion: boolean;
+	/** Why the probe said no (absent when supported). Distinguishes an agy
+	 *  that refuses the flag from one the probe could not run at all. */
+	detail?: "refused" | "timeout" | "spawn-failure";
+}
+
+/** How the stream-json engine should deliver MCP (issue #14). */
+export type StreamHomeMode = "isolated" | "override-skip" | "legacy";
+
+/** Decide the stream-json MCP-home mode BEFORE any probe spawn. The
+ *  AGY_AGENTS_ROOT sandbox override wins over everything: carriers stage
+ *  outside the staged home's live agents view, so isolation would silently
+ *  drop the system-prompt carrier regardless of what the probe says. */
+export function resolveStreamHomeMode(input: {
+	engine: string;
+	agentsRootOverride: boolean;
+	probe: GeminiDirProbe | undefined;
+}): StreamHomeMode {
+	if (input.engine !== "stream-json") return "legacy";
+	if (input.agentsRootOverride) return "override-skip";
+	return input.probe?.supported ? "isolated" : "legacy";
+}
+
+export interface ProbeGeminiDirOptions {
+	/** Parent dir for the probe home (tests inject an unwritable root). */
+	tmpRoot?: string;
+	/** Probe watchdog budget (tests shrink the 5s default). */
+	watchdogMs?: number;
+	/** Extra env for the spawned probe (tests select fixture behaviors). */
+	env?: Record<string, string>;
 }
 
 const probeCache = new Map<string, Promise<GeminiDirProbe>>();
@@ -151,11 +180,18 @@ const probeCache = new Map<string, Promise<GeminiDirProbe>>();
  *  does not. The default run path parses the underscore form; the acp
  *  subcommand takes the hyphen form (both live-verified 2026-11-13 on agy
  *  1.5.8). Memoized per binary until resetGeminiDirProbeCache. */
-export function probeGeminiDirFlag(binary: string = "agy"): Promise<GeminiDirProbe> {
+export function probeGeminiDirFlag(binary: string = "agy", opts: ProbeGeminiDirOptions = {}): Promise<GeminiDirProbe> {
 	const cached = probeCache.get(binary);
 	if (cached) return cached;
 	const run = new Promise<GeminiDirProbe>((resolve) => {
-		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-geminidir-probe-"));
+		let tmp: string;
+		try {
+			tmp = fs.mkdtempSync(path.join(opts.tmpRoot ?? os.tmpdir(), "agy-geminidir-probe-"));
+		} catch {
+			// Cannot even stage the probe home: the flag is unproven, fall back.
+			resolve({ supported: false, unverifiedVersion: false, detail: "spawn-failure" });
+			return;
+		}
 		let out = "";
 		let err = "";
 		let code: number | null = null;
@@ -165,39 +201,40 @@ export function probeGeminiDirFlag(binary: string = "agy"): Promise<GeminiDirPro
 			done = true;
 			clearTimeout(watchdog);
 			fs.rmSync(tmp, { recursive: true, force: true });
-			if (/not defined/.test(err)) {
-				resolve({ supported: false, unverifiedVersion: false });
+			// Exit 0 wins: a CLI can print arbitrary warnings (including text
+			// that happens to contain "not defined") on a successful probe.
+			if (code === 0) {
+				const verdict = agyVersionVerdict(out);
+				if (verdict.status === "development") {
+					resolve({ supported: true, version: "dev", unverifiedVersion: true });
+					return;
+				}
+				const version = verdict.version;
+				resolve({
+					supported: true,
+					version,
+					unverifiedVersion:
+						!version || compareVersionTuples(version, MIN_GEMINI_DIR_VERSION) > 0,
+				});
 				return;
 			}
-			if (code !== 0) {
-				// Spawn failure, watchdog kill, or an unexpected exit: the flag
-				// is unproven, so fall back to global registration (safe = today's
-				// behavior) rather than staging a home agy may ignore.
-				resolve({ supported: false, unverifiedVersion: false });
-				return;
-			}
-			const verdict = agyVersionVerdict(out);
-			if (verdict.status === "development") {
-				resolve({ supported: true, version: "dev", unverifiedVersion: true });
-				return;
-			}
-			const version = verdict.version;
-			resolve({
-				supported: true,
-				version,
-				unverifiedVersion:
-					!version || compareVersionTuples(version, MIN_GEMINI_DIR_VERSION) > 0,
-			});
+			const detail: NonNullable<GeminiDirProbe["detail"]> = /not defined/.test(err)
+				? "refused"
+				: code === null
+					? "timeout"
+					: "spawn-failure";
+			resolve({ supported: false, unverifiedVersion: false, detail });
 		};
 		let proc: ReturnType<typeof spawn>;
 		try {
 			proc = spawn(binary, ["--gemini_dir", tmp, "--version"], {
 				stdio: ["ignore", "pipe", "pipe"],
 				shell: false,
+				env: opts.env ? { ...process.env, ...opts.env } : process.env,
 			});
 		} catch {
 			fs.rmSync(tmp, { recursive: true, force: true });
-			resolve({ supported: false, unverifiedVersion: false });
+			resolve({ supported: false, unverifiedVersion: false, detail: "spawn-failure" });
 			return;
 		}
 		proc.stdout?.setEncoding("utf8");
@@ -218,7 +255,7 @@ export function probeGeminiDirFlag(binary: string = "agy"): Promise<GeminiDirPro
 			} catch {
 				/* already gone */
 			}
-		}, 5_000);
+		}, opts.watchdogMs ?? 5_000);
 	});
 	probeCache.set(binary, run);
 	return run;

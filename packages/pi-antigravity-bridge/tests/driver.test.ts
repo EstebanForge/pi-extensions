@@ -540,7 +540,8 @@ describe("stream-json driver isolated home", () => {
 		const outcome = await handle.outcome;
 		assert.equal(outcome.status, "ERROR");
 		assert.equal(releases, 0, "deadline kill must not dispose the home");
-		// The next turn respawns into the same home.
+		// The next turn respawns into a FRESH home: the recycle close first
+		// disposes the stale one (dead child), then stagedHome() restages.
 		const second = await driver.run({
 			prompt: "hi",
 			cwd: process.cwd(),
@@ -552,9 +553,40 @@ describe("stream-json driver isolated home", () => {
 		});
 		assert.equal((await second.outcome).status, "OK");
 		await driver.close("shutdown");
-		assert.equal(releases, 1);
+		// One release for the post-deadline recycle restage, one for shutdown.
+		assert.equal(releases, 2);
 		fs.rmSync(home, { recursive: true, force: true });
 	}, 15_000);
+
+	test("close with an ALREADY-DEAD child still disposes the staged home", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-driver-dead-"));
+		driver.stagedHome = () => home;
+		let releases = 0;
+		driver.releaseStagedHome = () => {
+			releases += 1;
+		};
+		const handle = await driver.run({
+			// Plain prompt: the fake agy exits after the result, so by the time
+			// close() runs the child is gone and #child is undefined - the exact
+			// path where an early return would leak the home.
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		await handle.outcome;
+		// The fake exits ~200ms after the result frame; wait past that so the
+		// driver's exit handler has cleared #child before close runs.
+		await new Promise((r) => setTimeout(r, 600));
+		await driver.close("recycle", "test");
+		assert.equal(releases, 1, "close must release the home even with no live child");
+		fs.rmSync(home, { recursive: true, force: true });
+	});
 
 	test("waitForPidGroupExit: dead group resolves immediately, live group times out", async () => {
 		const dead = spawn("sleep", ["5"], { detached: true, stdio: "ignore" });
