@@ -10,12 +10,15 @@
 // files from disk, off the prompt line, so the cap never applies.
 //
 // Frontmatter keeps agy's DEFAULTS on purpose (no excludeDefaultComponents,
-// no tools list, no inheritMcp override): provider sessions need the normal
-// toolset and the bridge MCP config for G9 round-trips. The subagent keys are
-// the one deliberate exception: agent-file presence already suppresses agy's
-// native subagent tools (probed 2026-10-20, issue #7), and declaring it makes
-// the suppression explicit instead of relying on the accident (whether the
-// keys themselves mask, apart from presence, is unattributed).
+// no inheritMcp override): provider sessions need the bridge MCP config for
+// G9 round-trips. Two deliberate exceptions. The tools list: omitting tools
+// reads as "read-only defaults" upstream, not "all tools", which stripped
+// write/edit/command from carrier sessions (issue #13; agy appends the
+// resource/MCP tools itself, so G9 round-trips ride call_mcp_tool
+// regardless). The subagent keys: agent-file presence already suppresses
+// agy's native subagent tools (probed 2026-10-20, issue #7), and declaring
+// it makes the suppression explicit instead of relying on the accident
+// (whether the keys themselves mask, apart from presence, is unattributed).
 // Contrast the ask-tool reviewer agent, which strips everything for
 // sandboxing.
 //
@@ -56,6 +59,7 @@ export function syspromptAgentMd(name: string, body: string): string {
 		"model: inherit",
 		"subagent: false",
 		"agents: []",
+		"tools: [read_file, edit_file, write_file, run_command, manage_task, search_web]",
 		"---",
 		"",
 		body,

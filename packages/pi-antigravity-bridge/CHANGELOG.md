@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **stream-json carrier sessions have their write/edit/command tools back.** The staged system-prompt agent (`pi-bridge-sys-*`, the G10 carrier that keeps pi's system prompt off the ~25KB prompt-line cap) omitted the `tools:` frontmatter key on the assumption that omission keeps agy's full default toolset. agy reads an omitted `tools:` as a small read-only default set instead (official migrate-agent-settings guidance: always declare it), so carrier sessions could not `write_file`, `edit_file`, or `run_command` and reported only inspection tools. The carrier now declares the productive toolset (`read_file`, `edit_file`, `write_file`, `run_command`, `manage_task`, `search_web`) explicitly; agy appends the resource/MCP tools itself, so bridge G9 round-trips are unaffected. Only the carrier changes - the web delegates keep their search-only `tools:` sandbox and the ask-tool reviewer keeps stripping everything, both intentional. New pi sessions stage a fresh carrier dir automatically; old dirs are pruned by the pid sweep.
+
 ## [1.10.5] - 2026-11-13
 
 ### Changed
