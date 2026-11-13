@@ -165,9 +165,11 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
  *  (agy rejects a bare base: "requires --effort"). Only unverified families
  *  keep agy's exact slug whole, so an unknown suffix can never trigger an
  *  unsupported --effort. */
+const TIER_SUFFIX_RE = /-(low|medium|high)$/;
+
 function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
-		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
+		return { model: full.replace(TIER_SUFFIX_RE, ""), effort: tier };
 	}
 	return { model: full };
 }
@@ -248,22 +250,31 @@ export function resolveAgyModel(
 	const tierMatch = lower.match(/\b(low|medium|high)\b/);
 	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
 
-	// "gemini" alone, "default", or empty -> default family (flash).
-	if (!family && (/gemini/.test(lower) || lower === "" || lower === "default")) {
-		family = "flash";
-	}
 	if (!family) {
-		// A bare base slug the provider itself advertises ("claude-sonnet-5-5",
-		// the id behind the antigravity/ entry in pi's picker) is invalid
-		// upstream without an effort: resolve it to the nearest tier variant
-		// exactly like the short aliases.
-		if (
-			entries.some((e) => e.full.toLowerCase().startsWith(`${lower}-`)) ||
-			entries.some((e) => e.full.toLowerCase() === lower)
-		) {
-			return resolveTieredBase(lower, entries, defaultThinking, preferredTier);
+		// A bare base slug the provider itself advertises ("gemini-4-hydrogen",
+		// "claude-sonnet-5-5") is invalid upstream without an effort: resolve
+		// it to the nearest tier variant exactly like the short aliases. This
+		// must run BEFORE the bare-"gemini" Flash fallthrough below, or every
+		// future "gemini-<line>" base would silently resolve as Flash.
+		// One base = every variant differs only by a single tier-word suffix
+		// ("gemini-4-hydrogen-xhigh"). Mixed bases ("gemini-3.6" spans Flash
+		// and Pro lines) are version pins: keep the family semantics below
+		// instead of letting catalog order pick the base.
+		if (lower !== "gemini") {
+			const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${lower}-`));
+			const sameBase = variants.every(
+				(e) => !e.full.toLowerCase().slice(lower.length + 1).includes("-"),
+			);
+			if (variants.length > 0 && sameBase) {
+				return resolveTieredBase(lower, entries, defaultThinking, preferredTier);
+			}
 		}
-		return null; // unknown family -> let agy handle it
+		// "gemini" alone, "default", or empty -> default family (flash).
+		if (/gemini/.test(lower) || lower === "" || lower === "default") {
+			family = "flash";
+		} else {
+			return null; // unknown family -> let agy handle it
+		}
 	}
 
 	// 3. Filter by family.

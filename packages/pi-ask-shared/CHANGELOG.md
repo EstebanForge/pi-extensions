@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The Antigravity model resolver now resolves a single-base catalog tiered slug before the bare-"gemini" Flash fallthrough.** A bare base slug the live catalog advertises (`gemini-4-hydrogen`, next `claude-sonnet-5-5`) picks its tier variant from the configured default thinking or the explicit tier, instead of silently resolving as the Flash family — the fallthrough matched any string containing "gemini". A version pin spanning multiple bases (`gemini-3.6` over Flash and Pro lines) is NOT a tiered base: it keeps the Flash family semantics instead of picking a base by catalog order. Bare `gemini` stays the Flash alias, and unknown bases keep the raw passthrough. Consumers (pi-antigravity-bridge, pi-ask-antigravity) ship a `gemini-4-hydrogen` default on top of this: publish shared first, then the consumers bump their shared floor.
+
 ## [0.1.5] - 2026-11-10
 
 ### Added

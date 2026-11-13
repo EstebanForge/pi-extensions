@@ -132,6 +132,53 @@ describe("resolveModel", () => {
 		expect(resolveAgyModel("default", catalog, "medium")?.model).toBe("gemini-3.6-flash");
 	});
 
+	it("a catalog tiered base (gemini-4-hydrogen) resolves by tier before the flash fallthrough", () => {
+		const withHydrogen = [
+			...catalog,
+			entry("gemini-4-hydrogen-low", "low"),
+			entry("gemini-4-hydrogen-medium", "medium"),
+			entry("gemini-4-hydrogen-high", "high"),
+			// Mirrors the live parse: xhigh is outside the -(low|medium|high)$
+			// tier grammar, so the entry carries no tier and stays unpickable.
+			entry("gemini-4-hydrogen-xhigh"),
+		];
+		expect(resolveAgyModel("gemini-4-hydrogen", withHydrogen, "medium")).toEqual({
+			model: "gemini-4-hydrogen",
+			effort: "medium",
+		});
+		expect(resolveAgyModel("gemini-4-hydrogen", withHydrogen, "medium", "high")).toEqual({
+			model: "gemini-4-hydrogen",
+			effort: "high",
+		});
+		// Bare "gemini" must stay the Flash family alias, not a tiered base.
+		expect(resolveAgyModel("gemini", withHydrogen, "medium")?.model).toBe("gemini-3.6-flash");
+		// An unknown bare base (no catalog variants, no gemini substring)
+		// keeps the raw passthrough (null -> agy decides).
+		expect(resolveAgyModel("claude-9-phantom", withHydrogen, "medium")).toBeNull();
+		// Empty and "default" stay Flash aliases even with hydrogen in the
+		// catalog, and a gemini-containing unknown still resolves as Flash.
+		expect(resolveAgyModel("", withHydrogen, "medium")?.model).toBe("gemini-3.6-flash");
+		expect(resolveAgyModel("default", withHydrogen, "medium")?.model).toBe("gemini-3.6-flash");
+		expect(resolveAgyModel("gemini-9-phantom", withHydrogen, "medium")?.model).toBe("gemini-3.6-flash");
+	});
+
+	it("a version pin across mixed bases keeps the Flash family, not catalog-order luck", () => {
+		// Pro listed first: without the single-base guard, nearestTier(high)
+		// over the mixed variant list would pick gemini-3.6-pro (first high
+		// variant in catalog order) instead of the Flash family pin.
+		const proFirst = [
+			entry("gemini-3.6-pro-low", "low"),
+			entry("gemini-3.6-pro-high", "high"),
+			entry("gemini-3.6-flash-low", "low"),
+			entry("gemini-3.6-flash-medium", "medium"),
+			entry("gemini-3.6-flash-high", "high"),
+		];
+		expect(resolveAgyModel("gemini-3.6", proFirst, "high")).toEqual({
+			model: "gemini-3.6-flash",
+			effort: "high",
+		});
+	});
+
 	it("short aliases resolve via the static overlay tiered base", () => {
 		const r = resolveAgyModel("sonnet", mergeCatalog([]), "medium");
 		expect(r?.model).toBe("claude-sonnet-5-5");
