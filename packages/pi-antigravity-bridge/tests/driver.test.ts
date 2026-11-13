@@ -4,9 +4,12 @@
 // deliberately split across two stdout writes mid-line.
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { describe, test } from "vitest";
-import { StreamDriver } from "../src/driver.js";
+import { StreamDriver, waitForPidGroupExit } from "../src/driver.js";
 import type { DriverActivity } from "../src/driver-types.js";
 
 const FAKE_BIN_DIR = path.join(import.meta.dirname, "helpers", "fake-agy-bin");
@@ -455,5 +458,125 @@ describe("stream-json driver plan-mode skip-permission gating", () => {
 			.join("");
 		assert.equal(text, "Real reply");
 		await driver.close("shutdown");
+	});
+});
+
+// --- isolated MCP home (issue #14) -------------------------------------------
+
+describe("stream-json driver isolated home", () => {
+	test("the spawn argv carries the staged home via --gemini_dir", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-driver-flag-"));
+		driver.stagedHome = () => home;
+		try {
+			const handle = await driver.run({
+				prompt: "HOME-MARKER",
+				cwd: process.cwd(),
+				model: "gemini-3.8-flash",
+				mode: "accept-edits",
+				skipPermissions: true,
+				timeoutMin: 0.5,
+				inactivityMin: 0.5,
+			});
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "OK");
+			// The fake agy echoes the home basename back as the conversation id:
+			// proof the flag actually reached the child process.
+			assert.equal(outcome.conversationId, `home-${path.basename(home)}`);
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
+		await driver.close("shutdown");
+	});
+
+	test("close disposes the staged home exactly once, on recycle and shutdown", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-driver-close-"));
+		driver.stagedHome = () => home;
+		const releases: Array<{ home: string; pid: number | undefined }> = [];
+		driver.releaseStagedHome = (h, pid) => {
+			releases.push({ home: h, pid });
+		};
+		const handle = await driver.run({
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		await handle.outcome;
+		await driver.close("recycle", "test");
+		assert.equal(releases.length, 1);
+		assert.equal(releases[0]?.home, home);
+		assert.equal(typeof releases[0]?.pid, "number");
+		// No child and no staged home left: a second close must not re-release.
+		await driver.close("shutdown");
+		assert.equal(releases.length, 1);
+		fs.rmSync(home, { recursive: true, force: true });
+	});
+
+	test("a mid-turn deadline kill keeps the home for the next spawn", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-driver-stall-"));
+		driver.stagedHome = () => home;
+		let releases = 0;
+		driver.releaseStagedHome = () => {
+			releases += 1;
+		};
+		const handle = await driver.run({
+			prompt: "HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.05,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.equal(releases, 0, "deadline kill must not dispose the home");
+		// The next turn respawns into the same home.
+		const second = await driver.run({
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		assert.equal((await second.outcome).status, "OK");
+		await driver.close("shutdown");
+		assert.equal(releases, 1);
+		fs.rmSync(home, { recursive: true, force: true });
+	}, 15_000);
+
+	test("waitForPidGroupExit: dead group resolves immediately, live group times out", async () => {
+		const dead = spawn("sleep", ["5"], { detached: true, stdio: "ignore" });
+		dead.unref();
+		const deadPid = dead.pid!;
+		try {
+			process.kill(-deadPid, "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+		assert.equal(await waitForPidGroupExit(deadPid, 2000), true);
+
+		const live = spawn("sleep", ["2"], { detached: true, stdio: "ignore" });
+		live.unref();
+		try {
+			assert.equal(await waitForPidGroupExit(live.pid!, 150), false);
+		} finally {
+			try {
+				process.kill(-live.pid!, "SIGKILL");
+			} catch {
+				/* already gone */
+			}
+		}
 	});
 });

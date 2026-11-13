@@ -30,7 +30,7 @@ Existing installs clean up the retired ACP server only under `~/.local/opt/agy-a
 | Process lifecycle | Persistent `agy` process | Persistent `agy acp` process |
 | Session resume | `--conversation <id>` | `session/load` and `session/new` |
 | Turn cancel | Kills process group | `session/cancel` notification, with teardown fallback |
-| MCP tool bridge | Filesystem config via `--add-dir` | Direct `mcpServers` plus a sanitized private MCP home |
+| MCP tool bridge | Isolated per-session MCP home (`--gemini_dir`); global registration is the probe-verified fallback | Direct `mcpServers` plus a sanitized private MCP home |
 | Tool visibility | Native re-exec plus wrapper replay | Display-only native tool cards |
 | Context digest | Inline prompt text | `embeddedContext` resource block |
 | System prompt | Staged agy agent file | Prepended to the first prompt |

@@ -11,11 +11,21 @@
 // floor because older CLI releases do not ship the subcommand.
 
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /** Floor for the stream-json CLI. Matches the protocol grammar our driver
  *  and the event mapping rely on; older agy predates verified fields. */
 export const MIN_AGY_VERSION = "1.1.22";
 export const MIN_AGY_ACP_VERSION = "1.5.3";
+/** Highest agy release where the top-level --gemini_dir flag was
+ *  live-verified to isolate MCP discovery (issue #14 work, 2026-11-13).
+ *  The flag is undocumented upstream and may change shape in future
+ *  releases; the parse probe catches removal, but a flag that parses yet is
+ *  IGNORED cannot be probed without quota - versions above this floor warn
+ *  so a silent G9 tool drop gets noticed. */
+export const MIN_GEMINI_DIR_VERSION = "1.5.8";
 
 const VERSION_TIMEOUT_MS = 5_000;
 
@@ -117,6 +127,106 @@ export function checkAgyCliVersion(binary: string = "agy"): Promise<AgyVersionCh
 /** Test seam: drop all memoized checks. */
 export function resetAgyVersionCache(): void {
 	checkCache.clear();
+}
+
+// --- --gemini_dir capability probe (issue #14) -------------------------------
+
+export interface GeminiDirProbe {
+	/** True when the running agy parses --gemini_dir on the default run path
+	 *  (the stream-json spawn shape). Refusal means fall back to global MCP
+	 *  registration plus the suppression machinery. */
+	supported: boolean;
+	version?: string;
+	/** Supported but the version is above MIN_GEMINI_DIR_VERSION (or
+	 *  unreadable): the parse probe cannot detect a flag that is accepted but
+	 *  ignored, so the caller should warn once. */
+	unverifiedVersion: boolean;
+}
+
+const probeCache = new Map<string, Promise<GeminiDirProbe>>();
+
+/** One spawn answers BOTH questions: `agy --gemini_dir <tmp> --version`
+ *  prints the version when the flag parses, and a Go flag-package refusal
+ *  ("flag provided but not defined", nonzero exit, empty stdout) when it
+ *  does not. The default run path parses the underscore form; the acp
+ *  subcommand takes the hyphen form (both live-verified 2026-11-13 on agy
+ *  1.5.8). Memoized per binary until resetGeminiDirProbeCache. */
+export function probeGeminiDirFlag(binary: string = "agy"): Promise<GeminiDirProbe> {
+	const cached = probeCache.get(binary);
+	if (cached) return cached;
+	const run = new Promise<GeminiDirProbe>((resolve) => {
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-geminidir-probe-"));
+		let out = "";
+		let err = "";
+		let code: number | null = null;
+		let done = false;
+		const finish = () => {
+			if (done) return;
+			done = true;
+			clearTimeout(watchdog);
+			fs.rmSync(tmp, { recursive: true, force: true });
+			if (/not defined/.test(err)) {
+				resolve({ supported: false, unverifiedVersion: false });
+				return;
+			}
+			if (code !== 0) {
+				// Spawn failure, watchdog kill, or an unexpected exit: the flag
+				// is unproven, so fall back to global registration (safe = today's
+				// behavior) rather than staging a home agy may ignore.
+				resolve({ supported: false, unverifiedVersion: false });
+				return;
+			}
+			const verdict = agyVersionVerdict(out);
+			if (verdict.status === "development") {
+				resolve({ supported: true, version: "dev", unverifiedVersion: true });
+				return;
+			}
+			const version = verdict.version;
+			resolve({
+				supported: true,
+				version,
+				unverifiedVersion:
+					!version || compareVersionTuples(version, MIN_GEMINI_DIR_VERSION) > 0,
+			});
+		};
+		let proc: ReturnType<typeof spawn>;
+		try {
+			proc = spawn(binary, ["--gemini_dir", tmp, "--version"], {
+				stdio: ["ignore", "pipe", "pipe"],
+				shell: false,
+			});
+		} catch {
+			fs.rmSync(tmp, { recursive: true, force: true });
+			resolve({ supported: false, unverifiedVersion: false });
+			return;
+		}
+		proc.stdout?.setEncoding("utf8");
+		proc.stderr?.setEncoding("utf8");
+		proc.stdout?.on("data", (d: string) => (out = (out + d).slice(0, 4096)));
+		proc.stderr?.on("data", (d: string) => (err = (err + d).slice(0, 4096)));
+		proc.on("error", () => {
+			code = code ?? -1;
+			finish();
+		});
+		proc.on("close", (c) => {
+			code = c;
+			finish();
+		});
+		const watchdog = setTimeout(() => {
+			try {
+				proc.kill("SIGKILL");
+			} catch {
+				/* already gone */
+			}
+		}, 5_000);
+	});
+	probeCache.set(binary, run);
+	return run;
+}
+
+/** Test seam: drop the memoized gemini_dir probes. */
+export function resetGeminiDirProbeCache(): void {
+	probeCache.clear();
 }
 
 /** One-line doctor rendering. */

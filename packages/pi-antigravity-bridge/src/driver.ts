@@ -101,6 +101,32 @@ function effectiveSkipPermissions(mode: DriverTurnRequest["mode"], skipPermissio
 	return mode !== "plan" && skipPermissions;
 }
 
+/** Wait until the child's process GROUP is gone (POSIX) or return
+ *  immediately on win32, where the driver does not use detached groups.
+ *  Leader death alone is not enough: agy's own subprocesses can outlive it
+ *  and late writes would recreate a removed home dir. Bounded by budgetMs;
+ *  false means stragglers may remain (the startup sweep is the backstop). */
+export function waitForPidGroupExit(pid: number | undefined, budgetMs = 2_000): Promise<boolean> {
+	if (!pid || process.platform === "win32") return Promise.resolve(true);
+	const deadline = Date.now() + budgetMs;
+	return new Promise<boolean>((resolve) => {
+		const tick = () => {
+			try {
+				process.kill(-pid, 0);
+			} catch {
+				resolve(true);
+				return;
+			}
+			if (Date.now() >= deadline) {
+				resolve(false);
+				return;
+			}
+			setTimeout(tick, 50);
+		};
+		tick();
+	});
+}
+
 function emit(turn: ActiveTurn, activity: DriverActivity): void {
 	if (turn.closed) return;
 	if (turn.wake.length > 0) turn.wake.shift()!();
@@ -183,6 +209,7 @@ export function shouldFlipToCumulative(accumulated: string, next: string): boole
 export class StreamDriver implements TurnDriver {
 	#state: DriverState = "idle";
 	#child: ChildProcess | undefined;
+	#stagedHomePath: string | undefined;
 	#generation = 0;
 	#profile: DriverProfile | undefined;
 	#boundConversation: string | undefined;
@@ -197,6 +224,15 @@ export class StreamDriver implements TurnDriver {
 	/** Optional external lifecycle sink (the extension's daily file log).
 	 *  Fire-and-forget: the ring buffer stays the source for /agy doctor. */
 	log?: (msg: string, data?: unknown) => void;
+	/** Optional isolated-MCP-home wiring (issue #14). stagedHome() is
+	 *  consulted before every spawn: a path means the child runs with
+	 *  --gemini_dir <path> (top-level underscore form; the acp subcommand
+	 *  takes the hyphen form). releaseStagedHome() is awaited in close() AFTER
+	 *  the child's process group is confirmed dead - deliberately NOT in the
+	 *  child exit handler, which is generation-guarded and never fires on the
+	 *  close/recycle paths. */
+	stagedHome?: () => string | undefined;
+	releaseStagedHome?: (home: string, childPid: number | undefined) => Promise<void> | void;
 	#onTurnEnd: ((outcome: TurnOutcome) => void) | undefined;
 	#stats = {
 		spawns: 0,
@@ -414,7 +450,14 @@ export class StreamDriver implements TurnDriver {
 
 		ensureQueuedMessagesInFile(defaultCliSettingsPath());
 
+		// Issue #14: an isolated home means this child sees no foreign bridge
+		// registrations at all. Consulted per spawn so a post-recycle restage
+		// picks up a fresh global-config snapshot.
+		const home = this.stagedHome?.();
+		this.#stagedHomePath = home;
+
 		const args: string[] = ["--add-dir", request.cwd];
+		if (home) args.push("--gemini_dir", home);
 		// The bridge dir carries .agents/mcp_config.json (tool bridge) and, when
 		// the approval gate is on, .agents/hooks.json (gate staging). Only this
 		// session's agy ever gets it: standalone IDE/CLI sessions in the
@@ -801,8 +844,19 @@ export class StreamDriver implements TurnDriver {
 		if (turn && !turn.closed) {
 			this.#failTurn(turn, `agy driver ${reason === "recycle" ? "recycled" : "shut down"} mid-turn${cause ? ` (${cause})` : ""}`);
 		}
+		const home = this.#stagedHomePath;
+		const homePid = child.pid;
 		this.#killChild();
 		this.#state = reason === "shutdown" ? "dead" : "idle";
+		if (home && this.releaseStagedHome) {
+			// Leader death is not group death: agy's own subprocesses can
+			// outlive it and late writes would recreate a removed home dir
+			// (issue #14 reporter's shutdown trap). Wait for the group, then
+			// dispose; the session-start sweep is the backstop for stragglers.
+			await waitForPidGroupExit(homePid);
+			this.#stagedHomePath = undefined;
+			await this.releaseStagedHome(home, homePid);
+		}
 	}
 
 	#killChild(): void {

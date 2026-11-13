@@ -60,6 +60,22 @@ case "$_line" in
     exit 0
     ;;
 esac
+if [[ "$_line" == *HOME-MARKER* ]]; then
+	# Issue #14: the spawned argv must carry the staged home via --gemini_dir.
+	# Echo the home basename back as the conversation id so the test can see
+	# the flag actually reached the child process.
+	_home=""
+	_prev=""
+	for _a in "$@"; do
+		if [[ "$_prev" == "--gemini_dir" ]]; then _home="$(basename "$_a")"; fi
+		_prev="$_a"
+	done
+	printf '%s\n' "{\"event\":\"init\",\"init\":{\"conversation_id\":\"home-$_home\"}}"
+	sleep 0.1
+	printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"HOME-OK","conversation_id":"home-'"$_home"'","usage":{"input_tokens":1,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":2}}}'
+	sleep 0.1
+	exit 0
+fi
 if [[ "$_line" == *KEEP-ALIVE* ]]; then
 	# Two-turn reuse test: serve TWO user turns on ONE process, then exit.
 	# The script-top read consumed turn 1's line; read turn 2's between the

@@ -19,7 +19,7 @@ import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
-import { removeStagedAcpHome, stageAcpHome } from "./home.js";
+import { removeStagedAgyHome, stageAgyHome } from "./home.js";
 
 export interface AcpMcpServer {
 	name: string;
@@ -167,7 +167,7 @@ export class AcpConnection {
 		if (this.#child) return;
 		const args = [...(this.#opts.binArgs ?? [])];
 		if (this.#opts.isolateHome) {
-			this.#stagedHome = stageAcpHome(typeof this.#opts.isolateHome === "object" ? this.#opts.isolateHome : {});
+			this.#stagedHome = stageAgyHome(typeof this.#opts.isolateHome === "object" ? this.#opts.isolateHome : {});
 			args.push("--gemini-dir", this.#stagedHome);
 		}
 		let child: ChildProcess;
@@ -550,7 +550,7 @@ export class AcpConnection {
 	}
 
 	#releaseHome(): void {
-		if (this.#stagedHome) removeStagedAcpHome(this.#stagedHome);
+		if (this.#stagedHome) removeStagedAgyHome(this.#stagedHome);
 		this.#stagedHome = undefined;
 	}
 }

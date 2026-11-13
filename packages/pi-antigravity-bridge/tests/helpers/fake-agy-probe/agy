@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fake agy for the --gemini_dir capability probe (tests/agy-version.test.ts).
+# REFUSE_GEMINI_DIR=1 mimics a CLI without the flag: Go flag-package error,
+# nonzero exit, nothing on stdout.
+# FAKE_AGY_VERSION overrides the printed version triple (default 1.5.8).
+if [[ "${REFUSE_GEMINI_DIR:-0}" == "1" ]]; then
+	echo 'flags provided but not defined: -gemini_dir' >&2
+	exit 2
+fi
+echo "${FAKE_AGY_VERSION:-1.5.8}"
+exit 0

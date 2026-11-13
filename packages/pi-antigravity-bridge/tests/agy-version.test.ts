@@ -18,8 +18,11 @@ import {
 	describeAgyVersionCheck,
 	MIN_AGY_ACP_VERSION,
 	MIN_AGY_VERSION,
+	MIN_GEMINI_DIR_VERSION,
 	parseAgyVersionTriple,
+	probeGeminiDirFlag,
 	resetAgyVersionCache,
+	resetGeminiDirProbeCache,
 } from "../src/agy-version.js";
 
 /** A fake binary printing `output` to stdout and exiting 0. */
@@ -129,4 +132,80 @@ test("describeAgyVersionCheck: every status renders", () => {
 	assert.equal(describeAgyVersionCheck({ status: "development", raw: "" }), "development build");
 	assert.equal(describeAgyVersionCheck({ status: "invalid", raw: "" }), "unreadable version output");
 	assert.equal(describeAgyVersionCheck({ status: "unavailable", raw: "" }), "could not run --version");
+});
+
+// --- probeGeminiDirFlag (issue #14) ------------------------------------------
+
+const PROBE_BIN = path.join(import.meta.dirname, "helpers", "fake-agy-probe", "agy");
+
+function withProbeEnv(env: Record<string, string>): () => void {
+	const saved: Record<string, string | undefined> = {};
+	for (const [k, v] of Object.entries(env)) {
+		saved[k] = process.env[k];
+		process.env[k] = v;
+	}
+	return () => {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	};
+}
+
+test("MIN_GEMINI_DIR_VERSION pins the live-verified floor", () => {
+	assert.equal(MIN_GEMINI_DIR_VERSION, "1.5.8");
+});
+
+test("probeGeminiDirFlag: supported at the verified floor", async () => {
+	resetGeminiDirProbeCache();
+	const restore = withProbeEnv({ FAKE_AGY_VERSION: "1.5.8" });
+	try {
+		const r = await probeGeminiDirFlag(PROBE_BIN);
+		assert.equal(r.supported, true);
+		assert.equal(r.version, "1.5.8");
+		assert.equal(r.unverifiedVersion, false);
+	} finally {
+		restore();
+		resetGeminiDirProbeCache();
+	}
+});
+
+test("probeGeminiDirFlag: a refused flag falls back (issue #14)", async () => {
+	resetGeminiDirProbeCache();
+	const restore = withProbeEnv({ REFUSE_GEMINI_DIR: "1" });
+	try {
+		const r = await probeGeminiDirFlag(PROBE_BIN);
+		assert.equal(r.supported, false);
+		assert.equal(r.unverifiedVersion, false);
+	} finally {
+		restore();
+		resetGeminiDirProbeCache();
+	}
+});
+
+test("probeGeminiDirFlag: versions above the verified floor warn (silent-ignore guard)", async () => {
+	resetGeminiDirProbeCache();
+	const restore = withProbeEnv({ FAKE_AGY_VERSION: "9.9.9" });
+	try {
+		const r = await probeGeminiDirFlag(PROBE_BIN);
+		assert.equal(r.supported, true);
+		assert.equal(r.version, "9.9.9");
+		assert.equal(r.unverifiedVersion, true);
+	} finally {
+		restore();
+		resetGeminiDirProbeCache();
+	}
+});
+
+test("probeGeminiDirFlag: memoized per binary until reset", async () => {
+	resetGeminiDirProbeCache();
+	const restore = withProbeEnv({ FAKE_AGY_VERSION: "1.5.8" });
+	try {
+		const first = await probeGeminiDirFlag(PROBE_BIN);
+		const second = await probeGeminiDirFlag(PROBE_BIN);
+		assert.equal(first, second);
+	} finally {
+		restore();
+		resetGeminiDirProbeCache();
+	}
 });

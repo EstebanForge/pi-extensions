@@ -75,6 +75,24 @@ function writeConfig(file: string, config: McpConfig): void {
 	fs.renameSync(tmp, file);
 }
 
+/** The canonical mcp_config.json entry shape for a bridge server. Single
+ *  source for BOTH registration paths: the global per-pid entry
+ *  (registerBridgeServer, marker-driven disabled flag) and the isolated-home
+ *  own entry (always enabled - a private-home agy never reads global, so the
+ *  marker never applies there, issue #14). */
+export function bridgeServerEntry(entry: {
+	port: number;
+	token: string;
+	tokenHeader: string;
+	disabled?: boolean;
+}): BridgeServerEntry {
+	return {
+		disabled: entry.disabled ?? false,
+		headers: { [entry.tokenHeader]: entry.token },
+		serverUrl: `http://127.0.0.1:${entry.port}/mcp`,
+	};
+}
+
 /** Register (or refresh) the bridge's per-pid server entry. Foreign servers
  *  in the file are preserved.
  *
@@ -95,11 +113,12 @@ export function registerBridgeServer(
 	const disabled = hasLiveDelegator(marker, opts.isAlive ?? pidAlive, (opts.now ?? Date.now)());
 	const read = readConfig(configPath);
 	if (!read.ok) return { wrote: false, disabled, reason: read.reason };
-	read.config.mcpServers[bridgeServerName(entry.pid)] = {
+	read.config.mcpServers[bridgeServerName(entry.pid)] = bridgeServerEntry({
+		port: entry.port,
+		token: entry.token,
+		tokenHeader: entry.tokenHeader,
 		disabled,
-		headers: { [entry.tokenHeader]: entry.token },
-		serverUrl: `http://127.0.0.1:${entry.port}/mcp`,
-	} satisfies BridgeServerEntry;
+	});
 	writeConfig(configPath, read.config);
 	return { wrote: true, disabled };
 }
