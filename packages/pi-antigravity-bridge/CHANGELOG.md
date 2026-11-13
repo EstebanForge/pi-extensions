@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The AskAntigravity default model is now `gemini-4-hydrogen` (was `flash`).** The default resolves as a catalog tiered base: the tier suffix comes from `AGY_DEFAULT_THINKING` or the call's thinking param (`gemini-4-hydrogen-medium` at the default medium), so the default no longer tracks the newest Flash generation. To make that resolution possible the shared resolver (`@estebanforge/pi-ask-shared`, also consumed by pi-ask-antigravity) now resolves a single-base catalog tiered slug BEFORE the bare-"gemini" Flash fallthrough — before, any unrecognized `gemini-<line>` base silently resolved as Flash; version pins across mixed bases (`gemini-3.6`) keep the Flash family semantics. Sequencing: publish shared first, then bump this package's shared floor to the version carrying that change and run npm install, then publish this package (a floor must point at a version npm has). The offline fallback catalog lists `gemini-4-hydrogen` first so the default stays resolvable when `agy models` fails, and the `/agy model` picker offers the exact slug alongside the aliases.
+
 ## [1.10.4] - 2026-11-10
 
 ### Fixed

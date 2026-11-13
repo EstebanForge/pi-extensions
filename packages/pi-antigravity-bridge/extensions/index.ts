@@ -1738,7 +1738,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			description:
 				"AskAntigravity one-shot delegation tool: model used when its caller omits the model param. Callers may override per call; this is only the fallback. flash/pro/gemini, or an exact id. Does not affect the provider model you pick in /model.",
 			currentValue: config.defaultModel,
-			values: ["flash", "pro", "gemini"],
+			values: ["flash", "pro", "gemini", "gemini-4-hydrogen"],
 		},
 		{
 			id: "thinking",

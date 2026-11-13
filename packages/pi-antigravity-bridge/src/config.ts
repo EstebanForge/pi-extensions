@@ -201,7 +201,7 @@ const DEFAULTS: AgyConfig = {
 	mode: "accept-edits",
 	readOnly: false,
 	skipPermissions: true,
-	defaultModel: "flash",
+	defaultModel: "gemini-4-hydrogen",
 	defaultThinking: "medium",
 	askTool: true,
 	webTools: false,

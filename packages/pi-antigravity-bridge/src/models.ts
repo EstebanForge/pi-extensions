@@ -395,6 +395,10 @@ export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> =
  *  can still select a model and get a clear runtime error instead of an empty
  *  list. Update these when agy ships new Gemini versions. */
 export const FALLBACK_MODELS: AgyModelEntry[] = [
+	// First entry = offline picker default; keep it aligned with the configured
+	// AskAntigravity default (config.ts) so the default stays resolvable when
+	// `agy models` fails.
+	{ full: "gemini-4-hydrogen", id: "gemini-4-hydrogen", efforts: ["low", "medium", "high"] },
 	{ full: "gemini-3.8-flash", id: "gemini-3-8-flash", efforts: ["low", "medium", "high"] },
 	{ full: "gemini-3.1-pro", id: "gemini-3-1-pro", efforts: ["low", "high"] },
 	{ full: "claude-sonnet-5-5", id: "claude-sonnet-5-5", efforts: ["low", "medium", "high"] },
