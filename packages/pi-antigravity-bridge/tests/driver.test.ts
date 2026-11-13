@@ -588,6 +588,62 @@ describe("stream-json driver isolated home", () => {
 		fs.rmSync(home, { recursive: true, force: true });
 	});
 
+	test("close after a dead child waits for stragglers in its process group", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-driver-straggler-"));
+		driver.stagedHome = () => home;
+		let released = false;
+		driver.releaseStagedHome = () => {
+			released = true;
+		};
+		const handle = await driver.run({
+			// The fake exits immediately but leaves a SIGTERM-immune subprocess
+			// in its group for ~2s. With no live child at close, waiting on the
+			// remembered pid must hold the release until the group drains.
+			prompt: "STRAGGLER",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		await handle.outcome;
+		await new Promise((r) => setTimeout(r, 600));
+		const t0 = Date.now();
+		await driver.close("shutdown");
+		assert.equal(released, true);
+		assert.ok(Date.now() - t0 >= 500, "close must hold the release until the group drains");
+		fs.rmSync(home, { recursive: true, force: true });
+	}, 15_000);
+
+	test("the driver honors AGY_BIN for its spawn", async () => {
+		// AGY_BIN wins over PATH: pointing it at a nonexistent binary must
+		// break the turn (proving the env was used), not silently fall back
+		// to the PATH fake.
+		const prevBin = process.env.AGY_BIN;
+		process.env.AGY_BIN = "/nonexistent-agy-bin-path/agy";
+		const driver = new StreamDriver();
+		try {
+			const handle = await driver.run({
+				prompt: "hi",
+				cwd: process.cwd(),
+				model: "gemini-3.8-flash",
+				mode: "accept-edits",
+				skipPermissions: true,
+				timeoutMin: 0.5,
+				inactivityMin: 0.5,
+			});
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "ERROR");
+		} finally {
+			if (prevBin === undefined) delete process.env.AGY_BIN;
+			else process.env.AGY_BIN = prevBin;
+		}
+		await driver.close("shutdown");
+	});
+
 	test("waitForPidGroupExit: dead group resolves immediately, live group times out", async () => {
 		const dead = spawn("sleep", ["5"], { detached: true, stdio: "ignore" });
 		dead.unref();

@@ -125,7 +125,11 @@ export function writeOwnBridgeEntry(staged: string, entry: { pid: number; port: 
 	const cfg = record(readGlobalMcpConfig(cfgPath), cfgPath);
 	const servers = record(cfg.mcpServers ?? {}, `${cfgPath} mcpServers`);
 	servers[bridgeServerName(entry.pid)] = bridgeServerEntry({ ...entry, disabled: false });
-	fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, mcpServers: servers }), { mode: 0o600 });
+	// Same-dir tmp + rename: agy watches config dirs, so a truncated
+	// mid-write read must be impossible (issue #14 review round 3).
+	const tmp = `${cfgPath}.tmp-${process.pid}`;
+	fs.writeFileSync(tmp, JSON.stringify({ ...cfg, mcpServers: servers }), { mode: 0o600 });
+	fs.renameSync(tmp, cfgPath);
 }
 
 export function removeStagedAgyHome(staged: string): void {

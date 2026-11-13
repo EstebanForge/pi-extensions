@@ -977,7 +977,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				// Bridge enabled after the home was staged without one: refresh
 				// the staged copy directly. agy reads the home once at spawn;
 				// the running child sees it on its next start.
-				writeOwnBridgeEntry(streamHome.path, { pid: process.pid, port: r.handle.port, token: r.handle.token, tokenHeader: TOKEN_HEADER });
+				try {
+					writeOwnBridgeEntry(streamHome.path, { pid: process.pid, port: r.handle.port, token: r.handle.token, tokenHeader: TOKEN_HEADER });
+				} catch (err) {
+					fileLog.log("stream-home-entry-failed", { error: String(err) }, "warn");
+				}
 			}
 			if (streamHome.fallbackReason) {
 				// Isolation degraded to the legacy global path: say so once.

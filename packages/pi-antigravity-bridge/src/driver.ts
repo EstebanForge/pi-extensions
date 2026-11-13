@@ -209,6 +209,7 @@ export function shouldFlipToCumulative(accumulated: string, next: string): boole
 export class StreamDriver implements TurnDriver {
 	#state: DriverState = "idle";
 	#child: ChildProcess | undefined;
+	#lastChildPid: number | undefined;
 	#stagedHomePath: string | undefined;
 	#generation = 0;
 	#profile: DriverProfile | undefined;
@@ -478,13 +479,21 @@ export class StreamDriver implements TurnDriver {
 			"--disable-slash-commands",
 		);
 
-		const child = spawn("agy", args, {
+		// AGY_BIN is the repo-wide binary override (probe, doctor, ask-tool);
+		// the driver ignoring it made the --gemini_dir probe test a different
+		// binary than the one that actually spawns (issue #14 review round 3).
+		const bin = process.env.AGY_BIN || "agy";
+		const child = spawn(bin, args, {
 			cwd: request.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
 		this.#child = child;
+		// Kept past #killChild: close() must wait on THIS pid even after the
+		// child exited (or was deadline-killed), so late stragglers in the
+		// process group cannot write into a home we are about to remove.
+		this.#lastChildPid = child.pid;
 		this.#stdoutBuf = "";
 		this.#stats.spawns += 1;
 		// Pipe write failures surface asynchronously as stream 'error' events;
@@ -845,7 +854,7 @@ export class StreamDriver implements TurnDriver {
 		// would strand the staged home with its stale own entry (issue #14
 		// review round 2, blocker 2).
 		const home = this.#stagedHomePath;
-		const homePid = child?.pid;
+		const homePid = child?.pid ?? this.#lastChildPid;
 		if (child) this.#killChild();
 		this.#state = reason === "shutdown" ? "dead" : "idle";
 		if (home && this.releaseStagedHome) {

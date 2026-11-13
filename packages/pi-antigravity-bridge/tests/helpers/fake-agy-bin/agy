@@ -37,6 +37,16 @@ case "$_line" in
     sleep 30
     exit 0
     ;;
+  *STRAGGLER*)
+    # Issue #14 straggler pin: the fake exits after the result, but a
+    # subprocess in its process group ignores SIGTERM and lingers ~2s. A
+    # close() that disposes the staged home must WAIT for that group.
+    printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-straggler"}}'
+    sleep 0.1
+    ( trap '' TERM; sleep 2 ) &
+    printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"STRAGGLER-OK","conversation_id":"conv-straggler","usage":{"input_tokens":1,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":2}}}'
+    exit 0
+    ;;
   *OVERFLOW-FLOOD*)
     # Frame-ceiling test: far more than the 32MB cap with no newline. The
     # driver's reassembly buffer must abort the turn instead of growing.
