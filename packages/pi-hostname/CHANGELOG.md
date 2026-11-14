@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2 (2026-11-13)
+
+### Changed
+- Raised the `@earendil-works/pi-coding-agent` peer dependency floor from `*` to `^1.0.0` (pi 1.0.0 stable contract). No code changes.
+
 ## 1.0.0 (2026-08-24)
 
 First release. The footer now tells you which machine you're on.
