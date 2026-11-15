@@ -99,7 +99,17 @@ import {
 	type SkillLite,
 } from "../src/skills.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
-import { bridgedPiTools } from "../src/bridge-catalog.js";
+import {
+	CALL_TOOL_NAME,
+	TOOL_INFO_TOOL_NAME,
+	bridgeCallToolDef,
+	bridgeToolInfoDef,
+	bridgedPiTools,
+	formatBridgeToolInfo,
+	parseBridgeCallRequest,
+	partitionBridgeTools,
+	serializeToolSchema,
+} from "../src/bridge-catalog.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
@@ -863,16 +873,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const listTools = () => {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
 			// this endpoint through session/new or session/load; no global config write.
-			const tools = getBridgeTools().map((t) => {
-					let inputSchema: object = { type: "object", properties: {}, additionalProperties: true };
-					try {
-						if (t.parameters) inputSchema = JSON.parse(JSON.stringify(t.parameters)) as object;
-					} catch {
-						/* keep default schema */
-					}
-					return { name: t.name, description: t.description ?? t.name, inputSchema };
-				});
-			if (skills.length > 0 && loadConfig().bridgeTools !== "none") {
+			const mode = loadConfig().bridgeTools;
+			const { direct, proxied } = partitionBridgeTools(getBridgeTools());
+			const tools = direct.map((t) => ({
+				name: t.name,
+				description: t.description ?? t.name,
+				inputSchema: serializeToolSchema(t.parameters),
+			}));
+			if (mode !== "none" && proxied.length > 0) {
+				tools.push(bridgeToolInfoDef(proxied), bridgeCallToolDef());
+			}
+			if (skills.length > 0 && mode !== "none") {
 				tools.push({
 					name: ACTIVATE_SKILL_TOOL_NAME,
 					description: `Activate a pi Agent Skill by name. Catalog:\n${catalogSummary(skills)}`,
@@ -917,19 +928,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				if (view && view.state !== "running") roundTrips.markDelivered(wanted);
 				return Promise.resolve(formatPollAnswer(wanted, view));
 			}
-			if (name !== ACTIVATE_SKILL_TOOL_NAME) {
-				// A cached MCP catalog is not authorization. An inactive/hidden tool
-				// must not get parked into Pi, even if agy retained its old schema.
-				if (!getBridgeTools().some((tool) => tool.name === name)) {
-					return Promise.resolve({ content: [{ type: "text", text: `Pi tool ${name} is not active or not exposed to Antigravity` }], isError: true });
-				}
-				return roundTrips.onToolCall(callId, name, args, signal).then((r) => {
+			if (name === TOOL_INFO_TOOL_NAME) {
+				const { proxied } = partitionBridgeTools(getBridgeTools());
+				return Promise.resolve(formatBridgeToolInfo(proxied, args.names));
+			}
+			const dispatchPiTool = (targetName: string, targetArgs: Record<string, unknown>) =>
+				roundTrips.onToolCall(callId, targetName, targetArgs, signal).then((r) => {
 					// Early-ack: answer the HTTP request before agy's ~180s client
 					// deadline with a poll handle; pi keeps executing meanwhile.
 					if (!("escalated" in r)) return r;
-					mcpLog("call-tool-escalated", { name, callId: r.callId });
+					mcpLog("call-tool-escalated", { name: targetName, callId: r.callId });
 					return formatEscalatedAck(r);
 				});
+			if (name === CALL_TOOL_NAME) {
+				const parsed = parseBridgeCallRequest(args, getBridgeTools());
+				if (!parsed.ok) {
+					return Promise.resolve({ content: [{ type: "text", text: parsed.error }], isError: true });
+				}
+				return dispatchPiTool(parsed.name, parsed.args);
+			}
+			if (name !== ACTIVATE_SKILL_TOOL_NAME) {
+				// Direct calls by tool name stay authorized so cached schemas from
+				// earlier sessions still work, while disabled/hidden tools stay blocked.
+				if (!getBridgeTools().some((tool) => tool.name === name)) {
+					return Promise.resolve({ content: [{ type: "text", text: `Pi tool ${name} is not active or not exposed to Antigravity` }], isError: true });
+				}
+				return dispatchPiTool(name, args);
 			}
 			const wanted = typeof args.name === "string" ? args.name : "";
 			const skill = loadConfig().bridgeTools !== "none" ? findSkillByName(skills, wanted) : undefined;
