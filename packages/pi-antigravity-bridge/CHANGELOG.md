@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.7] - 2026-11-15
+
+### Fixed
+
+- **Extension Pi tools are no longer silently evicted by `agy acp`'s per-model tool-declaration byte budget.** `agy acp` enforces a per-model declaration cap and keeps only the smallest tools, silently dropping larger extension tools such as `git_commit` and `AskClaude`, and strips any argument not declared under `properties` even when `additionalProperties: true` is set. `tools/list` now exposes only active Pi default tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) directly alongside two compact proxy tools: `bridge_tool_info` (lists extension tool names with a 4,000-char description cap and wildcard `["*"]` fallback, returning full descriptions and schemas on demand) and `bridge_call_tool` (accepts `name` plus a stringified JSON object or plain object in `arguments_json` and validates against the active authorized Pi catalog before dispatching). Direct calls by tool name stay authorized so cached schemas from earlier sessions still work while disabled or hidden tools stay blocked.
+
 ## [1.10.6] - 2026-11-13
 
 ### Fixed
