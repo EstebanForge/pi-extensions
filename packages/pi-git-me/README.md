@@ -134,7 +134,17 @@ Update any prompt templates or slash-command prefills that named the old tools. 
 | `git` | every tool | any modern Git (>= 2.30 recommended) |
 | `gh` | the GitHub-touching tools (`git_pr_info`, `git_pr_upsert`, `git_pr_comment`, `git_pr_comment_edit`, `git_pr_review`, `git_issue_comment`, `git_issue_comment_edit`, `git_issue_create`, `git_discussion_create`, `git_discussion_comment`) | [cli.github.com](https://cli.github.com) — then `gh auth login` |
 
-The extension reads **no environment variables**. There is no token to copy; `gh` is the auth surface. If `gh` is missing, the read tools still work; the GitHub write tools surface a clear error.
+The extension reads no secrets of its own: `gh` is the auth surface. Install it from [cli.github.com](https://cli.github.com) and authenticate **before first use**: run `gh auth login` in a real interactive terminal (browser flow), then verify with `gh auth status`. If a `GITHUB_TOKEN` or `GH_TOKEN` variable is set in that shell, unset it first — `gh` refuses to store new credentials while a token env var is present.
+
+The attachment upload on the comment tools is the only path that needs a raw bearer token; every other tool talks through the `gh` CLI itself, which resolves its own auth. That token resolves in this order:
+
+1. **`gh auth token`** — your keyring login from `gh auth login`. The probe strips the token env vars below from the child environment, so a stale env var cannot shadow the login.
+2. `GITHUB_TOKEN`
+3. `GITHUB_PAT_TOKEN`
+4. `GH_PAT_TOKEN`
+5. `GH_TOKEN`
+
+If `gh` is missing, the read tools still work; the GitHub tools surface a clear error.
 
 ## Commands
 

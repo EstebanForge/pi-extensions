@@ -74,17 +74,30 @@ export async function validateAttachmentPaths(paths: string[]): Promise<string[]
   return problems;
 }
 
-/** The token gh is authenticated with (env GH_TOKEN/GITHUB_TOKEN first, then the keyring). */
+// The probe strips the token env vars from the child env: `gh auth token`
+// echoes GITHUB_TOKEN/GH_TOKEN back when set, which would let a stale env var
+// shadow the gh keyring login. Fallback order is documented in the README.
+const TOKEN_ENV_VARS = ["GITHUB_TOKEN", "GITHUB_PAT_TOKEN", "GH_PAT_TOKEN", "GH_TOKEN"];
+
+/** Bearer token for GitHub API calls: `gh auth token` (keyring) first, then GITHUB_TOKEN, GITHUB_PAT_TOKEN, GH_PAT_TOKEN, GH_TOKEN. */
 export function ghAuthToken(cwd: string): string {
-  const result = runGh(["auth", "token"], cwd);
-  const token = result.stdout.trim();
-  if (result.exitCode !== 0 || !token) {
-    const detail = result.stderr.trim() || result.stdout.trim();
-    throw new Error(
-      `git-me: could not get an auth token from \`gh auth token\` for the attachment upload. ${detail || "Run `gh auth login` first."}`,
-    );
+  const result = runGh(["auth", "token"], cwd, { env: envWithoutTokenVars() });
+  const ghToken = result.exitCode === 0 ? result.stdout.trim() : "";
+  if (ghToken) return ghToken;
+  for (const name of TOKEN_ENV_VARS) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
   }
-  return token;
+  const detail = result.stderr.trim() || result.stdout.trim();
+  throw new Error(
+    `git-me: no GitHub token for the attachment upload. \`gh auth token\` failed (${detail || "gh missing or not logged in"}) and none of ${TOKEN_ENV_VARS.join(", ")} is set. Run \`gh auth login\` first.`,
+  );
+}
+
+function envWithoutTokenVars(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of TOKEN_ENV_VARS) delete env[name];
+  return env;
 }
 
 /** Numeric REST id of the repository, required by the upload endpoint. */

@@ -134,8 +134,12 @@ export function runGit(args: string[], cwd: string = process.cwd()): CmdResult {
 }
 
 /** Spawn `gh` with the given args, capture stdout/stderr. Never throws. */
-export function runGh(args: string[], cwd: string = process.cwd()): CmdResult {
-  return spawnChecked("gh", args, cwd);
+export function runGh(
+  args: string[],
+  cwd: string = process.cwd(),
+  opts: { env?: NodeJS.ProcessEnv } = {},
+): CmdResult {
+  return spawnChecked("gh", args, cwd, opts.env);
 }
 
 // Minimal child_process wrapper. stdin is closed (the agent does not pipe
@@ -144,6 +148,7 @@ function spawnChecked(
   cmd: string,
   args: string[],
   cwd: string,
+  env?: NodeJS.ProcessEnv,
 ): CmdResult {
   // Synchronous spawn keeps the tool paths linear; git/gh calls are short
   // (sub-second) and the agent is already waiting on the tool result.
@@ -153,6 +158,7 @@ function spawnChecked(
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    ...(env ? { env } : {}),
     // git/gh should never block on a TTY prompt; 30s is generous.
     timeout: 30_000,
   });

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Attachment uploads (image/video on `git_pr_comment` / `git_issue_comment` / `git_discussion_comment`) resolve the bearer token through a documented chain: `gh auth token` first (probed with the token env vars stripped from the child environment, so gh answers from its keyring login and a stale `GITHUB_TOKEN` can no longer shadow it), then the environment variables `GITHUB_TOKEN`, `GITHUB_PAT_TOKEN`, `GH_PAT_TOKEN`, `GH_TOKEN` in that order. Previously only `gh auth token` was consulted, which silently returned a stale env var when one was set.
+
 ## 1.7.3 — 2026-11-11
 
 ### Fixed
