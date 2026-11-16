@@ -139,3 +139,83 @@ describe("asana_get_task notes truncation marker", () => {
     expect(text).not.toContain("truncated");
   });
 });
+
+describe("asana_get_task includeSubtaskFields", () => {
+  const PARENT = "0000000000000042";
+
+  function parentMock() {
+    return vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResponse({
+          data: {
+            gid: PARENT,
+            name: "PHCA Roster Bugs",
+            subtasks: [
+              { gid: "s1", name: "remove members", completed: false },
+              { gid: "s2", name: "search broken", completed: false },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          data: [
+            {
+              gid: "s1",
+              name: "remove members",
+              completed: false,
+              custom_fields: [
+                { gid: "e", name: "Wicket Web Effort", display_value: "3" },
+              ],
+            },
+            {
+              gid: "s2",
+              name: "search broken",
+              completed: false,
+              custom_fields: [
+                { gid: "e", name: "Wicket Web Effort", display_value: "1" },
+              ],
+            },
+          ],
+        }),
+      );
+  }
+
+  it("fetches subtask custom fields and renders them beside the rows", async () => {
+    const fetchMock = parentMock();
+    const { text } = await callGetTask({ gid: PARENT, includeSubtaskFields: true }, fetchMock);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [subUrl] = fetchMock.mock.calls[1] as [string];
+    expect(subUrl).toContain("/subtasks");
+    const optFields = new URL(subUrl).searchParams.get("opt_fields") ?? "";
+    expect(optFields).toContain("custom_fields.display_value");
+    expect(text).toMatch(/remove members.*\| Wicket Web Effort: 3/s);
+    expect(text).toMatch(/search broken.*\| Wicket Web Effort: 1/s);
+  });
+
+  it("skips the subtasks read when the flag is unset", async () => {
+    const fetchMock = parentMock();
+    const { text } = await callGetTask({ gid: PARENT }, fetchMock);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(text).not.toMatch(/\| Wicket Web Effort:/);
+  });
+
+  it("degrades to plain rows when the subtasks read fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResponse({
+          data: {
+            gid: PARENT,
+            name: "Parent",
+            subtasks: [{ gid: "s1", name: "Sub", completed: false }],
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new Error("boom"));
+    const { text } = await callGetTask({ gid: PARENT, includeSubtaskFields: true }, fetchMock);
+    expect(text).toMatch(/\[ \] Sub \(gid: s1\)/);
+    expect(text).not.toMatch(/\| Wicket Web Effort:/);
+  });
+});

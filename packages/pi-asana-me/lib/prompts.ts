@@ -60,6 +60,9 @@ export const GET_TASK_GID_DESCRIPTION =
 export const GET_TASK_OPT_FIELDS_DESCRIPTION =
   "Optional opt_fields. Default includes subtasks, dependencies, parent, custom fields.";
 
+export const GET_TASK_SUBTASK_FIELDS_DESCRIPTION =
+  "Also fetch each subtask's custom fields (name + display value) and render them beside the subtask list. Use to verify parent-inherits-sum effort estimates without extra calls.";
+
 export const GET_TASK_NOTES_TITLE = "Asana: Get Task Description";
 
 export const GET_TASK_NOTES_DESCRIPTION = `Full, untruncated notes (description) for a single task GID. asana_get_task caps notes at ~2000 chars to keep its payload cheap; call THIS tool when you need the complete description body to understand or perform the task (e.g. acceptance criteria, background, implementation notes). Returns only gid, name, and the full notes (output labeled \`description:\`). Use AFTER you already have a task GID from asana_search_objects, asana_get_tasks, or asana_get_task.`;
@@ -178,6 +181,13 @@ export const SET_CUSTOM_FIELDS_TASK_GID_DESCRIPTION =
 
 export const SET_CUSTOM_FIELDS_FIELDS_DESCRIPTION =
   "Map of { field_name: value }. Key by field name (or gid). Text -> string, number -> number, enum -> option name. null clears. Example: { \"Testing Site\": \"https://oba.ind.ninja/\", \"Status\": \"In Progress\" }.";
+
+export const BATCH_SET_CUSTOM_FIELDS_TITLE = "Asana: Batch Set Custom Fields";
+
+export const BATCH_SET_CUSTOM_FIELDS_DESCRIPTION = `Set custom fields on up to 50 tasks in ONE gated write. Pass tasks: [{gid, fields}] with fields keyed by field NAME (or gid); enum option names resolve to option gids, text and number values coerce, null clears. Field names must be unambiguous per task; any resolution error aborts the whole batch before the review dialog, so fix and retry instead of half-writing. One review dialog shows the full table (task, field, value) before anything writes; writes then go task by task with per-task results. Prefer this over repeating asana_set_custom_fields when the same fields change on several tasks (effort backfill sweeps, status flips).`;
+
+export const BATCH_SET_CUSTOM_FIELDS_TASKS_DESCRIPTION =
+  'Array of {gid, fields} where fields maps field NAME (or gid) to value; enum -> option name, null clears. Example: [{"gid": "123", "fields": {"Wicket Web Effort": "5"}}].';
 
 export const ADD_COMMENT_TITLE = "Asana: Add Comment";
 

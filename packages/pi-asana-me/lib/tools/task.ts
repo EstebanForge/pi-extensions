@@ -2,12 +2,13 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { callAsana, AsanaError } from "../api";
 import { toToolResult, errorText, type AsanaDetails } from "../result";
-import type { AsanaTaskCompact, AsanaRef } from "../types";
+import type { AsanaTaskCompact, AsanaRef, AsanaCustomField } from "../types";
 import {
   GET_TASK_TITLE,
   GET_TASK_DESCRIPTION,
   GET_TASK_GID_DESCRIPTION,
   GET_TASK_OPT_FIELDS_DESCRIPTION,
+  GET_TASK_SUBTASK_FIELDS_DESCRIPTION,
 } from "../prompts";
 
 // Default opt_fields when the caller does not pass their own. Matches the MCP
@@ -55,6 +56,9 @@ const Params = Type.Object({
   gid: Type.String({ description: GET_TASK_GID_DESCRIPTION }),
   opt_fields: Type.Optional(
     Type.String({ description: GET_TASK_OPT_FIELDS_DESCRIPTION }),
+  ),
+  includeSubtaskFields: Type.Optional(
+    Type.Boolean({ description: GET_TASK_SUBTASK_FIELDS_DESCRIPTION }),
   ),
 });
 
@@ -164,6 +168,30 @@ export const getTaskTool: ToolDefinition<typeof Params, AsanaDetails> = {
       // subtasks rendered as "no subtasks" until these fields were added.
       const subtasks = task.subtasks ?? [];
       if (subtasks.length > 0) {
+        // Effort sums and similar parent-inherits-children checks need the
+        // subtasks' own field values, which the parent projection does not
+        // carry. One extra read when asked; per-subtask misses degrade to
+        // the plain row instead of failing the whole task render.
+        let fieldsByGid: Map<string, AsanaCustomField[]> | undefined;
+        if (params.includeSubtaskFields) {
+          try {
+            const detailed = await callAsana<AsanaTaskCompact[]>(
+              "GET",
+              `/tasks/${encodeURIComponent(params.gid)}/subtasks`,
+              {
+                query: {
+                  opt_fields:
+                    "name,completed,assignee.name,custom_fields.name,custom_fields.display_value",
+                },
+              },
+            );
+            fieldsByGid = new Map(
+              detailed.map((s) => [s.gid, (s.custom_fields ?? []) as unknown as AsanaCustomField[]]),
+            );
+          } catch {
+            fieldsByGid = undefined;
+          }
+        }
         const closedCount = subtasks.filter((s) => s.completed).length;
         lines.push(`  subtasks (${subtasks.length} total, ${closedCount} closed):`);
         for (const s of subtasks) {
@@ -171,7 +199,13 @@ export const getTaskTool: ToolDefinition<typeof Params, AsanaDetails> = {
           const at =
             s.completed && typeof s.completed_at === "string" ? ` at ${s.completed_at}` : "";
           const owner = s.assignee?.name ?? "unassigned";
-          lines.push(`    - [${done}] ${s.name ?? "(untitled)"} (gid: ${s.gid}) - ${owner}${at}`);
+          let row = `    - [${done}] ${s.name ?? "(untitled)"} (gid: ${s.gid}) - ${owner}${at}`;
+          const cf = fieldsByGid?.get(s.gid) ?? [];
+          const visible = cf.filter((f) => f.display_value != null && f.display_value !== "");
+          if (visible.length > 0) {
+            row += ` | ${visible.map((f) => `${f.name ?? "(unnamed)"}: ${f.display_value}`).join(", ")}`;
+          }
+          lines.push(row);
         }
       } else {
         lines.push(`  subtasks: none`);

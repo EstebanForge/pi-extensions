@@ -34,6 +34,7 @@ import { createTasksTool } from "../lib/tools/create-tasks";
 import { updateTasksTool } from "../lib/tools/update-tasks";
 import { getCustomFieldsTool } from "../lib/tools/custom-fields-get";
 import { setCustomFieldsTool } from "../lib/tools/custom-fields-set";
+import { batchSetCustomFieldsTool } from "../lib/tools/custom-fields-batch";
 import { addCommentTool } from "../lib/tools/comment-add";
 import { updateCommentTool } from "../lib/tools/comment-update";
 import { getCommentTool } from "../lib/tools/comment-get";
@@ -92,6 +93,7 @@ function asana(pi: ExtensionAPI): void {
   pi.registerTool(updateTasksTool);
   pi.registerTool(getCustomFieldsTool);
   pi.registerTool(setCustomFieldsTool);
+  pi.registerTool(batchSetCustomFieldsTool);
   pi.registerTool(addCommentTool);
   pi.registerTool(updateCommentTool);
   pi.registerTool(getTaskCommentsTool);

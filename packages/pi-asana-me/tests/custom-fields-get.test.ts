@@ -75,7 +75,7 @@ describe("asana_get_custom_fields", () => {
     expect(text).toContain("Task 1 (T): 3 custom fields");
     expect(text).toContain("Testing Site [text] (gid: a): https://oba.ind.ninja/");
     expect(text).toContain("Status [enum] (gid: b): In Progress");
-    expect(text).toContain("options: In Progress, Done");
+    expect(text).toMatch(/options: In Progress \(gid: [a-z0-9]+\), Done \(gid: [a-z0-9]+\)/);
     expect(text).toContain("Points [number] (gid: c): 5");
   });
 

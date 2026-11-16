@@ -55,8 +55,8 @@ function renderField(f: AsanaCustomField): string[] {
   if (type === "enum") {
     const opts = (f.enum_options ?? [])
       .filter((o) => o.enabled !== false)
-      .map((o) => o.name)
-      .filter((n): n is string => !!n);
+      .map((o) => (o.name ? `${o.name} (gid: ${o.gid})` : `(gid: ${o.gid})`))
+      .filter((n) => n !== "(gid: )");
     if (opts.length > 0) {
       lines.push(`    options: ${opts.join(", ")}`);
     }
