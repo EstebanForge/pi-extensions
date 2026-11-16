@@ -316,8 +316,12 @@ export function summarizeUpdateMessage(args: {
   channel: string;
   ts: string;
   text: string;
+  blockCount?: number;
 }): string {
-  return `channel: ${args.channel}  |  ts: ${args.ts}\n\n${oneLine(args.text)}`;
+  const blocks = args.blockCount
+    ? `  |  blocks: ${args.blockCount} Block Kit block(s) (edited text stays as fallback copy)`
+    : "";
+  return `channel: ${args.channel}  |  ts: ${args.ts}${blocks}\n\n${oneLine(args.text)}`;
 }
 
 export function summarizeDeleteMessage(args: {

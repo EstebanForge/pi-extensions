@@ -2,6 +2,7 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { slackPost, SlackApiError } from "../api";
 import { confirmWrite, summarizeUpdateMessage } from "../confirm";
+import { parseBlocksParam } from "../blocks";
 import { toToolResult, errorText, postedContentExtras, type SlackDetails } from "../result";
 import {
   UPDATE_MESSAGE_TITLE,
@@ -9,6 +10,7 @@ import {
   UPDATE_MESSAGE_CHANNEL_DESCRIPTION,
   UPDATE_MESSAGE_TS_DESCRIPTION,
   UPDATE_MESSAGE_TEXT_DESCRIPTION,
+  UPDATE_MESSAGE_BLOCKS_DESCRIPTION,
 } from "../prompts";
 
 // Edit the text of a message you previously posted. chat.update with a user
@@ -19,6 +21,7 @@ const Params = Type.Object({
   channel: Type.String({ description: UPDATE_MESSAGE_CHANNEL_DESCRIPTION }),
   ts: Type.String({ description: UPDATE_MESSAGE_TS_DESCRIPTION }),
   text: Type.String({ description: UPDATE_MESSAGE_TEXT_DESCRIPTION, minLength: 1 }),
+  blocks: Type.Optional(Type.String({ description: UPDATE_MESSAGE_BLOCKS_DESCRIPTION })),
 });
 
 interface ChatUpdateResponse {
@@ -40,6 +43,14 @@ export const updateMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
     _onUpdate,
     ctx,
   ): Promise<AgentToolResult<SlackDetails>> {
+    // Blocks: parse + shape-check BEFORE the review dialog so a doomed edit
+    // never reaches the user's attention. chat.update replaces the body, so
+    // blocks swap out the rich rendering while text stays the fallback copy.
+    const parsed = parseBlocksParam(params.blocks);
+    if (parsed.error) {
+      return toToolResult(`Slack: refused to edit - ${parsed.error}`);
+    }
+
     // Review-before-send gate (editable).
     const decision = await confirmWrite(ctx, {
       title: `Edit message ${params.ts} in ${params.channel}?`,
@@ -48,6 +59,7 @@ export const updateMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
         channel: params.channel,
         ts: params.ts,
         text: params.text,
+        blockCount: parsed.blocks?.length,
       }),
     });
     if (!decision.proceed) {
@@ -60,9 +72,9 @@ export const updateMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
     const text = decision.text ?? params.text;
 
     try {
-      await slackPost<ChatUpdateResponse>("chat.update", {
-        body: { channel: params.channel, ts: params.ts, text },
-      });
+      const body: Record<string, unknown> = { channel: params.channel, ts: params.ts, text };
+      if (parsed.blocks) body.blocks = parsed.blocks;
+      await slackPost<ChatUpdateResponse>("chat.update", { body });
       const { extraText, details } = postedContentExtras(text, decision.edited ?? false);
       return toToolResult(
         `Slack: message ${params.ts} updated in ${params.channel}.${extraText}`,

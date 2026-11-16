@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`blocks` param on `slack_post_message`.** Pass a Block Kit JSON array (string) to render rich formatting - `rich_text` blocks with `rich_text_list` bullet lists produce the same real list dots the Slack composer emits, instead of literal `*` markers from plain mrkdwn text. `text` stays required as the notification/fallback copy and remains what the review dialog edits; blocks are validated (array of 1-50 objects with a string `type`) before the dialog opens, then sent alongside text on `chat.postMessage`. Tests in `tests/post-message.test.ts`.
+- **`blocks` param on `slack_post_message` and `slack_update_message`.** Pass a Block Kit JSON array (string) to render rich formatting - `rich_text` blocks with `rich_text_list` bullet lists produce the same real list dots the Slack composer emits, instead of literal `*` markers from plain mrkdwn text. `text` stays required as the notification/fallback copy and remains what the review dialog edits; blocks are validated (array of 1-50 objects with a string `type`) before the dialog opens, then sent alongside text (`chat.postMessage` / `chat.update`; update replaces the message body, text stays the fallback copy). Shared validator in `lib/blocks.ts`. Tests in `tests/post-message.test.ts`.
 
 ## 1.3.2 — 2026-11-10
 

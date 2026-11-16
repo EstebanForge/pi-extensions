@@ -130,4 +130,62 @@ describe("slack_update_message", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(editor).not.toHaveBeenCalled();
   });
+
+  it("passes parsed blocks through to chat.update alongside text", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      void init;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => JSON.stringify({ ok: true, channel: "C1", ts: "100.0001" }),
+        json: async () => ({ ok: true, channel: "C1", ts: "100.0001" }),
+      } as unknown as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { ctx } = ctxWith({ editorResult: "fallback" });
+    const { updateMessageTool } = await import("../lib/tools/update-message");
+    const blocks = [
+      {
+        type: "rich_text",
+        elements: [
+          { type: "rich_text_section", elements: [{ type: "text", text: "AM" }] },
+          {
+            type: "rich_text_list",
+            style: "bullet",
+            elements: [
+              {
+                type: "rich_text_section",
+                elements: [{ type: "link", url: "https://example.com/t/1", text: "Task one" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    await invokeWithCtx(
+      updateMessageTool,
+      { channel: "C1", ts: "100.0001", text: "fallback", blocks: JSON.stringify(blocks) },
+      ctx,
+    );
+    const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(sent.blocks).toEqual(blocks);
+    expect(sent.text).toBe("fallback");
+  });
+
+  it("refuses invalid JSON in blocks before the review dialog", async () => {
+    const fetchMock = mockFetch({});
+    vi.stubGlobal("fetch", fetchMock);
+    const { ctx } = ctxWith({ editorResult: "x" });
+    const { updateMessageTool } = await import("../lib/tools/update-message");
+    const text = firstText(
+      await invokeWithCtx(
+        updateMessageTool,
+        { channel: "C1", ts: "9", text: "x", blocks: "{not json" },
+        ctx,
+      ),
+    );
+    expect(text).toMatch(/not valid JSON/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

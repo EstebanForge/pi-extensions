@@ -2,6 +2,7 @@ import { Type, type Static } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { slackPost, SlackApiError } from "../api";
 import { confirmWrite, summarizePostMessage } from "../confirm";
+import { parseBlocksParam } from "../blocks";
 import {
   validateImagePaths,
   slackUploadAndShare,
@@ -88,26 +89,11 @@ export const postMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
     // Blocks: parse + shape-check BEFORE the review dialog, like images, so a
     // doomed send never reaches the user's attention. Slack wants text as the
     // fallback copy even when blocks are present.
-    let parsedBlocks: unknown[] | undefined;
-    if (params.blocks !== undefined) {
-      try {
-        const arr = JSON.parse(params.blocks);
-        if (
-          !Array.isArray(arr) ||
-          arr.length === 0 ||
-          arr.length > 50 ||
-          arr.some((b) => typeof b !== "object" || b === null || typeof (b as { type?: unknown }).type !== "string")
-        ) {
-          return toToolResult(
-            "Slack: refused to send - blocks must be a JSON array of 1-50 Block Kit block objects, each with a string type field.",
-          );
-        }
-        parsedBlocks = arr;
-      } catch {
-        return toToolResult(
-          `Slack: refused to send - blocks is not valid JSON: ${params.blocks.slice(0, 120)}`,
-        );
-      }
+    const parsed = parseBlocksParam(params.blocks);
+    if (parsed.error) {
+      return toToolResult(
+        `Slack: refused to send - ${parsed.error}`,
+      );
     }
 
     // Review-before-send gate. The editable path lets the user trim the prose;
@@ -122,7 +108,7 @@ export const postMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
         threadTs: params.thread_ts,
         text: params.text,
         images: imagePaths,
-        blockCount: parsedBlocks?.length,
+        blockCount: parsed.blocks?.length,
       }),
     });
     if (!decision.proceed) {
@@ -159,7 +145,7 @@ export const postMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
 
       const body: Record<string, unknown> = { channel, text };
       if (params.thread_ts) body.thread_ts = params.thread_ts;
-      if (parsedBlocks) body.blocks = parsedBlocks;
+      if (parsed.blocks) body.blocks = parsed.blocks;
 
       const where = params.to_user ? `@${params.to_user} (DM ${channel})` : channel;
 

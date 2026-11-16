@@ -105,6 +105,9 @@ export const POST_MESSAGE_TEXT_DESCRIPTION =
 export const POST_MESSAGE_BLOCKS_DESCRIPTION =
   "Optional Block Kit blocks as a JSON array string (e.g. rich_text blocks for bullet lists). Validated before the review dialog; sent alongside text as the message body.";
 
+export const UPDATE_MESSAGE_BLOCKS_DESCRIPTION =
+  POST_MESSAGE_BLOCKS_DESCRIPTION;
+
 export const POST_MESSAGE_THREAD_TS_DESCRIPTION =
   "Timestamp of a parent message to reply in its thread instead of posting top-level. Find the parent's ts in a message's ts field.";
 
@@ -115,7 +118,7 @@ export const POST_MESSAGE_IMAGES_DESCRIPTION =
 
 export const UPDATE_MESSAGE_TITLE = "Slack: Update Message";
 
-export const UPDATE_MESSAGE_DESCRIPTION = `Edit the text of a message YOU previously posted. Posts as YOU (user token): only your own messages can be edited. The new text opens in an editable review dialog before sending when the slack-confirm-write flag is on (default). Requires the channel ID and the message ts (both come from slack_read_messages / slack_read_thread / slack_search).`;
+export const UPDATE_MESSAGE_DESCRIPTION = `Edit the text of a message YOU previously posted. Posts as YOU (user token): only your own messages can be edited. The new text opens in an editable review dialog before sending when the slack-confirm-write flag is on (default). Requires the channel ID and the message ts (both come from slack_read_messages / slack_read_thread / slack_search). Pass blocks (Block Kit JSON array) to replace the message body with rich formatting; text stays the fallback copy the dialog edits.`;
 
 export const UPDATE_MESSAGE_CHANNEL_DESCRIPTION =
   "Channel ID where the message lives. Get it from slack_list_channels or the message's channel field.";
