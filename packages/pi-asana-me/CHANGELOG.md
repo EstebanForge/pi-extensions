@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0 — 2026-11-16
+
+### Added
+
+- **`asana_batch_set_custom_fields`.** Set custom fields on up to 50 tasks in one gated write: field names resolve per task, enum option names resolve to option gids, one review table, then sequential per-task PUTs with per-task results. Any resolution error aborts before the dialog. Backfills that used to mean repeating asana_set_custom_fields N times are now one confirm.
+- **Subtask custom fields in `asana_get_task`.** `includeSubtaskFields` fetches each subtask's field values (one extra read) and renders them beside the subtask rows, so parent-inherits-sum effort checks need no extra calls. Per-subtask read failures degrade to plain rows.
+- **Enum option gids in `asana_get_custom_fields`.** The options line now shows `1 (gid: 123)` per option, so raw-API fallbacks and bulk paths have the gids they need.
+
+### Changed
+
+- Custom-field name resolution, enum coercion, and the task projection opt_fields moved into `lib/custom-fields.ts` as the single source shared by set and batch tools.
+
 ## 1.8.2 — 2026-11-10
 
 ### Added
