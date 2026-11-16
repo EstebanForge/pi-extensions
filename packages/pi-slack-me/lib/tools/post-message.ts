@@ -15,6 +15,7 @@ import {
   POST_MESSAGE_TEXT_DESCRIPTION,
   POST_MESSAGE_THREAD_TS_DESCRIPTION,
   POST_MESSAGE_IMAGES_DESCRIPTION,
+  POST_MESSAGE_BLOCKS_DESCRIPTION,
 } from "../prompts";
 
 // Post a message as the calling user. chat.postMessage with a user token
@@ -33,6 +34,7 @@ const Params = Type.Object({
   images: Type.Optional(
     Type.Array(Type.String({ description: POST_MESSAGE_IMAGES_DESCRIPTION })),
   ),
+  blocks: Type.Optional(Type.String({ description: POST_MESSAGE_BLOCKS_DESCRIPTION })),
 });
 
 interface ChatPostResponse {
@@ -83,6 +85,31 @@ export const postMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
       }
     }
 
+    // Blocks: parse + shape-check BEFORE the review dialog, like images, so a
+    // doomed send never reaches the user's attention. Slack wants text as the
+    // fallback copy even when blocks are present.
+    let parsedBlocks: unknown[] | undefined;
+    if (params.blocks !== undefined) {
+      try {
+        const arr = JSON.parse(params.blocks);
+        if (
+          !Array.isArray(arr) ||
+          arr.length === 0 ||
+          arr.length > 50 ||
+          arr.some((b) => typeof b !== "object" || b === null || typeof (b as { type?: unknown }).type !== "string")
+        ) {
+          return toToolResult(
+            "Slack: refused to send - blocks must be a JSON array of 1-50 Block Kit block objects, each with a string type field.",
+          );
+        }
+        parsedBlocks = arr;
+      } catch {
+        return toToolResult(
+          `Slack: refused to send - blocks is not valid JSON: ${params.blocks.slice(0, 120)}`,
+        );
+      }
+    }
+
     // Review-before-send gate. The editable path lets the user trim the prose;
     // Esc cancels the whole send.
     const attachmentLabel = imagePaths.length > 0 ? ` + ${imagePaths.length} image(s)` : "";
@@ -95,6 +122,7 @@ export const postMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
         threadTs: params.thread_ts,
         text: params.text,
         images: imagePaths,
+        blockCount: parsedBlocks?.length,
       }),
     });
     if (!decision.proceed) {
@@ -131,6 +159,7 @@ export const postMessageTool: ToolDefinition<typeof Params, SlackDetails> = {
 
       const body: Record<string, unknown> = { channel, text };
       if (params.thread_ts) body.thread_ts = params.thread_ts;
+      if (parsedBlocks) body.blocks = parsedBlocks;
 
       const where = params.to_user ? `@${params.to_user} (DM ${channel})` : channel;
 

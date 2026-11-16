@@ -202,6 +202,67 @@ describe("slack_post_message", () => {
     expect(text).toMatch(/chat:write|token/);
   });
 
+  it("passes parsed blocks through to chat.postMessage alongside text", async () => {
+    const fetchMock = mockFetch({ "chat.postMessage": { ok: true, channel: "C1", ts: "7" } });
+    vi.stubGlobal("fetch", fetchMock);
+    const { ctx } = ctxWith({ editorResult: "fallback" });
+    const { postMessageTool } = await import("../lib/tools/post-message");
+    const blocks = [
+      {
+        type: "rich_text",
+        elements: [
+          { type: "rich_text_section", elements: [{ type: "text", text: "AM" }] },
+          {
+            type: "rich_text_list",
+            style: "bullet",
+            elements: [
+              {
+                type: "rich_text_section",
+                elements: [{ type: "link", url: "https://example.com/t/1", text: "Task one" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    await invokeWithCtx(
+      postMessageTool,
+      { channel: "C1", text: "fallback", blocks: JSON.stringify(blocks) },
+      ctx,
+    );
+    const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(sent.blocks).toEqual(blocks);
+    expect(sent.text).toBe("fallback");
+  });
+
+  it("refuses invalid JSON in blocks before the review dialog", async () => {
+    const fetchMock = mockFetch({});
+    vi.stubGlobal("fetch", fetchMock);
+    const { ctx } = ctxWith({ editorResult: "x" });
+    const { postMessageTool } = await import("../lib/tools/post-message");
+    const text = firstText(
+      await invokeWithCtx(postMessageTool, { channel: "C1", text: "x", blocks: "{not json" }, ctx),
+    );
+    expect(text).toMatch(/not valid JSON/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a non-array blocks payload before the review dialog", async () => {
+    const fetchMock = mockFetch({});
+    vi.stubGlobal("fetch", fetchMock);
+    const { ctx } = ctxWith({ editorResult: "x" });
+    const { postMessageTool } = await import("../lib/tools/post-message");
+    const text = firstText(
+      await invokeWithCtx(
+        postMessageTool,
+        { channel: "C1", text: "x", blocks: JSON.stringify({ type: "rich_text" }) },
+        ctx,
+      ),
+    );
+    expect(text).toMatch(/JSON array/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("DM resolution failure (missing_scope on conversations.open) names im:write, not chat:write", async () => {
     // Regression: conversations.open needs im:write, and the error must point
     // at the RIGHT scope so a user who already has chat:write isn't misled.

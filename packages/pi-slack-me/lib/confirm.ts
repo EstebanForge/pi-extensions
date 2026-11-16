@@ -299,13 +299,17 @@ export function summarizePostMessage(args: {
   threadTs?: string;
   text: string;
   images?: string[];
+  blockCount?: number;
 }): string {
   const target = describeTarget(args.channel, args.toUser);
   const thread = args.threadTs ? `  |  thread=${args.threadTs}` : "";
   const images = args.images?.length
     ? `  |  images: ${args.images.map((p) => p.split("/").pop()).join(", ")}`
     : "";
-  return `to: ${target}${thread}${images}\n\n${oneLine(args.text)}`;
+  const blocks = args.blockCount
+    ? `  |  blocks: ${args.blockCount} Block Kit block(s) (edited text stays as fallback copy)`
+    : "";
+  return `to: ${target}${thread}${images}${blocks}\n\n${oneLine(args.text)}`;
 }
 
 export function summarizeUpdateMessage(args: {
