@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.5] - 2026-11-15
+
+### Fixed
+
+- **Aggregate gates now count as verification for the stale-edit guard.** The verify detector matched test and lint words only, so a green `just check` / `make check` / `npm run check` or a `cargo fmt --check` after the last edit never cleared the "files were edited AFTER the last verify" flag, and the pre-publish gate kept demanding re-runs of a gate that had already passed.
+
 ## [1.1.4] - 2026-11-10
 
 ### Added

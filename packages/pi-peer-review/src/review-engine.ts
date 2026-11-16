@@ -56,8 +56,10 @@ const MAX_VERIFY_FACTS = 10;
 const DIMINISHING_PASSES = 2;
 
 /** Shell commands that count as post-work verification facts. */
+// `check` covers aggregate gates and --check flags (just check, cargo fmt
+// --check); `audit` covers the dependency-audit rung.
 const VERIFY_RE =
-	/\b(test|tests|vitest|jest|pytest|cargo\s+test|cargo\s+clippy|go\s+test|tsc|typecheck|typecheck\.|lint|eslint|biome|ruff|phpstan|psalm|shellcheck)\b/;
+	/\b(test|tests|vitest|jest|pytest|cargo\s+test|cargo\s+clippy|go\s+test|tsc|typecheck|typecheck\.|lint|eslint|biome|ruff|phpstan|psalm|shellcheck|check|audit)\b/;
 
 export interface ReviewEnginePorts {
 	runConsult: typeof defaultRunConsult;

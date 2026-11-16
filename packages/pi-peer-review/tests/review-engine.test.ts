@@ -289,4 +289,34 @@ describe("ReviewEngine", () => {
 		e.markReviewed();
 		expect(await e.unreviewedLine()).toBeNull();
 	});
+
+	it("counts aggregate gates and fmt checks as verification for the stale-edit guard", async () => {
+		setupGitRepo();
+		let now = 1000;
+		const e = new ReviewEngine({
+			cwd,
+			getSettings: () => settings,
+			ports: { ...basePorts(), nowMs: () => now },
+		});
+		await e.baseline();
+		changeWork();
+		now = 1000;
+		e.noteWrite("a.ts", "edit");
+		now = 1100;
+		e.noteShell("cargo test -q", true);
+		now = 1200;
+		e.noteWrite("b.ts", "edit");
+		now = 1300;
+		e.noteShell(
+			'just check > /tmp/c.log 2>&1; echo "check_exit=$?"; tail -1 /tmp/c.log',
+			true,
+		);
+		now = 1400;
+		e.noteShell("cargo fmt --check", true);
+
+		const frame = await e.publishFrame();
+		expect(frame).not.toContain("edited AFTER the last verify");
+		expect(frame).toContain("just check > /tmp/c.log");
+		expect(frame).toContain("cargo fmt --check");
+	});
 });
