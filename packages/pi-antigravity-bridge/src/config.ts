@@ -84,6 +84,16 @@ export interface AcpConfig {
 	 *  usage surfaces show nonzero numbers. Estimates are labeled as such in
 	 *  /agy doctor and auto-disable when the server sends real usage. */
 	usageEstimate: UsageEstimate;
+	/** Timeout in ms for ACP session operations (session/new, session/load,
+	 *  session/set_config_option, session/close). Default 20000 (20s); valid
+	 *  range 1000..300000. Env AGY_ACP_SESSION_TIMEOUT_MS wins over the file. */
+	sessionTimeoutMs: number;
+	/** Advanced: transparently retry session/new once when it times out while
+	 *  the ACP server is still alive. Default false. Warning: doubles the wait
+	 *  on genuinely dead networks (e.g. 40s at default 20s timeout) and may not
+	 *  recover if the server process itself has a wedged socket.
+	 *  Env AGY_ACP_SESSION_RETRY wins over the file. */
+	sessionRetryOnTimeout: boolean;
 }
 
 export interface AgyConfig {
@@ -211,8 +221,22 @@ const DEFAULTS: AgyConfig = {
 	turnTimeoutMin: 0, // placeholder: the real default is resolved per loadConfig call (defaultTurnTimeoutMin)
 	inactivityTimeoutMin: 5,
 	approvals: { gateMode: "auto", mode: "ask" },
-	acp: { usageEstimate: "estimate" },
+	acp: {
+		usageEstimate: "estimate",
+		sessionTimeoutMs: 20_000,
+		sessionRetryOnTimeout: false,
+	},
 };
+
+const MIN_ACP_SESSION_TIMEOUT_MS = 1_000;
+const MAX_ACP_SESSION_TIMEOUT_MS = 300_000;
+
+function parseSessionTimeoutMs(raw: unknown, fallback: number): number {
+	if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+	const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+	if (!Number.isSafeInteger(n)) return fallback;
+	return n >= MIN_ACP_SESSION_TIMEOUT_MS && n <= MAX_ACP_SESSION_TIMEOUT_MS ? n : fallback;
+}
 
 /** Hard ceiling for a free-typed turn cap: one day, in minutes. */
 export const MAX_TURN_CAP_MIN = 1440;
@@ -389,7 +413,15 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	).toLowerCase();
 	const usageEstimate: UsageEstimate =
 		usageRaw === "direct" || usageRaw === "off" ? usageRaw : "estimate";
-	const acp: AcpConfig = { usageEstimate };
+	const sessionTimeoutMs = parseSessionTimeoutMs(
+		process.env.AGY_ACP_SESSION_TIMEOUT_MS ?? fileAcp.sessionTimeoutMs,
+		DEFAULTS.acp.sessionTimeoutMs,
+	);
+	const envSessionRetry = process.env.AGY_ACP_SESSION_RETRY;
+	const sessionRetryOnTimeout = envSessionRetry !== undefined
+		? ["1", "true", "on"].includes(envSessionRetry.toLowerCase())
+		: fileAcp.sessionRetryOnTimeout === true;
+	const acp: AcpConfig = { usageEstimate, sessionTimeoutMs, sessionRetryOnTimeout };
 
 	// Custom agent for stream-json turns (--agent). Env wins over the file
 	// (same pattern as mode). Normalized (trim/cap/control-strip); an empty
@@ -450,7 +482,9 @@ function writeConfigJson(configPath: string, value: unknown): void {
  *  disk on any unrelated save, outliving the env var). Nested objects are
  *  re-normalized to their known keys: a raw passthrough would resurrect
  *  legacy keys (acp.permissions) that loadConfig normalization drops. */
-export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFIG_PATH): AgyConfig {
+export type ConfigPatch = Partial<Omit<AgyConfig, "acp">> & { acp?: Partial<AcpConfig> };
+
+export function saveConfig(patch: ConfigPatch, configPath: string = CONFIG_PATH): AgyConfig {
 	const file = readConfigFile(configPath);
 	// Null-safe on nested objects: a hand-edited or legacy file can carry
 	// "acp": null; loadConfig tolerates it, so must saveConfig. Key presence
@@ -464,16 +498,23 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = CONFI
 	// save, switching an existing install to ACP on the next start.
 	const persistedEngine = patch.engine ?? file.engine
 		?? (fs.existsSync(configPath) ? "stream-json" : DEFAULT_ENGINE);
+	const { acp: patchAcp, ...restPatch } = patch;
+	const mergedAcp: AcpConfig = {
+		usageEstimate: patchAcp?.usageEstimate ?? fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate,
+		sessionTimeoutMs: parseSessionTimeoutMs(
+			patchAcp?.sessionTimeoutMs ?? fileAcp.sessionTimeoutMs,
+			DEFAULTS.acp.sessionTimeoutMs,
+		),
+		sessionRetryOnTimeout: patchAcp?.sessionRetryOnTimeout ?? (fileAcp.sessionRetryOnTimeout === true),
+	};
 	const next: AgyConfig = {
 		...DEFAULTS,
 		...file,
-		...(file.acp !== undefined
-			? { acp: { usageEstimate: fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate } }
-			: {}),
 		...(file.approvals !== undefined
 			? { approvals: { gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode, mode: fileApprovals.mode ?? DEFAULTS.approvals.mode } }
 			: {}),
-		...patch,
+		...restPatch,
+		acp: mergedAcp,
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 	};
 	writeConfigJson(configPath, next);

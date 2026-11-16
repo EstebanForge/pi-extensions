@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Actionable hint on ACP `session/new` and `session/load` timeouts.** When `session/new` or `session/load` times out after `initialize` succeeded, the error message now notes that `agy acp` is running and points to network/proxy reachability to Google APIs or `agy` sign-in, and the connection logs a `session-op-timeout` warning record.
+- **Configurable ACP session operation timeout (`acp.sessionTimeoutMs` / `AGY_ACP_SESSION_TIMEOUT_MS`).** Defaults to the existing `20000`ms (`20`s) and applies to `session/new`, `session/load`, `session/set_config_option`, and `session/close`. Accepts `1000`-`300000`ms via `config.json`, environment variable, or the `/agy` settings picker.
+- **Optional `session/new` retry on timeout (`acp.sessionRetryOnTimeout` / `AGY_ACP_SESSION_RETRY`).** Disabled by default (`false`). When enabled, `AcpDriver` retries `session/new` once on a silent timeout while `agy acp` is still alive and logs `session-new-retry` (warns in the setting description that it doubles wait time on dead networks and may not clear a wedged internal socket).
+
 ## [1.10.7] - 2026-11-15
 
 ### Fixed

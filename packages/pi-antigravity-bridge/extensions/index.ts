@@ -65,7 +65,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -236,7 +236,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		"start-failed", "spawn-error", "parse-error", "write-failed",
 		"mode-apply-failed", "timeout", "stall", "auth-required",
 		"session-load-failed-creating-fresh", "connection-exited", "cancel-failed",
-		"unsupported-server-request",
+		"unsupported-server-request", "session-op-timeout", "session-new-retry",
 	]);
 	const streamDriver = new StreamDriver();
 	// Mirror the stream driver's lifecycle ring into the daily file log
@@ -331,6 +331,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// a restart. Without this the driver defaults to "estimate" and the
 		// config knob (incl. "off") is dead.
 		usageEstimate: () => loadConfig().acp.usageEstimate,
+		sessionOpTimeoutMs: () => loadConfig().acp.sessionTimeoutMs,
+		sessionRetryOnTimeout: () => loadConfig().acp.sessionRetryOnTimeout,
 		// ACP request_permission parity with the approval gate: skipPermissions
 		// turns auto-allow in the driver; approvals.mode allow short-circuits
 		// to the same synchronous allow; everything else opens a dialog (esc
@@ -1189,6 +1191,7 @@ interface PendingConfig {
 	bridgeTools?: BridgeTools;
 	digest?: boolean;
 	systemPrompt?: boolean;
+	acp?: Partial<AcpConfig>;
 }
 
 function settingsRows(ctx: AgyCommandCtx): string[] {
@@ -1888,6 +1891,22 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			currentValue: config.systemPrompt ? "on" : "off",
 			values: ["on", "off"],
 		},
+		{
+			id: "acp-session-timeout",
+			label: "ACP session timeout (ms)",
+			description:
+				"Timeout in ms for ACP session/new, session/load, and session/close. Default 20000 (20s). Raise only on slow/proxied networks; custom values (1000-300000) can be set in config.json or AGY_ACP_SESSION_TIMEOUT_MS.",
+			currentValue: String(config.acp.sessionTimeoutMs),
+			values: ["20000", "30000", "45000", "60000", "90000"],
+		},
+		{
+			id: "acp-session-retry",
+			label: "ACP session/new retry (advanced)",
+			description:
+				"WARNING: disabled by default. Retries session/new once on silent timeout while agy acp is alive. Doubles total wait time on dead networks and may not recover if agy's internal socket is wedged.",
+			currentValue: config.acp.sessionRetryOnTimeout ? "on" : "off",
+			values: ["off", "on"],
+		},
 	];
 
 	const resolved = await ui.custom<string | undefined>(
@@ -1923,6 +1942,16 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 							pending.digest = newValue === "on";
 						} else if (id === "system-prompt") {
 							pending.systemPrompt = newValue === "on";
+						} else if (id === "acp-session-timeout") {
+							pending.acp = {
+								...pending.acp,
+								sessionTimeoutMs: Number(newValue),
+							};
+						} else if (id === "acp-session-retry") {
+							pending.acp = {
+								...pending.acp,
+								sessionRetryOnTimeout: newValue === "on",
+							};
 						}
 					},
 				},
@@ -1975,6 +2004,10 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			pending.digest !== undefined ? `digest=${next.digest ? "on" : "off"}` : null,
 			pending.systemPrompt !== undefined ? `system-prompt=${next.systemPrompt ? "on" : "off"}` : null,
 			pending.turnTimeoutMin !== undefined ? `turn cap=${next.turnTimeoutMin === 0 ? "off" : `${next.turnTimeoutMin}m`}` : null,
+			pending.acp?.sessionTimeoutMs !== undefined ? `ACP session timeout=${next.acp.sessionTimeoutMs}ms` : null,
+			pending.acp?.sessionRetryOnTimeout !== undefined
+				? `ACP session/new retry=${next.acp.sessionRetryOnTimeout ? "on" : "off"}`
+				: null,
 		]
 			.filter(Boolean)
 			.join(", ");

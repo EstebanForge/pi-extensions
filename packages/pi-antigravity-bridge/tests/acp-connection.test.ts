@@ -9,7 +9,7 @@ import path from "node:path";
 import { test, describe } from "vitest";
 import { fileURLToPath } from "node:url";
 import { AcpConnection, translateError } from "../src/acp/connection.js";
-import { JsonRpcResponseError } from "../src/acp/jsonrpc.js";
+import { JsonRpcResponseError, JsonRpcTimeoutError } from "../src/acp/jsonrpc.js";
 
 test("acp connection: stderr tail and exit info are redacted", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-conn-"));
@@ -130,5 +130,13 @@ describe("acp connection errors", () => {
 		const translated = translateError("session/prompt", new JsonRpcResponseError({ code: -32000, message: "Authentication required" }));
 		assert.equal(translated.name, "AcpAuthError");
 		assert.match(translated.message, /Run agy in your terminal/);
+	});
+
+	test("session/new timeout carries actionable network/proxy/sign-in hint", () => {
+		const translated = translateError("session/new", new JsonRpcTimeoutError("session/new", 20_000));
+		assert.ok(translated instanceof JsonRpcTimeoutError);
+		assert.match(translated.message, /ACP request timed out after 20000ms: session\/new/);
+		assert.match(translated.message, /initialize succeeded/);
+		assert.match(translated.message, /network\/proxy/i);
 	});
 });

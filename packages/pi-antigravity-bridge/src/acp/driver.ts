@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
 import { AcpConnection, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
 import type { AcpPermissionHandler } from "./connection.js";
+import { JsonRpcTimeoutError } from "./jsonrpc.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
@@ -61,6 +62,12 @@ export interface AcpDriverOptions {
 	 *  "auto" answers the first allow option synchronously, "deny" consults
 	 *  the human handler or fail-closes. Default deny. */
 	permissionPolicy?: () => "auto" | "deny";
+	/** Timeout in ms for session/new, session/load, set_config_option, and
+	 *  session/close. Defaults to AcpConnection's 20000ms. */
+	sessionOpTimeoutMs?: number | (() => number);
+	/** Advanced: transparently retry session/new once on timeout while the
+	 *  connection is still alive. Default false. */
+	sessionRetryOnTimeout?: boolean | (() => boolean);
 	log?: (msg: string, data?: unknown) => void;
 }
 
@@ -288,7 +295,7 @@ export class AcpDriver implements TurnDriver {
 				await conn.loadSession(request.conversationId, request.cwd);
 				turn.sessionId = request.conversationId;
 			} else {
-				const created = await conn.newSession(request.cwd);
+				const created = await this.#newSessionWithOptionalRetry(conn, turn);
 				turn.sessionId = created.sessionId;
 				this.#stats.sessionsCreated += 1;
 				this.#log("session-new", { sessionId: created.sessionId });
@@ -555,6 +562,7 @@ export class AcpDriver implements TurnDriver {
 				? (req) => this.#parkForPermission(req)
 				: undefined,
 			permissionParkMs: this.#opts.permissionParkMs,
+			sessionOpTimeoutMs: this.#opts.sessionOpTimeoutMs,
 			onUpdate: (sessionId, update) => this.#onConnectionUpdate(sessionId, update),
 			onExit: (info) => this.#onConnectionExit(conn, info),
 		});
@@ -797,6 +805,28 @@ export class AcpDriver implements TurnDriver {
 			finished: true,
 			aborted: turn.aborted,
 		});
+	}
+
+	#sessionRetryOnTimeout(): boolean {
+		const opt = this.#opts.sessionRetryOnTimeout;
+		return (typeof opt === "function" ? opt() : opt) === true;
+	}
+
+	async #newSessionWithOptionalRetry(conn: AcpConnection, turn: ActiveTurn): Promise<{ sessionId: string }> {
+		try {
+			return await conn.newSession(turn.request.cwd);
+		} catch (err) {
+			if (
+				err instanceof JsonRpcTimeoutError &&
+				!turn.aborted &&
+				conn.alive &&
+				this.#sessionRetryOnTimeout()
+			) {
+				this.#log("session-new-retry", { timeoutMs: err.timeoutMs });
+				return await conn.newSession(turn.request.cwd);
+			}
+			throw err;
+		}
 	}
 
 	/** Usage synthesis mode, resolved per turn (follows live config). */

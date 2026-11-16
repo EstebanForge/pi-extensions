@@ -54,6 +54,7 @@ let pendingPromptId = null;
 let streaming = false;
 let cancellationIgnored = false;
 let promptCount = 0;
+let newSessionCount = 0;
 const timers = [];
 
 // Mimic a slow signal handler: intercept SIGTERM and linger before dying, so
@@ -198,6 +199,15 @@ async function handle(msg) {
       return;
 
     case "session/new":
+      newSessionCount += 1;
+      if (scenario === "session-new-hang") {
+        // Never reply: exercises session/new timeout handling.
+        return;
+      }
+      if (scenario === "session-new-hang-once" && newSessionCount === 1) {
+        // Drop only the first session/new: exercises optional retry on timeout.
+        return;
+      }
       if (scenario === "auth-required") {
         error(id, -32000, "Authentication required", { message: "run /agy auth-manual" });
         return;

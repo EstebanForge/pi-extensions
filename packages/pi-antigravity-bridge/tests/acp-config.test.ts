@@ -21,7 +21,9 @@ test("engine defaults to acp (stream-json is the fallback)", () => {
 	try {
 		const c = loadConfig(p);
 		assert.equal(c.engine, "acp");
-		assert.deepEqual(Object.keys(c.acp), ["usageEstimate"]);
+		assert.deepEqual(Object.keys(c.acp), ["usageEstimate", "sessionTimeoutMs", "sessionRetryOnTimeout"]);
+		assert.equal(c.acp.sessionTimeoutMs, 20_000);
+		assert.equal(c.acp.sessionRetryOnTimeout, false);
 	} finally {
 		rm(p);
 	}
@@ -193,7 +195,7 @@ test("usageEstimate defaults to estimate; unknown values fall back", () => {
 	const p = tmpConfig();
 	try {
 		assert.equal(loadConfig(p).acp.usageEstimate, "estimate");
-		saveConfig({ acp: { usageEstimate: "direct" } }, p);
+		saveConfig({ acp: { usageEstimate: "direct", sessionTimeoutMs: 20_000, sessionRetryOnTimeout: false } }, p);
 		assert.equal(loadConfig(p).acp.usageEstimate, "direct");
 		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
 		const acpRaw = raw.acp as Record<string, unknown>;
@@ -236,6 +238,58 @@ test("legacy acp keys are ignored on load and dropped on save", () => {
 		assert.equal("permissions" in acpRaw, false);
 		assert.equal("bin" in acpRaw, false);
 	} finally {
+		rm(p);
+	}
+});
+
+test("acp.sessionTimeoutMs defaults to 20000; valid overrides persist and invalid values fall back", () => {
+	const p = tmpConfig();
+	const prev = process.env.AGY_ACP_SESSION_TIMEOUT_MS;
+	delete process.env.AGY_ACP_SESSION_TIMEOUT_MS;
+	try {
+		assert.equal(loadConfig(p).acp.sessionTimeoutMs, 20_000);
+		saveConfig({ acp: { usageEstimate: "estimate", sessionTimeoutMs: 45_000, sessionRetryOnTimeout: false } }, p);
+		assert.equal(loadConfig(p).acp.sessionTimeoutMs, 45_000);
+		// Unrelated save preserves sessionTimeoutMs.
+		saveConfig({ digest: true }, p);
+		assert.equal(loadConfig(p).acp.sessionTimeoutMs, 45_000);
+
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> };
+		for (const bad of [0, 500, 300_001, "nope", null]) {
+			raw.acp.sessionTimeoutMs = bad;
+			fs.writeFileSync(p, JSON.stringify(raw));
+			assert.equal(loadConfig(p).acp.sessionTimeoutMs, 20_000);
+		}
+
+		process.env.AGY_ACP_SESSION_TIMEOUT_MS = "35000";
+		assert.equal(loadConfig(p).acp.sessionTimeoutMs, 35_000);
+		process.env.AGY_ACP_SESSION_TIMEOUT_MS = "100";
+		assert.equal(loadConfig(p).acp.sessionTimeoutMs, 20_000);
+	} finally {
+		if (prev === undefined) delete process.env.AGY_ACP_SESSION_TIMEOUT_MS;
+		else process.env.AGY_ACP_SESSION_TIMEOUT_MS = prev;
+		rm(p);
+	}
+});
+
+test("acp.sessionRetryOnTimeout defaults to false; file and env overrides work", () => {
+	const p = tmpConfig();
+	const prev = process.env.AGY_ACP_SESSION_RETRY;
+	delete process.env.AGY_ACP_SESSION_RETRY;
+	try {
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, false);
+		saveConfig({ acp: { usageEstimate: "estimate", sessionTimeoutMs: 20_000, sessionRetryOnTimeout: true } }, p);
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+		saveConfig({ digest: true }, p);
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+
+		process.env.AGY_ACP_SESSION_RETRY = "0";
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, false);
+		process.env.AGY_ACP_SESSION_RETRY = "true";
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+	} finally {
+		if (prev === undefined) delete process.env.AGY_ACP_SESSION_RETRY;
+		else process.env.AGY_ACP_SESSION_RETRY = prev;
 		rm(p);
 	}
 });

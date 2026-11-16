@@ -189,7 +189,7 @@ export class JsonRpcSession {
 			if (effective > 0) {
 				pending.timer = setTimeout(() => {
 					this.#pending.delete(id);
-					reject(new Error(`ACP request timed out after ${effective}ms: ${method}`));
+					reject(new JsonRpcTimeoutError(method, effective));
 				}, effective);
 			}
 			this.#pending.set(id, pending);
@@ -215,6 +215,17 @@ export class JsonRpcSession {
 
 	get pendingCount(): number {
 		return this.#pending.size;
+	}
+}
+
+export class JsonRpcTimeoutError extends Error {
+	readonly method: string;
+	readonly timeoutMs: number;
+	constructor(method: string, timeoutMs: number, message?: string) {
+		super(message ?? `ACP request timed out after ${timeoutMs}ms: ${method}`);
+		this.name = "JsonRpcTimeoutError";
+		this.method = method;
+		this.timeoutMs = timeoutMs;
 	}
 }
 

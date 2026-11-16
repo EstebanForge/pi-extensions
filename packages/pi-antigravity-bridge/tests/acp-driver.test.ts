@@ -949,3 +949,112 @@ describe("acp/driver exact-usage context total (issue #12)", () => {
 		assert.equal(outcome.usage?.total_tokens, 1850);
 	});
 });
+
+describe("acp/driver session/new timeout and retry", () => {
+	test("session/new timeout fails without retry by default and surfaces actionable hint", async () => {
+		const dir = tmpDir();
+		const logPath = path.join(dir, "log.jsonl");
+		const logs: Array<{ msg: string; data?: unknown }> = [];
+		const driver = new AcpDriver({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			extraEnv: { ACP_FAKE_SCENARIO: "session-new-hang", ACP_FAKE_LOG: logPath },
+			sessionOpTimeoutMs: 120,
+			log: (msg, data) => logs.push({ msg, data }),
+		});
+		cleanups.push(() => {
+			void driver.close("shutdown");
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+
+		const handle = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "hi",
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /timed out after 120ms: session\/new/);
+		assert.match(outcome.error ?? "", /initialize succeeded/);
+		assert.equal((outcome.error ?? "").match(/initialize succeeded/g)?.length, 1, "hint must appear once");
+		assert.ok(logs.some((l) => l.msg === "session-op-timeout"));
+		assert.equal(logs.some((l) => l.msg === "session-new-retry"), false);
+		const sent = fs.readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { method?: string });
+		assert.equal(sent.filter((m) => m.method === "session/new").length, 1);
+	});
+
+	test("sessionRetryOnTimeout retries session/new once when enabled and recovers", async () => {
+		const dir = tmpDir();
+		const logPath = path.join(dir, "log.jsonl");
+		const logs: Array<{ msg: string; data?: unknown }> = [];
+		const driver = new AcpDriver({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			extraEnv: { ACP_FAKE_SCENARIO: "session-new-hang-once", ACP_FAKE_LOG: logPath },
+			sessionOpTimeoutMs: 120,
+			sessionRetryOnTimeout: true,
+			log: (msg, data) => logs.push({ msg, data }),
+		});
+		cleanups.push(() => {
+			void driver.close("shutdown");
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+
+		const handle = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "hi",
+		});
+		const activities: DriverActivity[] = [];
+		for (;;) {
+			const a = await handle.next();
+			if (a === null) break;
+			activities.push(a);
+		}
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "HELLO");
+		assert.ok(logs.some((l) => l.msg === "session-new-retry"));
+		const sent = fs.readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { method?: string });
+		assert.equal(sent.filter((m) => m.method === "session/new").length, 2);
+	});
+
+	test("sessionRetryOnTimeout fails cleanly after one retry if session/new keeps hanging", async () => {
+		const dir = tmpDir();
+		const logPath = path.join(dir, "log.jsonl");
+		const driver = new AcpDriver({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			extraEnv: { ACP_FAKE_SCENARIO: "session-new-hang", ACP_FAKE_LOG: logPath },
+			sessionOpTimeoutMs: 100,
+			sessionRetryOnTimeout: true,
+			log: () => {},
+		});
+		cleanups.push(() => {
+			void driver.close("shutdown");
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+
+		const handle = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "hi",
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /timed out after 100ms: session\/new/);
+		assert.match(outcome.error ?? "", /initialize succeeded/);
+		assert.equal((outcome.error ?? "").match(/initialize succeeded/g)?.length, 1, "hint must appear once");
+		const sent = fs.readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { method?: string });
+		assert.equal(sent.filter((m) => m.method === "session/new").length, 2);
+	});
+});

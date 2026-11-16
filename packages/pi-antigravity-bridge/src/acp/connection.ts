@@ -18,7 +18,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
-import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
+import { JsonRpcResponseError, JsonRpcSession, JsonRpcTimeoutError } from "./jsonrpc.js";
 import { removeStagedAgyHome, stageAgyHome } from "./home.js";
 
 export interface AcpMcpServer {
@@ -70,6 +70,9 @@ export interface AcpConnectionOptions {
 	onPermissionRequest?: AcpPermissionHandler;
 	/** Park budget for one permission dialog. Tests shrink it. */
 	permissionParkMs?: number;
+	/** Timeout in ms for session/new, session/load, set_config_option, and
+	 *  session/close. Defaults to SESSION_OP_TIMEOUT_MS (20000). */
+	sessionOpTimeoutMs?: number | (() => number);
 }
 
 const INIT_TIMEOUT_MS = 30_000;
@@ -258,11 +261,19 @@ export class AcpConnection {
 		return typeof v === "string" ? v : undefined;
 	}
 
+	#sessionOpTimeoutMs(): number {
+		const opt = this.#opts.sessionOpTimeoutMs;
+		const resolved = typeof opt === "function" ? opt() : opt;
+		return typeof resolved === "number" && Number.isFinite(resolved) && resolved > 0
+			? resolved
+			: SESSION_OP_TIMEOUT_MS;
+	}
+
 	async newSession(cwd: string): Promise<AcpSessionInfo> {
 		const result = (await this.guarded(
 			"session/new",
 			{ cwd, mcpServers: this.#mcpServers() },
-			SESSION_OP_TIMEOUT_MS,
+			this.#sessionOpTimeoutMs(),
 		)) as Record<string, unknown>;
 		const sessionId = result.sessionId;
 		if (typeof sessionId !== "string" || sessionId.length === 0) {
@@ -282,7 +293,7 @@ export class AcpConnection {
 			const result = (await this.request(
 				"session/load",
 				{ sessionId, cwd, mcpServers: this.#mcpServers() },
-				SESSION_OP_TIMEOUT_MS,
+				this.#sessionOpTimeoutMs(),
 			)) as Record<string, unknown> | undefined;
 			this.lastConfigOptions = result?.configOptions;
 		} finally {
@@ -294,7 +305,7 @@ export class AcpConnection {
 		const result = (await this.guarded(
 			"session/set_config_option",
 			{ sessionId, configId, value },
-			SESSION_OP_TIMEOUT_MS,
+			this.#sessionOpTimeoutMs(),
 		)) as Record<string, unknown> | undefined;
 		this.lastConfigOptions = result?.configOptions;
 	}
@@ -350,7 +361,7 @@ export class AcpConnection {
 	}
 
 	async closeSession(sessionId: string): Promise<void> {
-		await this.guarded("session/close", { sessionId }, SESSION_OP_TIMEOUT_MS);
+		await this.guarded("session/close", { sessionId }, this.#sessionOpTimeoutMs());
 	}
 
 	/** Protocol-level permission answering: policy "auto" selects the first
@@ -468,11 +479,7 @@ export class AcpConnection {
 	/** Wrap a request: -32000 family becomes AcpAuthError with the remediation
 	 *  the server provided. */
 	private async guarded(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-		try {
-			return await this.request(method, params, timeoutMs);
-		} catch (err) {
-			throw translateError(method, err);
-		}
+		return await this.request(method, params, timeoutMs);
 	}
 
 	async request(method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
@@ -480,6 +487,9 @@ export class AcpConnection {
 		try {
 			return await this.#rpc.request(method, params, timeoutMs);
 		} catch (err) {
+			if (err instanceof JsonRpcTimeoutError) {
+				this.#opts.log("session-op-timeout", { method, timeoutMs: err.timeoutMs });
+			}
 			throw translateError(method, err);
 		}
 	}
@@ -579,6 +589,14 @@ export function parseAcpTurnUsage(value: unknown): AgyUsage | undefined {
 
 export function translateError(method: string, err: unknown): Error {
 	if (err instanceof AcpAuthError) return err;
+	if (err instanceof JsonRpcTimeoutError) {
+		if (method === "session/new" || method === "session/load") {
+			const hint = "initialize succeeded, so agy acp is running; check network/proxy reachability to Google APIs or agy sign-in";
+			if (err.message.includes(hint)) return err;
+			return new JsonRpcTimeoutError(err.method, err.timeoutMs, `${err.message} (${hint})`);
+		}
+		return err;
+	}
 	if (err instanceof JsonRpcResponseError) {
 		if (err.code === -32000) {
 			const detail = typeof err.data === "object" && err.data !== null ? (err.data as { message?: unknown }).message : undefined;
