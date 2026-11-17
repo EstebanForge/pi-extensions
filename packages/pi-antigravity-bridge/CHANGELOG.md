@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Quota exhaustion settles as a retryable provider error instead of assistant text (issue #16).** When an Antigravity account's quota is spent, agy streams the quota notice ("⚠ Individual quota reached ... Resets in 153h38m14s") as plain agent text and ends the turn with `end_turn`, so the turn settled as a successful reply (`stopReason: "stop"`) and provider failover (pi-router, or any consumer keyed on pi's error classification) never fired. A text-only turn whose settled response matches the notice shape (anchored at the start, ≤400 chars, optional reset interval parsed out) now finalizes with `stopReason: "error"` and a retryable-classified message (`agy rate limit (ResourceExhausted): Antigravity quota exhausted; resets in ...`). The wording is load-bearing: pi-ai's `isRetryableAssistantError` gates failover and classifies "quota exceeded"/"billing" wording as fail-fast (no router handoff), so the message carries the retryable markers and never echoes the raw notice, keeping upstream copy drift from poisoning the classification. Turns that ran tools or produced thinking keep the normal reply, and the session binding is untouched (the conversation is healthy). Without a router, pi's built-in retry re-runs the same exhausted account within its retry budget - bounded, but expect repeat attempts until the reset lapses. Detection is content-based pending a structured upstream signal (none documented in ACP-PROTOCOL-REFERENCE.md; a live probe on an exhausted account would settle it).
+
 ## [1.10.8] - 2026-11-16
 
 ### Added

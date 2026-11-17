@@ -40,6 +40,7 @@ import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
+import { detectQuotaNotice, quotaErrorMessage } from "./quota-notice.js";
 import { loadConfig } from "./config.js";
 import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-gate.js";
 import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-server.js";
@@ -1605,6 +1606,8 @@ async function runTurnDriver(
 	// the cumulative task dir never re-reports older turns' logs.
 	const turnStartMs = Date.now();
 	let nativeBackgroundSeen = false;
+	// Issue #16 guard: quota reclassification applies to text-only turns only.
+	let sawToolOrThought = false;
 	const feats: ActivityFeatures = {
 		replay: deps.replay,
 		nativeActive: deps.nativeActive,
@@ -1622,6 +1625,7 @@ async function runTurnDriver(
 		for (;;) {
 			const activity = await h.next();
 			if (!activity) break;
+			if (activity.type !== "text" && activity.type !== "usage") sawToolOrThought = true;
 			if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return "parked";
 		}
 	};
@@ -1692,6 +1696,18 @@ async function runTurnDriver(
 				: "agy stopped responding on the resumed conversation (no response frame before the deadline; the conversation is dead). The binding was cleared, so the next antigravity turn starts a fresh conversation.",
 		);
 		return;
+	}
+	// Issue #16: agy streams the account quota notice as agent text and ends
+	// the turn OK; settle it as a retryable error so provider failover fires.
+	// Text-only turns only, and the binding is untouched below: the
+	// conversation itself is healthy, unlike the silentDrop signature above.
+	if (outcome.status === "OK" && !outcome.aborted && !sawToolOrThought) {
+		const quota = detectQuotaNotice(outcome.response);
+		if (quota) {
+			deps.log?.("turn-error", { reason: "quota-exhausted", resetsIn: quota.resetsIn ?? null }, "error");
+			finalize(stream, blocks, "error", quotaErrorMessage(quota));
+			return;
+		}
 	}
 	// Gap closer: the result landed while the turn was still live (reentry
 	// above), the turn ended, and the model never polled. Same strand, same
