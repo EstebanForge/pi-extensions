@@ -47,8 +47,13 @@ const model: Model<Api> = {
 	maxTokens: 65_536,
 };
 
+// pi persists message timestamps, so a message keeps its ts across turns;
+// derive a stable one from the text instead of Date.now() (a fresh stamp per
+// rebuild reads as a mutated transcript to the digest boundary fingerprint).
 function user(text: string): { role: "user"; content: string; timestamp: number } {
-	return { role: "user", content: text, timestamp: Date.now() };
+	let h = 0;
+	for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+	return { role: "user", content: text, timestamp: h };
 }
 
 function contextWith(messages: string[], systemPrompt?: string): TranscriptContext {

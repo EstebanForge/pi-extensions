@@ -46,8 +46,10 @@ import {
 	defaultEscalateAfterMs,
 	formatEscalatedAck,
 	formatPollAnswer,
+	sessionKey,
 	type NativeDisplayEvent,
 } from "../src/provider.js";
+import { handoffToast } from "../src/handoff-toast.js";
 import { PollRunFolder, type PollRunData } from "../src/poll-fold.js";
 import {
 	createShadowTool,
@@ -603,6 +605,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		backgroundWatchDisposed = true;
 		for (const handle of backgroundWatchers.values()) handle.stop();
 		backgroundWatchers.clear();
+	});
+	// Model-switch handoff toast: entering an unbound antigravity model
+	// mid-session opens a fresh agy conversation on the next turn; the
+	// digest re-delivers pi-side context into it. UI only.
+	pi.on("model_select", (event, ctx) => {
+		try {
+			const msg = handoffToast({
+				api: event.model?.api,
+				digestEnabled: loadConfig().digest,
+				source: event.source,
+				bound: (() => {
+					// getSessionId is missing from the published ReadonlySessionManager
+					// type (dts minification), so shape-cast instead of trusting it.
+					const sm = ctx.sessionManager as { getSessionId?: () => string };
+					const sid = sm.getSessionId?.();
+					const key = sessionKey(sid ? { sessionId: sid } : undefined, ctx.cwd, engine);
+					return store.get(key) !== null;
+				})(),
+				hasContext: ctx.sessionManager
+					.getEntries()
+					.some((e) => (e as { type?: string }).type === "message"),
+			});
+			if (msg && ctx.hasUI) ctx.ui.notify(msg, "info");
+		} catch (err) {
+			fileLog.log("handoff-toast-error", { error: err instanceof Error ? err.message : String(err) }, "warn");
+		}
 	});
 	const streamSimple = createStreamSimple({
 		entries,
@@ -1738,8 +1766,8 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					const next = saveConfig({ digest: val === "on" });
 					ui?.notify(
 						next.digest
-							? "digest on. pi-side context (compaction summaries, other-provider turns) is injected into each agy prompt. Note: this defeats agy's prompt cache (~25-30k tokens re-billed per turn)."
-							: "digest off. agy prompts contain only your message; agy's prompt cache stays stable. Enable when mixing providers in one session and agy must see pi-side context.",
+							? "digest on. pi-side context ships when the delta is non-empty (fresh-conversation handoff, other-provider turns, pi-side tool runs, compaction summaries), each piece once. Pure antigravity sessions keep byte-stable prompts."
+							: "digest off. agy prompts contain only your message; a conversation opened mid-session starts without prior pi-side context.",
 						"info",
 					);
 				} else {
@@ -1879,7 +1907,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "digest",
 			label: "Context digest",
 			description:
-				"Inject a delta of pi-side context into each agy prompt. Defeats agy's prompt cache (~25-30k tokens re-billed per turn).",
+				"Ship pi-side context (handoffs, other-provider turns, compactions) to agy when the delta is non-empty. Pure antigravity sessions keep byte-stable prompts.",
 			currentValue: config.digest ? "on" : "off",
 			values: ["on", "off"],
 		},

@@ -58,6 +58,30 @@ test("SessionStore: set/get round-trip in memory (incl. lastMessageCount waterma
 	assert.equal(store.size, 1);
 });
 
+test("SessionStore: digest bookkeeping survives a reload (fingerprint + compaction index)", async () => {
+	const p = tmpStorePath();
+	const store = new SessionStore(p);
+	store.set("k", {
+		conversationId: "c-1",
+		lastStepIdx: -1,
+		lastMessageCount: 3,
+		digestBoundary: "user:1700000000000",
+		digestSummaryId: "8301:ff2a91c7",
+	});
+	// The write is queued; wait for it to land before a fresh instance reads.
+	await vi.waitFor(() => {
+		JSON.parse(fs.readFileSync(p, "utf8"));
+	});
+	const reloaded = new SessionStore(p);
+	assert.deepEqual(reloaded.get("k"), {
+		conversationId: "c-1",
+		lastStepIdx: -1,
+		lastMessageCount: 3,
+		digestBoundary: "user:1700000000000",
+		digestSummaryId: "8301:ff2a91c7",
+	});
+});
+
 test("SessionStore: top-level non-object file is treated as empty", () => {
 	const p = tmpStorePath();
 	fs.writeFileSync(p, `[1, 2, 3]`); // array, not an object

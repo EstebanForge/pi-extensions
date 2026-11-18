@@ -8,7 +8,7 @@ The provider ships two turn engines behind one contract (`TurnDriver`,
 `src/driver-types.ts`): the default **ACP engine** (bottom of this doc) and the
 fallback **stream-json engine** (below). Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
 
-Shared infrastructure: session binding (`sessions.json`), runtime config, the `AskAntigravity` tool, the MCP tool bridge surface, and the G1 context digest (off by default - see below).
+Shared infrastructure: session binding (`sessions.json`), runtime config, the `AskAntigravity` tool, the MCP tool bridge surface, and the G1 context digest (self-gating, on by default - see below).
 
 ## Module map
 
@@ -71,7 +71,7 @@ When pi retries a failed turn, pi core drops the failed attempt from the project
 
 ### Context digest (G1)
 
-By default the prompt agy receives is only the latest user message: agy keeps its own history. When `config.digest` is on (`AGY_DIGEST`, `/agy digest on`), the provider prepends a DELTA digest of pi-side context agy was not spawned for - compaction summaries, other-provider turns, pi-tool results. Off by default because the digest changes every turn and defeats agy's server-side prompt cache (~25-30k tokens re-billed per turn). Enable it for mixed-provider sessions where agy must see pi-side context; pure antigravity sessions gain nothing, and bridge round-trips deliver tool results through the bridge, not the digest.
+By default the prompt agy receives is only the latest user message: agy keeps its own history. When `config.digest` is on (default; `AGY_DIGEST`, `/agy digest`), the provider prepends a DELTA digest of pi-side context agy was not spawned for - compaction summaries (each one ships once, content-keyed), other-provider turns, pi-tool results - and a conversation freshly opened by a mid-session switch also gets own-provider turns (fresh mode: agy's DB holds nothing yet). The digest is self-gating: an empty delta ships nothing, so pure antigravity sessions keep byte-stable prompts and agy's server-side prompt cache intact. Bridge round-trips deliver tool results through the bridge, not the digest. `/agy digest off` restores the old prompt-only behavior.
 
 ### Removed: the legacy-sqlite engine (1.3.2)
 

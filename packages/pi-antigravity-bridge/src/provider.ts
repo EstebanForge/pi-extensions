@@ -232,15 +232,91 @@ export interface DigestOptions {
 	ownProvider?: string;
 	/** Soft cap on the digest body (0 = unbounded). Default 8000. */
 	maxChars?: number;
+	/** Conversation binding state. bound=true (default): own-provider turns
+	 *  are already in agy's resumed DB and are skipped. bound=false: the agy
+	 *  conversation holds NOTHING (fresh conversation from a mid-session
+	 *  model switch, an engine switch, or recreation recovery), so
+	 *  own-provider turns and their tool results ship too. */
+	bound?: boolean;
+	/** Compaction summary identity already delivered in a previous digest
+	 *  (compactionFingerprint of the stripped summary text). Index identity
+	 *  is wrong: pi rebuilds post-compaction transcripts with the summary at
+	 *  the front, so every compaction lands at the same index; content
+	 *  identity ships a NEW summary exactly once. */
+	seenSummaryId?: string;
+}
+
+/** Soft cap on the digest body when no tighter budget applies. */
+const DIGEST_MAX_CHARS = 8000;
+
+/** stream-json single-prompt silent-drop cap (issue #2, probed 2026-09-30):
+ *  the CLI drops any prompt past ~25KB with SUCCESS and an empty response,
+ *  and the dropped turn leaves the conversation permanently unresponsive. */
+const STREAM_JSON_PROMPT_CAP = 25_000;
+/** Headroom under the cap for the staged-image note and prompt framing. */
+const STREAM_JSON_PROMPT_MARGIN = 4_096;
+
+/** Per-engine digest cap. ACP ships the digest as an embeddedContext
+	resource block: no prompt cap applies, so the default cap stands. On
+	stream-json the digest rides inline in the prompt, so it must fit under
+	the silent-drop budget alongside the user's own prompt bytes. Returns
+	null when the budget is already exhausted (ship nothing rather than a
+	digest that would push the turn over the drop cap). */
+export function digestMaxCharsForEngine(engine: string, promptLength: number): number | null {
+	if (engine === "acp") return DIGEST_MAX_CHARS;
+	const budget = STREAM_JSON_PROMPT_CAP - promptLength - STREAM_JSON_PROMPT_MARGIN;
+	return budget > 0 ? Math.min(DIGEST_MAX_CHARS, budget) : null;
+}
+
+/** role:timestamp fingerprint of the message a watermark points at (the
+	 digest boundary). A transcript mutated under the stored count (/tree,
+	/fork, per-call context-hook rewrites) changes the boundary message, so a
+	stored fingerprint that no longer match	es invalidates the delta window
+	and the digest falls back to the full delta (the Codex WebSocket
+	continuation baseline-check pattern: verify before you trust a counter). */
+export function boundaryFingerprint(m: Message | undefined): string | undefined {
+	return m ? `${m.role}:${m.timestamp}` : undefined;
+}
+
+/** Index of the most recent compaction summary in the transcript, -1 if none. */
+export function findLastCompactionIdx(messages: Message[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "user") continue;
+		if (blocksToText(m.content).includes(COMPACTION_MARKER)) return i;
+	}
+	return -1;
+}
+
+/** Content identity of a compaction summary message (length + FNV-1a of the
+	 stripped text). pi puts every post-compaction summary at the transcript
+	 front, so index identity would swallow the second compaction; this id
+	 ships a new summary exactly once. */
+export function compactionFingerprint(m: Message): string {
+	const text = stripCompactionWrapping(blocksToText(m.content));
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return `${text.length}:${(hash >>> 0).toString(16)}`;
 }
 
 /** Build a delta digest of pi-side context agy was not spawned for: the most
- *  recent compaction summary plus turns since the watermark that were not
- *  produced by this provider. Pure: no I/O. Exported for unit testing.
+ *  recent undelivered compaction summary plus turns since the watermark that
+ *  were not produced by this provider (in bound mode). Pure: no I/O.
+ *  Exported for unit testing.
  *
- *  Delta, not replay: skip our own assistant turns (provider === ownProvider)
- *  and clamp the window to after any compaction (pre-compaction detail is
- *  either already in agy's DB or summarized by the injected summary).
+ *  Delta, not replay: in bound mode skip our own assistant turns
+ *  (provider === ownProvider) - they are already in agy's resumed DB. In
+ *  fresh mode (bound: false) the conversation holds nothing, so own turns
+ *  ship too.
+ *
+ *  Compaction-aware reset: a compaction can shrink the transcript below the
+ *  stored watermark, which would empty the delta window and silently drop
+ *  every post-compaction turn. The window instead restarts after the
+ *  compaction, and the summary itself ships exactly once (tracked by
+ *  seenSummaryId, content-keyed) to keep steady-state prompts byte-stable.
  *
  *  Fidelity note: other-provider assistant turns contribute only their text
  *  blocks; tool-call and thinking blocks are dropped. The intent (which tool)
@@ -251,41 +327,46 @@ export function buildContextDigest(
 	opts: DigestOptions = {},
 ): string {
 	const own = opts.ownProvider ?? "antigravity";
-	const maxChars = opts.maxChars ?? 8000;
+	const maxChars = opts.maxChars ?? DIGEST_MAX_CHARS;
 	if (messages.length === 0) return "";
 
-	let summaryPart: string | null = null;
 	const deltaParts: string[] = [];
 
-	// 1. Most-recent compaction summary (scan the whole list; it is never in
-	//    agy's DB, so it is always safe and high-value to inject).
-	let lastCompactionIdx = -1;
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const m = messages[i];
-		if (m.role !== "user") continue;
-		const t = blocksToText(m.content);
-		if (t.includes(COMPACTION_MARKER)) {
-			lastCompactionIdx = i;
-			summaryPart = `[pi compaction summary]\n${stripCompactionWrapping(t)}`;
-			break;
+	// 1. Compaction summary (never in agy's DB, so always high-value), but
+	//    only when THIS summary has not shipped in a previous digest.
+	const compactionIdx = findLastCompactionIdx(messages);
+	let summaryPart: string | null = null;
+	if (compactionIdx >= 0) {
+		const summaryMessage = messages[compactionIdx];
+		if (compactionFingerprint(summaryMessage) !== opts.seenSummaryId) {
+			summaryPart = `[pi compaction summary]\n${stripCompactionWrapping(blocksToText(summaryMessage.content))}`;
 		}
 	}
 
-	// 2. Delta since the watermark, excluding the trailing current prompt.
-	//    Clamp start to just after the compaction summary when one is present.
+	// 2. Delta window. Two stale-watermark shapes both clamp to after the
+	//    compaction: a watermark below it (pre-compaction history is dropped
+	//    or summarized) and a watermark above the transcript (the compaction
+	//    shrank the list under the stored count; without the clamp the window
+	//    would be empty and every post-compaction turn silently dropped).
+	//    Without a compaction, a watermark above the transcript (branch/prune
+	//    without a marker) falls back to the full delta.
 	let start = Math.max(0, Math.floor(watermark));
-	if (lastCompactionIdx >= 0) start = Math.max(start, lastCompactionIdx + 1);
+	if (compactionIdx >= 0) {
+		if (start < compactionIdx + 1 || watermark > messages.length) start = compactionIdx + 1;
+	} else if (watermark > messages.length) {
+		start = 0;
+	}
 	const end = Math.max(0, messages.length - 1);
 	for (let i = start; i < end; i++) {
 		const m = messages[i];
 		if (m.role === "assistant") {
-			if (m.provider === own) continue; // our own turn: already in agy's DB
+			if (opts.bound !== false && m.provider === own) continue; // our own turn: already in agy's DB
 			const t = blocksToText(m.content).trim();
 			if (!t) continue;
 			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
 		} else if (m.role === "user") {
 			const t = blocksToText(m.content);
-			if (t.includes(COMPACTION_MARKER)) continue; // injected as summaryPart
+			if (t.includes(COMPACTION_MARKER)) continue; // delivered as the summary part
 			if (!t.trim()) continue;
 			deltaParts.push(`[earlier user message]\n${t}`);
 		} else if (m.role === "toolResult") {
@@ -296,13 +377,18 @@ export function buildContextDigest(
 		}
 	}
 
-	// Assemble. The compaction summary is always kept intact (it is the
-	// canonical compressed history). The DELTA is truncated from the newest end
-	// backward when over budget: recent context matters more for continuity
-	// than older detail, so drop the oldest delta first. If even the newest
-	// single item exceeds the budget, keep its tail slice.
+	// Assemble. The compaction summary is clamped to the budget (head kept:
+	// a summary reads top-down, and an oversized one must not push a
+	// stream-json turn over the silent-drop cap). The DELTA is truncated from
+	// the newest end backward when over budget: recent context matters more
+	// for continuity than older detail, so drop the oldest delta first. If
+	// even the newest single item exceeds the budget, keep its tail slice.
 	const SEP = "\n\n";
 	const MARKER = "[truncated]";
+	if (summaryPart && maxChars > 0 && summaryPart.length > maxChars) {
+		const room = Math.max(0, maxChars - MARKER.length - 1);
+		summaryPart = `${summaryPart.slice(0, room)}\n${MARKER}`;
+	}
 	let delta = deltaParts.join(SEP);
 	if (maxChars > 0) {
 		const budget = Math.max(0, maxChars - (summaryPart ? summaryPart.length + SEP.length : 0));
@@ -346,7 +432,7 @@ function newAssistant(model: Model<Api>): AssistantMessage {
 
 /** Session key: prefer pi's sessionId (stable per conversation), fall back to
  *  cwd so a single pi process still resumes correctly when sessionId is absent. */
-function sessionKey(
+export function sessionKey(
 	options: SimpleStreamOptions | undefined,
 	cwd: string,
 	engine: "stream-json" | "acp",
@@ -1348,6 +1434,13 @@ async function runTurnDriver(
 	const existing = store.get(key);
 	const messageCount = context.messages.length;
 	const config = loadConfig();
+	// Settle bookkeeping shared by both store.set paths: the boundary
+	// fingerprint validates next turn's delta window, and the compaction
+	// index suppresses summary re-injection once this turn delivered it.
+	const settleBoundary = boundaryFingerprint(context.messages[messageCount - 1]);
+	// Summary id carried forward from the record; the gate below overwrites it
+	// only when a digest actually ships, so skipped turns never lose it.
+	let settleSummaryId = existing?.digestSummaryId;
 
 	// Continuation: resolve parked round-trips from pi's toolResult messages,
 	// then re-attach to the still-running agy turn. No new user event is sent:
@@ -1505,11 +1598,50 @@ async function runTurnDriver(
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
-		const watermark = existing?.lastMessageCount ?? 0;
+		const rawWatermark = existing?.lastMessageCount ?? 0;
+		// Boundary fingerprint check (see boundaryFingerprint): a transcript
+		// mutated under the stored count (/tree, /fork, context-hook rewrites)
+		// resets the delta to the full digest instead of a silently wrong one.
+		// Records written before the fingerprint existed (digestBoundary unset)
+		// trust the count: the old code advanced it the same way, so reseting
+		// would dump a one-time full delta of history agy already holds.
+		const storedBoundary = existing?.digestBoundary;
+		const watermark =
+			rawWatermark > 0 &&
+			(storedBoundary === undefined ||
+				storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]))
+				? rawWatermark
+				: 0;
 		// Late and resume turns re-open the conversation with a synthetic
 		// prompt; the digest would re-send context agy already holds (against a
 		// stale watermark: a failed pass never advances it), so skip it.
-		const digest = config.digest && late.length === 0 && !resume ? buildContextDigest(context.messages, watermark) : "";
+		const engine = deps.engine ?? config.engine;
+		const promptBytes = Buffer.byteLength(prompt ?? "", "utf8");
+		const maxChars = digestMaxCharsForEngine(engine, promptBytes);
+		const digest =
+			config.digest && maxChars !== null && late.length === 0 && !resume
+				? buildContextDigest(context.messages, watermark, {
+						bound: Boolean(existing?.conversationId),
+						seenSummaryId: existing?.digestSummaryId,
+						maxChars,
+					})
+				: "";
+		// Byte-level fail closed (issue #2): the char budget over-reserves for
+		// ASCII but a multibyte digest can still exceed the remaining byte
+		// room. ACP carries no prompt cap, so the check is stream-json only.
+		const digestFinal =
+			digest &&
+			engine !== "acp" &&
+			promptBytes + STREAM_JSON_PROMPT_MARGIN + Buffer.byteLength(digest, "utf8") > STREAM_JSON_PROMPT_CAP
+				? ""
+				: digest;
+		// The delivered summary id persists only when a digest actually shipped:
+		// late/resume/budget-skipped turns carry the previous id forward so the
+		// summary is not lost to a turn that never delivered it.
+		if (digestFinal) {
+			const deliveredIdx = findLastCompactionIdx(context.messages);
+			settleSummaryId = deliveredIdx >= 0 ? compactionFingerprint(context.messages[deliveredIdx]) : undefined;
+		}
 		// G1 delivery per engine. stream-json: digest rides inline in the prompt
 		// (the CLI has no context channel). ACP: the server advertises
 		// `embeddedContext`, so the digest ships as a native resource block
@@ -1518,7 +1650,7 @@ async function runTurnDriver(
 		// surface, and the model needs the use-for-continuity-only instruction.
 		// The uri is suffixed per turn so a deduping server cannot serve stale
 		// content on turn 2+.
-		const embeddedDigest = deps.engine === "acp" && digest ? digest : undefined;
+		const embeddedDigest = deps.engine === "acp" && digestFinal ? digestFinal : undefined;
 		// G10, fresh conversations only (bound conversations ride agy's own
 		// history; re-sending would bloat every prompt and bust the cache).
 		// stream-json delivery is a staged agent file, NOT prompt text: agy's
@@ -1564,7 +1696,7 @@ async function runTurnDriver(
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, prompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "")) +
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, prompt ?? "")) +
 			stageImageNote(runImages);
 		try {
 			handle = await deps.driver.run({
@@ -1641,7 +1773,13 @@ async function runTurnDriver(
 		if (!existing) {
 			const parkedConv = deps.driver.snapshot().conversationId;
 			if (parkedConv) {
-				store.set(key, { conversationId: parkedConv, lastStepIdx: -1, lastMessageCount: messageCount });
+				store.set(key, {
+					conversationId: parkedConv,
+					lastStepIdx: -1,
+					lastMessageCount: messageCount,
+					digestBoundary: settleBoundary,
+					digestSummaryId: settleSummaryId,
+				});
 				if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
 			}
 		}
@@ -1765,6 +1903,8 @@ async function runTurnDriver(
 				conversationId: outcome.conversationId,
 				lastStepIdx: -1,
 				lastMessageCount: messageCount,
+				digestBoundary: settleBoundary,
+				digestSummaryId: settleSummaryId,
 			});
 			if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
 		}

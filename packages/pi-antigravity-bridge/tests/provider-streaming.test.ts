@@ -24,7 +24,7 @@ import {
 	type SimpleStreamOptions,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple } from "../src/provider.js";
+import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple, sessionKey } from "../src/provider.js";
 import { toAgyEffort } from "../src/models.js";
 import { TurnDiffContext } from "../src/diff-render.js";
 import { SessionStore } from "../src/sessions.js";
@@ -76,8 +76,10 @@ function tmpStorePath(): string {
 
 /** A fake driver that records the run() opts so a test can assert how the
  *  provider translated pi's options into agy turn opts. The handle emits no
- *  activities and settles OK. */
-function capturingDriver(seen: { opts?: DriverTurnRequest }): StreamDriver {
+ *  activities and settles OK. A conversationId makes the OK settle bind the
+ *  session record (production outcomes carry it), enabling multi-turn tests
+ *  through one store. */
+function capturingDriver(seen: { opts?: DriverTurnRequest }, conversationId?: string): StreamDriver {
 	return {
 		run: async (opts: DriverTurnRequest) => {
 			seen.opts = opts;
@@ -88,6 +90,7 @@ function capturingDriver(seen: { opts?: DriverTurnRequest }): StreamDriver {
 					response: "ok",
 					finished: true,
 					aborted: false,
+					...(conversationId ? { conversationId } : {}),
 				}),
 				next: async () => null,
 				pushExternal: () => {},
@@ -299,6 +302,115 @@ test("streamSimple: stream-json engine keeps the digest inline in the prompt", a
 	}
 });
 
+// Fixed timestamps for the multi-turn handoff tests: the boundary
+// fingerprint is role+timestamp, so turn 2 must control them exactly.
+const T0 = 1_700_000_000_000;
+
+function msgContext(msgs: unknown[]): TranscriptContext {
+	return normalizeContext({ systemPrompt: undefined, messages: msgs } as never);
+}
+
+function antigravityAsst(text: string, timestamp: number): unknown {
+	return {
+		role: "assistant",
+		provider: "antigravity",
+		content: [{ type: "text", text }],
+		timestamp,
+		model: "gemini-flash",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		api: "anthropic-messages",
+	};
+}
+
+/** One streamSimple wired on the default (acp) engine: a single capturing
+ *  driver doubles as the acp driver (the engine heuristic keys off object
+ *  identity). Optional conversationId binds session records across turns. */
+function defaultEngineStreamSimple(store: SessionStore, seen: { opts?: DriverTurnRequest }, conversationId?: string) {
+	const driver = capturingDriver(seen, conversationId);
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
+		store,
+		driver,
+		acpDriver: driver,
+		roundTrips: new ToolRoundTrips(driver),
+	});
+	return (ctx: TranscriptContext) =>
+		streamSimple({ ...model, id: "gemini-flash" }, ctx, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+}
+
+async function drain(stream: ReturnType<ReturnType<typeof createStreamSimple>>): Promise<void> {
+	for await (const ev of stream) void ev;
+}
+
+test("streamSimple: default config ships the digest to a fresh conversation (model-switch handoff)", async () => {
+	// The reported bug: pi hands a bridge model a transcript agy was never
+	// spawned for, and with the digest off by default the fresh conversation
+	// received only the latest prompt ("ok, ready for the task").
+	const seen: { opts?: DriverTurnRequest } = {};
+	const turn = defaultEngineStreamSimple(new SessionStore(tmpStorePath()), seen);
+	await drain(turn(digestContext()));
+	assert.ok(seen.opts?.contextBlock, "handoff digest must ride the contextBlock with default config");
+	assert.match(seen.opts.contextBlock.text, /claude says hi/);
+	assert.equal(seen.opts.prompt, "current");
+});
+
+test("streamSimple: a transcript mutated under the watermark resets the digest to the full delta", async () => {
+	// /tree and /fork rewrite history below the stored count; the stale
+	// boundary fingerprint must fall back to the full delta (the branched
+	// user message ships; the own antigravity turn stays skipped) instead of
+	// a silently wrong window.
+	const seen: { opts?: DriverTurnRequest } = {};
+	const store = new SessionStore(tmpStorePath());
+	const turn = defaultEngineStreamSimple(store, seen, "conv-fp");
+	await drain(turn(msgContext([{ role: "user", content: "hello", timestamp: T0 }])));
+	assert.ok(seen.opts, "turn 1 ran");
+	await drain(
+		turn(
+			msgContext([
+				{ role: "user", content: "branched", timestamp: T0 + 5 },
+				antigravityAsst("own answer", T0 + 6),
+				{ role: "user", content: "current", timestamp: T0 + 7 },
+			]),
+		),
+	);
+	assert.match(seen.opts?.contextBlock?.text ?? "", /branched/);
+});
+
+test("streamSimple: pure-agy steady state ships no digest (prompt cache stays intact)", async () => {
+	// Turn 2 appends only agy's own answer and the new prompt: an empty delta
+	// must produce no digest block and a byte-identical prompt. AGY_DIGEST=1
+	// isolates this gate contract from the default flip.
+	process.env.AGY_DIGEST = "1";
+	try {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const store = new SessionStore(tmpStorePath());
+		const turn = defaultEngineStreamSimple(store, seen, "conv-steady");
+		await drain(turn(msgContext([{ role: "user", content: "hello", timestamp: T0 }])));
+		assert.ok(seen.opts, "turn 1 ran");
+		await drain(
+			turn(
+				msgContext([
+					{ role: "user", content: "hello", timestamp: T0 },
+					antigravityAsst("own answer", T0 + 1),
+					{ role: "user", content: "current", timestamp: T0 + 2 },
+				]),
+			),
+		);
+		assert.equal(seen.opts?.contextBlock, undefined);
+		assert.equal(seen.opts?.prompt, "current");
+	} finally {
+		delete process.env.AGY_DIGEST;
+	}
+});
+
 test("streamSimple forwards options.reasoning as effort for an effort-driven base", async () => {
 	const opts = await captureTurn(
 		{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] },
@@ -383,4 +495,126 @@ test("Gate C: consumeActivity skips native re-exec and wrapper replay on ACP eng
 	assert.equal(res, "continue");
 	assert.equal(partial.stopReason, "stop");
 	assert.ok(partial.content.some((b) => b.type === "thinking" && b.thinking.includes("[agy tool: view_file]")));
+});
+
+test("streamSimple: legacy records without a boundary fingerprint keep their watermark", () => {
+	return (async () => {
+		// Records written before the digest fix carry lastMessageCount but no
+		// digestBoundary. Trusting the count avoids a one-time full-delta dump
+		// of history agy already holds; the settle below populates the new
+		// fields.
+		const seen: { opts?: DriverTurnRequest } = {};
+		const store = new SessionStore(tmpStorePath());
+		store.set(sessionKey(undefined, process.cwd(), "acp"), {
+			conversationId: "conv-legacy",
+			lastStepIdx: -1,
+			lastMessageCount: 2,
+		});
+		const turn = defaultEngineStreamSimple(store, seen, "conv-legacy");
+		await drain(
+			turn(
+				msgContext([
+					{ role: "user", content: "covered1", timestamp: T0 },
+					antigravityAsst("own answer", T0 + 1),
+					{ role: "user", content: "current", timestamp: T0 + 2 },
+				]),
+			),
+		);
+		assert.equal(seen.opts?.contextBlock, undefined, "watermark-covered legacy record must ship no digest");
+		const rec = store.get(sessionKey(undefined, process.cwd(), "acp"));
+		assert.ok(rec?.digestBoundary, "settle must populate the fingerprint");
+	})();
+});
+
+/** Stream-json wiring: two distinct capturing drivers (the engine heuristic
+ *  keys off object identity; production never shares one instance). */
+function streamJsonWiring(store: SessionStore, promptSeen: { opts?: DriverTurnRequest }) {
+	const acpSeen: { opts?: DriverTurnRequest } = {};
+	const streamDriver = capturingDriver(promptSeen);
+	const acpOnlyDriver = capturingDriver(acpSeen);
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
+		store,
+		driver: streamDriver,
+		acpDriver: acpOnlyDriver,
+		roundTrips: new ToolRoundTrips(streamDriver),
+	});
+	return (ctx: TranscriptContext) =>
+		streamSimple({ ...model, id: "gemini-flash" }, ctx, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+}
+
+test("streamSimple: stream-json budgets the prompt in bytes, not chars", () => {
+	return (async () => {
+		// 12000 CJK chars = ~36KB of prompt bytes: the prompt ALONE crosses the
+		// ~25KB silent-drop cap, so a char-based budget (25000 - 12000 - 4096
+		// -> 8000-char digest) would ship a doomed turn. The digest must skip.
+		const cjk = "漢".repeat(12_000);
+		process.env.AGY_ENGINE = "stream-json";
+		process.env.AGY_DIGEST = "1";
+		try {
+			const seen: { opts?: DriverTurnRequest } = {};
+			const turn = streamJsonWiring(new SessionStore(tmpStorePath()), seen);
+			await drain(
+				turn(
+					msgContext([
+						{ role: "user", content: "earlier", timestamp: T0 },
+						{
+							role: "assistant",
+							provider: "claude",
+							content: [{ type: "text", text: "claude says hi" }],
+							timestamp: T0 + 1,
+							model: "claude-sonnet-4-6",
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, total: 0 } },
+							stopReason: "stop",
+							api: "anthropic-messages",
+						},
+						{ role: "user", content: cjk, timestamp: T0 + 2 },
+					]),
+				),
+			);
+			assert.doesNotMatch(seen.opts?.prompt ?? "", /context from the broader pi session/);
+			assert.ok(seen.opts?.prompt.includes(cjk), "the user prompt still rides");
+		} finally {
+			delete process.env.AGY_ENGINE;
+			delete process.env.AGY_DIGEST;
+		}
+	})();
+});
+
+test("streamSimple: stream-json skips the digest when its own bytes blow the budget", () => {
+	return (async () => {
+		// ASCII prompt (15000 bytes) + a CJK foreign turn (~3000 chars but
+		// ~9000 bytes): the char budget (5904) admits the digest, the byte
+		// budget does not. Fail closed: ship no digest rather than a dropped
+		// turn.
+		const claudeCjk = "字".repeat(3_000);
+		process.env.AGY_ENGINE = "stream-json";
+		process.env.AGY_DIGEST = "1";
+		try {
+			const seen: { opts?: DriverTurnRequest } = {};
+			const turn = streamJsonWiring(new SessionStore(tmpStorePath()), seen);
+			await drain(
+				turn(
+					msgContext([
+						{ role: "user", content: "earlier", timestamp: T0 },
+						{
+							role: "assistant",
+							provider: "claude",
+							content: [{ type: "text", text: claudeCjk }],
+							timestamp: T0 + 1,
+							model: "claude-sonnet-4-6",
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, total: 0 } },
+							stopReason: "stop",
+							api: "anthropic-messages",
+						},
+						{ role: "user", content: "x".repeat(15_000), timestamp: T0 + 2 },
+					]),
+				),
+			);
+			assert.doesNotMatch(seen.opts?.prompt ?? "", /context from the broader pi session/);
+		} finally {
+			delete process.env.AGY_ENGINE;
+			delete process.env.AGY_DIGEST;
+		}
+	})();
 });

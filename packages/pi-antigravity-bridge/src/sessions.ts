@@ -29,6 +29,16 @@ export interface AgySession {
 	 *  fresh or pre-watermark session. Optional for backward compat with older
 	 *  persisted sessions that predate the watermark. */
 	lastMessageCount?: number;
+	/** role:timestamp fingerprint of messages[lastMessageCount - 1] at write
+	 *  time. The provider compares it against the live boundary message: a
+	 *  mismatch (branch, fork, context-hook rewrite) resets the digest window
+	 *  to the full delta. Optional: absent on records predating the
+	 *  fingerprint, which the provider treats as a mismatch. */
+	digestBoundary?: string;
+	/** Compaction index already delivered in a previous digest, so the
+	 *  builder neither re-injects that summary nor restarts its window on
+	 *  it. Optional/absent when no compaction existed at write time. */
+	digestSummaryId?: string;
 }
 
 type StoreMap = Record<string, AgySession>;
@@ -48,10 +58,14 @@ function narrowStoreMap(parsed: unknown): StoreMap {
 		if (typeof conversationId !== "string") continue;
 		const idx = (value as { lastStepIdx?: unknown }).lastStepIdx;
 		const mc = (value as { lastMessageCount?: unknown }).lastMessageCount;
+		const db = (value as { digestBoundary?: unknown }).digestBoundary;
+		const dci = (value as { digestSummaryId?: unknown }).digestSummaryId;
 		clean[key] = {
 			conversationId,
 			lastStepIdx: typeof idx === "number" && Number.isFinite(idx) ? idx : -1,
 			lastMessageCount: typeof mc === "number" && Number.isFinite(mc) ? mc : 0,
+			...(typeof db === "string" ? { digestBoundary: db } : {}),
+			...(typeof dci === "string" ? { digestSummaryId: dci } : {}),
 		};
 	}
 	return clean;
@@ -93,6 +107,8 @@ export class SessionStore {
 			conversationId: s.conversationId,
 			lastStepIdx: s.lastStepIdx ?? -1,
 			lastMessageCount: s.lastMessageCount ?? 0,
+			...(s.digestBoundary !== undefined ? { digestBoundary: s.digestBoundary } : {}),
+			...(s.digestSummaryId !== undefined ? { digestSummaryId: s.digestSummaryId } : {}),
 		};
 	}
 

@@ -156,18 +156,18 @@ export interface AgyConfig {
 	 *  the file. Takes effect on the next bridge call. */
 	escalateLongTools?: string[];
 	/** Inject a delta digest of pi-side context (compaction summaries, turns
-	 *  handled by other providers or pi's own tools) into each agy prompt.
+	 *  handled by other providers or pi's own tools) into agy prompts.
 	 *
-	 *  Default OFF. The digest changes every turn, which defeats agy's
-	 *  server-side prompt cache: every turn re-bills the full context
-	 *  (~25-30k tokens observed). With it off, prompts stay stable and the
-	 *  cache hits.
+	 *  Default ON. The digest is self-gating: it ships only when the delta
+	 *  window is non-empty (a fresh agy conversation from a mid-session model
+	 *  switch or engine switch, another provider's turns, pi-side tool runs,
+	 *  or a compaction summary), and each piece ships once. Pure antigravity
+	 *  sessions get an empty delta, byte-stable prompts, and an intact
+	 *  server-side prompt cache.
 	 *
-	 *  Enable when you mix providers in one pi session (Claude turns, pi-side
-	 *  tool runs, or a compaction that agy should know about) and you value
-	 *  agy seeing that context over the cache re-billing. Pure antigravity
-	 *  sessions gain nothing: agy already keeps its own history, and bridge
-	 *  round-trips deliver tool results through the bridge, not the digest. */
+	 *  Turn off for agy-native behavior: prompts then contain only your
+	 *  message, and a conversation opened mid-session starts without prior
+	 *  pi-side context. */
 	digest: boolean;
 	/** Prepend pi's composed system prompt (pi tool guidance + the global
 	 *  agent-dir AGENTS.md and ancestor AGENTS.md/CLAUDE.md) to the FIRST
@@ -216,7 +216,7 @@ const DEFAULTS: AgyConfig = {
 	askTool: true,
 	webTools: false,
 	bridgeTools: "all",
-	digest: false,
+	digest: true,
 	systemPrompt: true,
 	turnTimeoutMin: 0, // placeholder: the real default is resolved per loadConfig call (defaultTurnTimeoutMin)
 	inactivityTimeoutMin: 5,
@@ -375,7 +375,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 
 	const digest = process.env.AGY_DIGEST !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())
-		: file.digest ?? false;
+		: file.digest ?? true;
 
 	const envSys = process.env.AGY_SYSTEM_PROMPT;
 	const systemPrompt = envSys !== undefined

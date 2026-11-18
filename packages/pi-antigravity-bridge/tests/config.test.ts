@@ -82,14 +82,14 @@ test("config: askTool defaults on and round-trips through load/save", () => {
 	}
 });
 
-test("config: digest defaults off and round-trips through load/save", () => {
+test("config: digest defaults on (self-gating) and round-trips through load/save", () => {
 	const p = tmpConfig();
 	try {
+		assert.equal(loadConfig(p).digest, true);
+		saveConfig({ digest: false }, p);
 		assert.equal(loadConfig(p).digest, false);
-		saveConfig({ digest: true }, p);
-		assert.equal(loadConfig(p).digest, true);
 		saveConfig({ mode: "plan" }, p);
-		assert.equal(loadConfig(p).digest, true);
+		assert.equal(loadConfig(p).digest, false);
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}

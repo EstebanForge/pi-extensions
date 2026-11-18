@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Model-switch handoff toast.** Selecting an Antigravity bridge model with no bound agy conversation (the mid-session switch from another provider) now toasts "handoff context will ship to the new agy conversation", so the fresh-conversation handoff is visible instead of silent. Suppressed on session restore, for bound conversations (they continue as-is), when the digest is off (nothing would ship), and on an empty session (nothing to hand off). UI only; binding is checked with the provider's own `sessionKey` derivation and a failure to compute it stays silent rather than lying.
+
+### Fixed
+
+- **Context now hands off to a fresh Antigravity conversation opened mid-session.** Switching pi models onto an Antigravity bridge model (or an engine switch, or issue #1 conversation recreation) opened a fresh agy conversation that received only the latest user prompt - Gemini answered "ok, ready for the task" as if starting from scratch, because the G1 context digest was gated on a config flag that defaulted to off. The digest is now on by default and self-gating: it ships only when the delta window is non-empty and every piece ships exactly once, so pure antigravity sessions keep byte-stable prompts and an intact server-side prompt cache. The builder learns two modes: bound (default, own-provider turns skipped as before) and fresh (own turns and their tool results included, for a conversation whose server-side history is empty). Compaction-aware watermark reset: a compaction shrinks the transcript below the stored `lastMessageCount`, which used to empty the delta window and silently drop every post-compaction turn; the window now restarts after the compaction with the summary shipped once, keyed by summary CONTENT (`digestSummaryId` on the session record - pi puts every post-compaction summary at the transcript front, so index identity would swallow the second compaction). A boundary fingerprint (`digestBoundary`, role+timestamp of the watermark message) resets the delta to the full digest when the transcript mutated under the stored count (/tree, /fork, per-call context-hook rewrites) instead of shipping a silently wrong window; that reset - and a delivered compaction - may re-ship recent user messages agy already holds, bounded by the digest cap, in exchange for never dropping context. Records written before this release keep their stored watermark (no duplicate dump on upgrade) and gain the new fields on their first turn. On stream-json the digest is budgeted under the ~25KB single-prompt silent-drop cap (issue #2) in BYTES, both for the user's prompt and the digest itself, including multibyte content; an oversized compaction summary is clamped (head kept, `[truncated]` marker), and an exhausted budget ships nothing rather than a turn agy would silently drop. `digest: false` / `AGY_DIGEST=0` / `/agy digest off` keeps the old opt-out behavior.
+
 ## [1.10.9] - 2026-11-17
 
 ### Fixed
