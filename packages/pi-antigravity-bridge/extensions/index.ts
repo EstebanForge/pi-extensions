@@ -1052,6 +1052,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			{
 				const cfg = loadConfig();
 				const mode = resolveGateMode(cfg.approvals.gateMode, detectPermissionGateExtensions());
+				if (mode !== "off" && engine === "acp") {
+					// Staged-home hook delivery is probe-verified on agy 1.5.12
+					// only (issue #18); older ACP builds may not honor it. Warn
+					// so a silently inert gate is at least visible in the log.
+					const cli = await checkAgyCliVersion(resolveAgyBinary());
+					if (cli.status === "ok" && agyVersionVerdict(cli.raw, "1.5.12").status === "unsupported") {
+						fileLog.log("approval-gate-agy-version-unverified", { version: cli.raw }, "warn");
+					}
+				}
 				if (mode === "dedicated") {
 					// The explicit antigravity_approve variant is planned; until it
 					// ships, dedicated stages the same shadow tools. Say so, so the

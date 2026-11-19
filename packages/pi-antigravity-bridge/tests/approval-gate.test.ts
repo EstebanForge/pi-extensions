@@ -18,6 +18,7 @@ import {
 	type AnyToolDefinition,
 	type GateDecision,
 } from "../src/approval-gate.js";
+import { GATED_AGY_TOOL_SET } from "../src/approval-hook.js";
 
 // pi 1.0.0: tool execute() receives ExtensionToolContext (ExtensionContext + tools/executeTool).
 // The shadow factory only forwards ctx (to the policy and the real builtin), so the stub
@@ -287,6 +288,16 @@ test("mapNativeToShadow covers the gated matcher set", () => {
 		shadow: "write",
 		input: { path: "/w/b.txt", content: "x" },
 	});
+	// agy 1.5.11 tool family (issue #18 live captures): write_file with
+	// Path/Content; old names still accepted as fallbacks for older agy.
+	assert.deepEqual(mapNativeToShadow("write_file", { Path: "/w/f.txt", Content: "abc" }), {
+		shadow: "write",
+		input: { path: "/w/f.txt", content: "abc" },
+	});
+	assert.deepEqual(mapNativeToShadow("write_file", { TargetFile: "/w/g.txt", CodeContent: "x" }), {
+		shadow: "write",
+		input: { path: "/w/g.txt", content: "x" },
+	});
 	assert.deepEqual(mapNativeToShadow("run_command", { CommandLine: "npm test", Cwd: "/w" }), {
 		shadow: "bash",
 		input: { command: "npm test", cwd: "/w" },
@@ -310,6 +321,51 @@ test("mapNativeToShadow covers the gated matcher set", () => {
 		shadow: "edit",
 		input: { path: "/w/e.txt", edits: [{ oldText: "", newText: "z" }] },
 	});
+	assert.deepEqual(mapNativeToShadow("edit_file", { Path: "/w/h.txt", Target: "old", Replacement: "new" }), {
+		shadow: "edit",
+		input: { path: "/w/h.txt", edits: [{ oldText: "old", newText: "new" }] },
+	});
+	assert.deepEqual(
+		mapNativeToShadow("edit_file", { TargetFile: "/w/i.txt", SearchText: "a", ReplacementContent: "b" }),
+		{ shadow: "edit", input: { path: "/w/i.txt", edits: [{ oldText: "a", newText: "b" }] } },
+	);
+});
+
+test("mapNativeToShadow denies gated write/edit whose target path cannot be resolved", () => {
+	// Fail closed BEFORE parking (issue #18): a shadow with an empty path is
+	// decision garbage for path-prefix permission extensions. run_command has
+	// no path argument and stays mappable. Non-string or whitespace paths are
+	// unresolved targets, not coercible ones.
+	assert.equal(mapNativeToShadow("write_file", { Content: "x" }), null);
+	assert.equal(mapNativeToShadow("write_to_file", {}), null);
+	assert.equal(mapNativeToShadow("write_file", { Path: 5, Content: "x" }), null);
+	assert.equal(mapNativeToShadow("write_file", { Path: {}, Content: "x" }), null);
+	assert.equal(mapNativeToShadow("write_file", { Path: "   ", Content: "x" }), null);
+	assert.equal(mapNativeToShadow("edit_file", { Target: "a", Replacement: "b" }), null);
+	assert.equal(mapNativeToShadow("edit_file", {}), null);
+	assert.equal(mapNativeToShadow("multi_replace_file_content", { ReplacementChunks: [] }), null);
+	assert.equal(
+		// Valid path but no chunk carries any change information.
+		mapNativeToShadow("multi_replace_file_content", { Path: "/w/m.txt", ReplacementChunks: [{}, "junk"] }),
+		null,
+	);
+	assert.deepEqual(mapNativeToShadow("run_command", {}), { shadow: "bash", input: { command: "" } });
+});
+
+test("every gated tool name maps for a well-formed payload", () => {
+	// Matcher and mapping must not drift: a name added to GATED_AGY_TOOLS
+	// without a mapNativeToShadow case would deny legitimate calls silently.
+	for (const name of GATED_AGY_TOOL_SET) {
+		const payload: Record<string, unknown> =
+			name === "run_command"
+				? { CommandLine: "ls" }
+				: name === "multi_replace_file_content"
+					? { Path: "/w/m.txt", ReplacementChunks: [{ SearchText: "a", ReplacementContent: "b" }] }
+					: name === "replace_file_content"
+						? { Path: "/w/r.txt", Target: "a", Replacement: "b" }
+						: { Path: "/w/x.txt", Content: "x" };
+		assert.ok(mapNativeToShadow(name, payload), `gated tool ${name} has no shadow mapping`);
+	}
 });
 
 test("mapNativeToShadow returns null for ungated names and tolerates junk args", () => {

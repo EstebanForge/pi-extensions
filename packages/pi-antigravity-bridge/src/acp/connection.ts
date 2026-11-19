@@ -19,6 +19,7 @@ import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
 import { JsonRpcResponseError, JsonRpcSession, JsonRpcTimeoutError } from "./jsonrpc.js";
+import { mergeGateGroupIntoAcpHome } from "../approval-hook.js";
 import { removeStagedAgyHome, stageAgyHome } from "./home.js";
 
 export interface AcpMcpServer {
@@ -171,6 +172,17 @@ export class AcpConnection {
 		const args = [...(this.#opts.binArgs ?? [])];
 		if (this.#opts.isolateHome) {
 			this.#stagedHome = stageAgyHome(typeof this.#opts.isolateHome === "object" ? this.#opts.isolateHome : {});
+			// Deliver this session's approval gate group into the staged home:
+			// the ACP server honors hooks from config/hooks.json there (issue
+			// #18). No-op when the gate is off. A merge failure must not leak
+			// the staged home: release it and rethrow so the turn fails closed
+			// the same way a spawn failure does.
+			try {
+				mergeGateGroupIntoAcpHome(this.#stagedHome);
+			} catch (err) {
+				this.#releaseHome();
+				throw err;
+			}
 			args.push("--gemini-dir", this.#stagedHome);
 		}
 		let child: ChildProcess;

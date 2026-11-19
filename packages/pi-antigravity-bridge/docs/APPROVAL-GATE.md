@@ -32,11 +32,13 @@ export default function (pi) {
 }
 ```
 
-Live end-to-end verification (drive a real mutating agy turn through the gate) is still pending; see docs/TODO.md section 1.
-
-ACP turns need none of this machinery: the server asks per-tool permission
-itself via `session/request_permission`, and the bridge parks that request
-on a real pi dialog (`approvals.mode` semantics apply; skip turns
-auto-allow and never ask; `allow_always` choices are remembered per
-connection). Wiring is pinned against a fake server; live verification is
-tracked in docs/TODO.md section 3.
+ACP turns get the same gate through the staged home: the connection merges
+this session's gate group into `<stagedHome>/config/hooks.json` at spawn,
+next to the staged MCP config (`mergeGateGroupIntoAcpHome`; foreign groups -
+the user's global hooks - are preserved). Probed live on agy 1.5.12 with a
+workspace positive control: the server honors PreToolUse hooks from the
+staged home's config/ (the probe validates the group shape end to end -
+PreToolUse, matcher, command - via `scripts/probe-acp-hooks.mjs`; issue
+#18). Delivery is verified on agy 1.5.12 only; the wiring warns when an
+older agy serves a gated ACP session. The full park round trip on a live
+ACP turn is still pending; see docs/TODO.md sections 1 and 3.

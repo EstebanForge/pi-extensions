@@ -34,6 +34,32 @@ confirm the always-memory answers without a second dialog.
   dialog park holds the turn open as long as the fake server does.
 - On pass: note it here and clear the caveat in docs/APPROVAL-GATE.md.
 
+## 3b. Approval gate on ACP: DELIVERED via the staged home (issue #18)
+
+RESOLVED for hook delivery: the agy ACP server honors PreToolUse hooks from
+the staged home's `config/hooks.json` - the same per-pid private channel
+stageAgyHome already uses for the MCP config (probed live on agy 1.5.12,
+2026-11-19, `scripts/probe-acp-hooks.mjs`: workspace control and the staged
+home both FIRED on turns that called run_command; an `--add-dir` passthrough
+fires too but the staged home is the isolation-correct channel). The
+connection now merges the session's gate group into the staged home at spawn
+(`mergeGateGroupIntoAcpHome`, no-op when the gate is off). The gate wiring
+itself stays load-latched: enabling or disabling the gate mid-session takes
+effect on the next pi session, same as stream-json staging.
+
+Still open:
+
+- Drive a REAL gated mutating turn end-to-end on a live ACP server (hook
+  fires -> POST /approval park -> shadow toolUse -> extension decision),
+  per section 1's stream-json equivalent.
+- Probe evidence covers `run_command` turns on agy 1.5.12 only; file-write
+  tools share the hook matcher so a gap is unlikely, but an agy floor check
+  or a re-probe on 1.5.11 would close it (the wiring already warns when an
+  older agy serves a gated ACP session).
+- Defense in depth: log `approval-bypass-detected` when a native mutating
+  ACP tool_call arrives with no matching /approval ticket, so a silent
+  delivery failure on any agy build is visible.
+
 ## 4. agy `verbosity` setting: probe and adopt for both engines
 
 agy's Settings screen exposes Verbosity (low / medium / high; docs key

@@ -1,6 +1,8 @@
 // G8: surface agy's file edits as a diff in pi's thinking stream.
 //
-// agy edits with its OWN native `write_to_file` (full-file content), inside a
+// agy edits with its OWN native full-file tools (write_to_file on legacy
+// builds; write_file {Path, Content} on agy 1.5.11+, both parsed by
+// parseEditToolInput's field-shape regexes, not by tool name), inside a
 // closed tool loop that lands changes on disk. pi's native colored diff viewer
 // is unreachable for agy turns (it is part of the tool-call lifecycle, and the
 // provider emits no toolCall blocks by design), so we compute a line-numbered

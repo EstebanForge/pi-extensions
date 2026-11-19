@@ -900,7 +900,7 @@ export class ToolRoundTrips {
 			? payload.toolCall.args
 			: {}) as Record<string, unknown>;
 		const mapped = mapNativeToShadow(native, args);
-		if (!mapped) return deny(`tool ${native} is not in the approval matcher set`);
+		if (!mapped) return deny(`tool ${native} did not map to a shadow call (ungated or unresolved target path)`);
 		const entry: PendingRoundTrip = {
 			kind: "approval",
 			name: mapped.shadow,
@@ -1248,10 +1248,10 @@ function emitToolUse(
 }
 
 /** ACP edit-class tool names that carry a file-path arg and land the file on
- *  disk (observed live: edit_file, create_file). Read/execute tools also
- *  match the arg-shape heuristic but produce no diff (unchanged content), so
- *  the gate avoids mislabeling them as edits. */
-const ACP_EDIT_TOOLS = new Set(["edit_file", "create_file", "write_to_file"]);
+ *  disk (observed live: edit_file, create_file, write_file on agy 1.5.11).
+ *  Read/execute tools also match the arg-shape heuristic but produce no diff
+ *  (unchanged content), so the gate avoids mislabeling them as edits. */
+const ACP_EDIT_TOOLS = new Set(["edit_file", "create_file", "write_to_file", "write_file"]);
 
 export function consumeActivity(
 	stream: AssistantMessageEventStream,

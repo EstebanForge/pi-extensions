@@ -10,6 +10,8 @@ import { test, describe } from "vitest";
 import { fileURLToPath } from "node:url";
 import { AcpConnection, translateError } from "../src/acp/connection.js";
 import { JsonRpcResponseError, JsonRpcTimeoutError } from "../src/acp/jsonrpc.js";
+import { gateGroupKey, removeGateHooks, stageGateHooks } from "../src/approval-hook.js";
+import { bridgeMcpConfigDir } from "../src/mcp-server.js";
 
 test("acp connection: stderr tail and exit info are redacted", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-conn-"));
@@ -96,6 +98,39 @@ test("acp connection: a stdout frame flood kills the connection instead of growi
 	assert.ok(exits.length > 0, "exit fired");
 	fs.rmSync(dir, { recursive: true, force: true });
 }, 30_000);
+
+test("connection start merges the session's gate group into the staged home (issue #18 delivery)", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-gate-merge-"));
+	const processDir = path.join(dir, "staging");
+	let notifyExit!: () => void;
+	const exited = new Promise<void>((resolve) => { notifyExit = resolve; });
+	// Stage into the REAL per-pid dir (under the suite-pinned agent dir): the
+	// connection reads that default source, so this exercises the production
+	// path. Cleaned up so later suites never see a staged gate.
+	stageGateHooks(bridgeMcpConfigDir(), { port: 1, token: "t", scriptPath: "/tmp/approval-hook-1.js", parkBudgetMs: 60_000 });
+	const conn = new AcpConnection({
+		cwd: dir,
+		bin: process.execPath,
+		binArgs: [fileURLToPath(new URL("./helpers/fake-acp-server.mjs", import.meta.url))],
+		isolateHome: { geminiHome: path.join(dir, ".gemini"), parentDir: processDir },
+		log: () => {},
+		onUpdate: () => {},
+		onExit: notifyExit,
+	});
+	try {
+		await conn.start();
+		const homeName = fs.readdirSync(processDir).find((name) => name.startsWith("acp-home-"));
+		assert.ok(homeName, "staged home must exist after start");
+		const hooks = JSON.parse(
+			fs.readFileSync(path.join(processDir, homeName, "config", "hooks.json"), "utf8"),
+		) as Record<string, unknown>;
+		assert.ok(hooks[gateGroupKey()], "the gate group must ride the staged home at spawn");
+	} finally {
+		removeGateHooks();
+		conn.kill();
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 test("native ACP home survives until the agy process exits", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-home-kill-"));

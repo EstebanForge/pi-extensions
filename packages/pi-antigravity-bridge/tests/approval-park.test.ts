@@ -298,7 +298,7 @@ test("provider park: ungated native tool denies without parking", () => {
 	assert.equal(rt.pendingIds.includes("t4"), false);
 	assert.equal(park.decisions.length, 1);
 	assert.equal(park.decisions[0]?.allow, false);
-	assert.match(park.decisions[0]?.reason ?? "", /matcher set/);
+	assert.match(park.decisions[0]?.reason ?? "", /shadow call/);
 });
 
 test("provider park: timeout denies fail-closed; the late result logs approval-late", async () => {

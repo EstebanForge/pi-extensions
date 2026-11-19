@@ -65,9 +65,10 @@ function gateGroupPid(group: unknown): number | null {
 	return m ? Number(m[1]) : null;
 }
 
-/** agy native tools worth gating: everything that mutates the machine. */
+/** agy native tools worth gating: everything that mutates the machine.
+ *  Includes both the legacy and the agy 1.5.11+ tool families (issue #18). */
 export const GATED_AGY_TOOLS =
-	"create_file|write_to_file|replace_file_content|multi_replace_file_content|edit_file|run_command";
+	"create_file|write_to_file|write_file|replace_file_content|multi_replace_file_content|edit_file|run_command";
 
 /** The same list as a set, for the bridge's POST /approval validation: a
  *  payload for anything else is answered with a direct deny (defense in
@@ -211,6 +212,54 @@ export function stageGateHooks(dir: string, opts: StageOptions): StageResult {
 	try {
 		fs.writeFileSync(tmp, next, { mode: 0o600 });
 		fs.renameSync(tmp, file);
+	} catch (err) {
+		try {
+			fs.unlinkSync(tmp);
+		} catch {
+			/* nothing */
+		}
+		throw err;
+	}
+	return { wrote: true };
+}
+
+/** Deliver this session's gate group into a staged ACP home's
+ *  config/hooks.json. The staged home is private per connection (stageAgyHome),
+ *  so foreign groups - the user's global hooks, copied in by stageAgyHome -
+ *  are preserved and only this pid's group is added. An unparsable existing
+ *  file is gate-only overwritten: agy could not have read it either. No-op
+ *  only when the per-pid gate file is ABSENT (gate off at load); a staged
+ *  file that exists but cannot be read or parsed throws, because running the
+ *  spawn ungated while the gate is on would fail open (issue #18).
+ *  mergeGateGroupIntoAcpHome's delivery is probed live on agy 1.5.12
+ *  (scripts/probe-acp-hooks.mjs). */
+export function mergeGateGroupIntoAcpHome(stagedHome: string, sourceDir: string = bridgeMcpConfigDir()): StageResult {
+	let staged: Record<string, unknown>;
+	try {
+		staged = JSON.parse(fs.readFileSync(gateHooksFile(sourceDir), "utf8")) as Record<string, unknown>;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { wrote: false, reason: "no staged gate" };
+		throw err;
+	}
+	const group: unknown = staged[gateGroupKey()];
+	if (!group || typeof group !== "object") return { wrote: false, reason: "no staged gate" };
+	const target = path.join(stagedHome, "config", "hooks.json");
+	let merged: Record<string, unknown> = {};
+	try {
+		const existing = JSON.parse(fs.readFileSync(target, "utf8")) as unknown;
+		if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+			merged = existing as Record<string, unknown>;
+		}
+	} catch {
+		/* absent or unparsable: the merge result is gate-only */
+	}
+	merged[gateGroupKey()] = group;
+	const next = JSON.stringify(merged, null, 2) + "\n";
+	fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+	const tmp = `${target}.${process.pid}.tmp`;
+	try {
+		fs.writeFileSync(tmp, next, { mode: 0o600 });
+		fs.renameSync(tmp, target);
 	} catch (err) {
 		try {
 			fs.unlinkSync(tmp);
