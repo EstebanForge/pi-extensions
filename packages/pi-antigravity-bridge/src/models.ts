@@ -20,9 +20,10 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Api, Model, ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
+
+import { bridgeDir } from "./config.js";
 
 const DISCOVERY_TIMEOUT_MS = 8_000;
 
@@ -192,20 +193,16 @@ export async function spawnAgyModelsRaw(binary: string): Promise<string> {
 // --- catalog cache ----------------------------------------------------------
 //
 // `agy models` can take seconds (OAuth refresh, cold start) and its output
-// rarely changes. We persist it to ~/.pi/agent/antigravity-bridge/models-
+// rarely changes. We persist it to <agentDir>/antigravity-bridge/models-
 // cache.json with a short TTL so reloads serve instantly and only re-spawn in
 // the background when stale. Only successful (non-empty) output is cached, so
 // a broken agy is never sticky.
 
 export const MODELS_CACHE_TTL_MS = 5 * 60_000;
 
-const MODELS_CACHE_PATH = path.join(
-	os.homedir(),
-	".pi",
-	"agent",
-	"antigravity-bridge",
-	"models-cache.json",
-);
+function modelsCachePath(): string {
+	return path.join(bridgeDir(), "models-cache.json");
+}
 
 interface ModelsCache {
 	raw: string;
@@ -213,7 +210,7 @@ interface ModelsCache {
 }
 
 /** Read and validate the models cache. Returns null when missing or corrupt. */
-function readModelsCache(cachePath: string = MODELS_CACHE_PATH): ModelsCache | null {
+function readModelsCache(cachePath: string = modelsCachePath()): ModelsCache | null {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8")) as unknown;
 		if (
@@ -233,7 +230,7 @@ function readModelsCache(cachePath: string = MODELS_CACHE_PATH): ModelsCache | n
 
 /** Atomically persist the raw catalog text (temp + rename, mode 0o600).
  *  Best-effort: a write failure just means the next load re-spawns. */
-function writeModelsCache(raw: string, cachePath: string = MODELS_CACHE_PATH): void {
+function writeModelsCache(raw: string, cachePath: string = modelsCachePath()): void {
 	fs.mkdirSync(path.dirname(cachePath), { recursive: true });
 	const tmp = `${cachePath}.${process.pid}.tmp`;
 	try {
@@ -254,7 +251,7 @@ function writeModelsCache(raw: string, cachePath: string = MODELS_CACHE_PATH): v
  *  the next load sees fresh data without this one having to wait on agy. */
 export function refreshModelsInBackground(
 	binary: string,
-	cachePath: string = MODELS_CACHE_PATH,
+	cachePath: string = modelsCachePath(),
 ): void {
 	void spawnAgyModelsRaw(binary)
 		.then((raw) => {
@@ -277,7 +274,7 @@ export function refreshModelsInBackground(
  *  Gemini entries (agy missing/auth-failed). */
 export async function loadModelCatalogRaw(
 	binary: string,
-	cachePath: string = MODELS_CACHE_PATH,
+	cachePath: string = modelsCachePath(),
 ): Promise<string> {
 	const cache = readModelsCache(cachePath);
 	if (cache) {

@@ -109,7 +109,7 @@ Phase-2/3 additions (all ACP-only, verified live):
   the first: Gate D kills + stale-exit replacements) and the handshake
   `agentInfo` name/title; `/agy doctor` surfaces both.
 
-Native agy inherits global MCP servers, so every ACP connection stages a private `--gemini-dir`. The staging directory links the shared CLI app-data and copies global MCP config without any `pi-bridge` or `pi-bridge-<pid>` entry. Foreign MCP servers remain available; another pi session cannot be called through this ACP process. Homes live under `~/.pi/agent/antigravity-bridge/acp-homes`, outside MCP server teardown. Connection exit removes the staged home; a pid-based startup sweep handles crash leftovers even when bridge tools are disabled.
+Native agy inherits global MCP servers, so every ACP connection stages a private `--gemini-dir`. The staging directory links the shared CLI app-data and copies global MCP config without any `pi-bridge` or `pi-bridge-<pid>` entry. Foreign MCP servers remain available; another pi session cannot be called through this ACP process. Homes live under `<agentDir>/antigravity-bridge/acp-homes`, outside MCP server teardown. Connection exit removes the staged home; a pid-based startup sweep handles crash leftovers even when bridge tools are disabled.
 
 Engine-specific behavior: session ids are scoped per engine
 (`sid:<x>@acp`); model and thinking level ship as separate `model` and

@@ -138,10 +138,9 @@ test("bridgeServerName, mcpConfigPath and suppressionMarkerPath shapes", () => {
 	assert.equal(bridgeServerName(7), "pi-bridge-7");
 	assert.equal(mcpConfigPath("/h"), path.join("/h", ".gemini", "config", "mcp_config.json"));
 	assert.equal(
-		suppressionMarkerPath("/h"),
+		suppressionMarkerPath("/h/agent"),
 		path.join(
 			"/h",
-			".pi",
 			"extensions-data",
 			"estebanforge",
 			"pi-antigravity-bridge",

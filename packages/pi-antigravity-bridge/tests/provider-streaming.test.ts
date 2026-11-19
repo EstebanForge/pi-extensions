@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test, vi, afterAll } from "vitest";
+import { test, afterAll } from "vitest";
 import {
 	createAssistantMessageEventStream,
 	normalizeContext,
@@ -30,24 +30,18 @@ import { TurnDiffContext } from "../src/diff-render.js";
 import { SessionStore } from "../src/sessions.js";
 import type { StreamDriver, DriverTurnRequest } from "../src/driver.js";
 
-// The provider reads the real CONFIG_PATH through loadConfig(). A user's
-// live bridge config (say, turnTimeoutMin) would leak into these asserts,
-// so the whole file runs against a throwaway home: no config file means
-// pure defaults plus the env vars each test sets.
-const fakeHome = vi.hoisted(() => ({ dir: "" }));
-vi.mock("node:os", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:os")>();
-	const { mkdtempSync } = await import("node:fs");
-	const { join } = await import("node:path");
-	fakeHome.dir = mkdtempSync(join(actual.tmpdir(), "agy-provider-home-"));
-	const homedir = () => fakeHome.dir;
-	// config.ts default-imports os, so the default export must be patched
-	// too: spreading the namespace alone keeps the real homedir there.
-	const actualDefault = (actual as unknown as { default: typeof actual }).default;
-	return { ...actual, default: { ...actualDefault, homedir }, homedir };
-});
+// The provider reads the bridge config through loadConfig(), whose default
+// path follows pi's agent dir (PI_CODING_AGENT_DIR). A user's live bridge
+// config (say, turnTimeoutMin) would leak into these asserts, so the whole
+// file runs against a throwaway agent dir: no config file means pure
+// defaults plus the env vars each test sets.
+const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+const fakeAgentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agy-provider-home-"));
+process.env.PI_CODING_AGENT_DIR = path.join(fakeAgentRoot, ".pi", "agent");
 afterAll(() => {
-	if (fakeHome.dir) fs.rmSync(fakeHome.dir, { recursive: true, force: true });
+	if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+	fs.rmSync(fakeAgentRoot, { recursive: true, force: true });
 });
 
 const model: Model<Api> = {

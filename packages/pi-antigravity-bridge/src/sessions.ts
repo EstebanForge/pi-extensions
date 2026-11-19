@@ -6,19 +6,15 @@
 //
 // The key is options.sessionId when pi provides it, else the cwd (single-
 // conversation-per-process fallback). Stored at
-// ~/.pi/agent/antigravity-bridge/sessions.json with atomic rename.
+// <agentDir>/antigravity-bridge/sessions.json with atomic rename.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { bridgeDir } from "./config.js";
 
-const STORE_PATH = path.join(
-	os.homedir(),
-	".pi",
-	"agent",
-	"antigravity-bridge",
-	"sessions.json",
-);
+function defaultStorePath(): string {
+	return path.join(bridgeDir(), "sessions.json");
+}
 
 export interface AgySession {
 	conversationId: string;
@@ -85,7 +81,7 @@ export class SessionStore {
 	private readonly removed = new Set<string>();
 	private writeChain: Promise<void> = Promise.resolve();
 
-	constructor(storePath: string = STORE_PATH) {
+	constructor(storePath: string = defaultStorePath()) {
 		this.path = storePath;
 		this.load();
 	}

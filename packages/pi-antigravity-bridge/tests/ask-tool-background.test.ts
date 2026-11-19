@@ -105,8 +105,9 @@ beforeEach(() => {
 		AGY_MODE: process.env.AGY_MODE,
 		AGY_READONLY: process.env.AGY_READONLY,
 	};
-	// Empty HOME: config resolution reads os.homedir()/.pi/agent/...; on this
-	// machine a real config could flip mode/readOnly under the tests.
+	// Empty HOME, plus the vitest setup's throwaway PI_CODING_AGENT_DIR, keep
+	// config resolution off this machine's real files (a real config could
+	// flip mode/readOnly under the tests).
 	scratch = mkdtempSync(join(tmpdir(), "askbg-bridge-"));
 	process.env.HOME = mkdtempSync(join(tmpdir(), "askbg-bridge-home-"));
 	process.env.AGY_AGENTS_ROOT = join(scratch, "agents");

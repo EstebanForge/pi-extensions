@@ -41,9 +41,13 @@ import os from "node:os";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { bridgeDir } from "./config.js";
+
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
-const BRIDGE_BASE = path.join(os.homedir(), ".pi", "agent", "antigravity-bridge");
-export const PATCH_BACKUP_DIR = path.join(BRIDGE_BASE, "pi-patch-backup");
+
+export function patchBackupDir(): string {
+	return path.join(bridgeDir(), "pi-patch-backup");
+}
 
 /** One insertion site in one compiled file. */
 interface PatchSite {
@@ -424,7 +428,7 @@ function resolveRoot(opts: { root?: string }): { root: string; version: string }
 }
 
 function backupBaseOf(opts: { backupBase?: string }): string {
-	return opts.backupBase ?? PATCH_BACKUP_DIR;
+	return opts.backupBase ?? patchBackupDir();
 }
 
 /** Report the current patch state without changing anything. */

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { bridgeDir } from "../config.js";
 import { isPidAlive } from "../mcp-server.js";
 import { bridgeServerEntry, bridgeServerName, readGlobalMcpConfig } from "../mcp-registration.js";
 
@@ -17,7 +18,7 @@ function linkDirectory(source: string, target: string): void {
  *  stream-json engine adopting homes; renaming it would strand existing
  *  installs' unswept dirs, so both engines stage under it. */
 export function agyHomeStagingDir(): string {
-	return path.join(os.homedir(), ".pi", "agent", "antigravity-bridge", "acp-homes");
+	return path.join(bridgeDir(), "acp-homes");
 }
 
 export interface StageAgyHomeOptions {

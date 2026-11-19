@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extensionsDataDir } from "./config.js";
 
 /** Name convention for the bridge's per-pid server entries. */
 export function bridgeServerName(pid: number): string {
@@ -174,18 +175,11 @@ export interface SuppressionMarker {
 	delegators: Record<string, { since: number }>;
 }
 
-/** Marker path, mirroring the extensions-data convention (src/config.ts
- *  logsDir). Lives OUTSIDE ~/.gemini so agy's watched config dir stays
- *  untouched. */
-export function suppressionMarkerPath(home: string = os.homedir()): string {
-	return path.join(
-		home,
-		".pi",
-		"extensions-data",
-		"estebanforge",
-		"pi-antigravity-bridge",
-		"suppression.json",
-	);
+/** Marker path, under the bridge's extensions-data dir (src/config.ts
+ *  extensionsDataDir). Lives OUTSIDE ~/.gemini so agy's watched config dir
+ *  stays untouched. */
+export function suppressionMarkerPath(agentDir?: string): string {
+	return path.join(extensionsDataDir(agentDir), "suppression.json");
 }
 
 /** A SIGKILLed pi can leave its marker entry behind, and pid reuse could

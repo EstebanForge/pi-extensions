@@ -9,7 +9,7 @@ If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/Esteban
 
 You pick a Gemini model in pi's `/model` picker. pi routes each turn through this provider. A single persistent `agy` process runs in your workspace; pi feeds it each turn, parses its stream-json events, and streams the agent text back into pi token by token. Token usage is live.
 
-Multi-turn works. The provider binds a pi session to an agy conversation id (persisted under `~/.pi/agent/antigravity-bridge/sessions.json`) and resumes it on the next turn via `--conversation <id>`. agy keeps its own history, so only the latest user message is sent each turn.
+Multi-turn works. The provider binds a pi session to an agy conversation id (persisted under `<agentDir>/antigravity-bridge/sessions.json`, following `PI_CODING_AGENT_DIR`/`getAgentDir()`) and resumes it on the next turn via `--conversation <id>`. agy keeps its own history, so only the latest user message is sent each turn.
 
 ### Two engines
 
@@ -36,7 +36,7 @@ Residual limits (with or without the bridge):
 
 While agy is the active model it normally cannot see pi's universe of extensions: agentmemory, codegraph, web search, slack/asana, the `Ask*` delegations, and any other installed pi tool. This extension optionally bridges that gap.
 
-The bridge starts a localhost MCP server inside pi's process. The exposed catalog is computed live from pi's active tools on every `tools/list` and re-checked immediately before every `tools/call`: the `bridgeTools` mode, the session's `/agy tools` hidden set, and the bridge's own internal tools (`AskAntigravity`, the display-only `antigravity` wrapper, `activate_skill`, `bridge_poll_result`, the `agy_web_search`/`agy_read_url` wrappers) are filtered each time, and a call for anything outside the fresh set is rejected - a cached MCP catalog is not authorization. A call that passes routes into pi's own tool loop via the round-trip described below. Discovery has two layers. The provider's agy gets a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the driver passes that dir as an extra `--add-dir` when it spawns agy. A per-pid entry (`pi-bridge-<pid>`) is also registered in the user's global agy config (`~/.gemini/config/mcp_config.json`; foreign servers preserved, stale entries swept at start), so agy builds that read only the global config still find the bridge.
+The bridge starts a localhost MCP server inside pi's process. The exposed catalog is computed live from pi's active tools on every `tools/list` and re-checked immediately before every `tools/call`: the `bridgeTools` mode, the session's `/agy tools` hidden set, and the bridge's own internal tools (`AskAntigravity`, the display-only `antigravity` wrapper, `activate_skill`, `bridge_poll_result`, the `agy_web_search`/`agy_read_url` wrappers) are filtered each time, and a call for anything outside the fresh set is rejected - a cached MCP catalog is not authorization. A call that passes routes into pi's own tool loop via the round-trip described below. Discovery has two layers. The provider's agy gets a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`<agentDir>/antigravity-bridge/agy-mcp-<pid>/`) and the driver passes that dir as an extra `--add-dir` when it spawns agy. A per-pid entry (`pi-bridge-<pid>`) is also registered in the user's global agy config (`~/.gemini/config/mcp_config.json`; foreign servers preserved, stale entries swept at start), so agy builds that read only the global config still find the bridge.
 
 **Upstream pi APIs only.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call.
 
@@ -131,7 +131,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 
 ### The /agy command
 
-`/agy` configures the provider at runtime. Settings persist to `~/.pi/agent/antigravity-bridge/config.json` and take effect on the next turn.
+`/agy` configures the provider at runtime. Settings persist to `<agentDir>/antigravity-bridge/config.json` (pi's agent dir, so `PI_CODING_AGENT_DIR` is honored) and take effect on the next turn.
 
 ```
 /agy                      status summary, or open the full settings picker (TUI)
@@ -199,8 +199,10 @@ For isolation when running any agent that executes commands without a confirmati
 The extension keeps a daily log on your machine, sorted by day:
 
 ```
-~/.pi/extensions-data/estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson
+<configRoot>/extensions-data/estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson
 ```
+
+`configRoot` is dirname of pi's agent dir (`~/.pi` by default; `PI_CODING_AGENT_DIR` relocates it).
 
 One JSON record per line. Two verbosity tiers keep the disk cost at zero for regular users: by default only `error` records land on disk - everything routine (turn starts, tool calls, escalations, commands, driver failures) is withheld. Warnings are not lost: the extension toasts each one in the pi UI (bridge tool failures, stalls, timeouts, process exits), so users see them and can report them; deliberate aborts and failures pi already renders as the turn's own error block stay silent. Set `AGY_DEBUG=1` before reproducing a problem for the full trail: per-event driver lifecycle (spawn, exit, session load/new, unparks), turn starts and outcomes, bridge tool calls, escalations and poll traffic, late deliveries, list-tools traffic, recycle causes, and the raw bridge chatter. `/agy doctor` prints the log directory.
 

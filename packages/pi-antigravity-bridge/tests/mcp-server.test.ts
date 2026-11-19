@@ -4,8 +4,9 @@
 import { test, beforeEach, afterEach } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import type { McpServerHandle, McpBridgeDeps } from "../src/mcp-server.js";
-import { bridgeMcpConfigExists, startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
+import { bridgeMcpConfigDir, bridgeMcpConfigExists, startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
 
 let handle: McpServerHandle | null = null;
 
@@ -111,11 +112,7 @@ test("mcp-server: no stale config before start", () => {
 });
 
 function bridgeMcpConfigPathForTest(): string {
-	// Mirrors the module's private path helper without exporting it.
-	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const os = require("node:os") as typeof import("node:os");
-	const path = require("node:path") as typeof import("node:path");
-	return path.join(os.homedir(), ".pi", "agent", "antigravity-bridge", `agy-mcp-${process.pid}`, ".agents", "mcp_config.json");
+	return path.join(bridgeMcpConfigDir(), ".agents", "mcp_config.json");
 }
 
 beforeEach(() => {

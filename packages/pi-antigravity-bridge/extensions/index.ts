@@ -14,7 +14,7 @@
 // /agy command: full runtime config surface (engine, mode, permissions,
 // bridge tools, model, thinking, digest, system prompt) plus doctor,
 // authentication instructions, patch-cleanup, and session clear. Config persists to
-// ~/.pi/agent/antigravity-bridge/config.json so toggles survive restarts.
+// <agentDir>/antigravity-bridge/config.json so toggles survive restarts.
 
 import os from "node:os";
 import fs from "node:fs";
@@ -67,7 +67,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { configPath, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -138,7 +138,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// picker populated so the user gets a clear runtime error from agy rather
 	// than an empty model list. /reload re-runs this and refreshes after an
 	// `agy update`.
-	// loadModelCatalogRaw serves a short-TTL cache (~/.pi/agent/antigravity-bridge/
+	// loadModelCatalogRaw serves a short-TTL cache (<agentDir>/antigravity-bridge/
 	// models-cache.json) so reloads are instant and only re-spawn in the
 	// background when stale. Derive both catalogs from the same raw text
 	// (provider's slugified Gemini entries + the tool's family/version/tier
@@ -166,8 +166,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const FAIL_REASON_TURN_END = "antigravity turn ended with an unresolved pi tool call";
 	const FAIL_REASON_SHUTDOWN = "antigravity session shut down";
 
-	// Daily file log: every sink below feeds ~/.pi/extensions-data/
-	// estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson (see
+	// Daily file log: every sink below feeds <configRoot>/extensions-data/
+	// estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson, where
+	// configRoot is dirname(getAgentDir()) (see
 	// src/daily-log.ts). Fire-and-forget, secrets redacted, old days pruned.
 	// Support flow: "attach the last days' files from that dir".
 	const fileLog = createDailyLogger({ dir: logsDir() });
@@ -776,7 +777,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// bridge startup below: on a genuine first run the modal blocks input
 		// anyway, so the delay is invisible.
 		let setupEngine = engine;
-		if (event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(CONFIG_PATH)) {
+		if (event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
 			// Best-effort, like the legacy-patch notice below: a picker failure
 			// (mid-prompt TUI teardown, resize races) must never take down the
 			// rest of session_start - the MCP bridge startup included. The
@@ -814,7 +815,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 		if (!legacyFileAcpWarningShown && legacyConfigCleanupFailed) {
 			legacyFileAcpWarningShown = true;
-			const msg = `Couldn't remove the old "bin" setting from ${CONFIG_PATH} (details in the bridge log). Delete the "bin" line under "acp" by hand; turns run "agy acp" from the CLI.`;
+			const msg = `Couldn't remove the old "bin" setting from ${configPath()} (details in the bridge log). Delete the "bin" line under "acp" by hand; turns run "agy acp" from the CLI.`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
 		}
@@ -899,7 +900,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (mcpHandle) return; // already running (reload re-fires session_start)
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
-		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? process.cwd() : undefined);
+		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
 		const listTools = () => {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
 			// this endpoint through session/new or session/load; no global config write.
@@ -1256,7 +1257,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  models:        ${ctx.entries.length} ${source}`,
 		...settingsRows(ctx),
 		`  sessions:      ${ctx.store.size} bound`,
-		`  config:        ${CONFIG_PATH}`,
+		`  config:        ${configPath()}`,
 		"",
 		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
@@ -1390,7 +1391,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${cliFloor})`,
-					`  config:        ${CONFIG_PATH}`,
+					`  config:        ${configPath()}`,
 					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];
 				if (snap.engine === "acp" && snap.acp) {
@@ -1944,7 +1945,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 				theme,
 				{
 					title: "Antigravity provider",
-					subtitle: `Config file: ${CONFIG_PATH} — changes save when the dialog closes`,
+					subtitle: `Config file: ${configPath()} — changes save when the dialog closes`,
 					rows,
 					footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
 					onChange: (id, newValue) => {

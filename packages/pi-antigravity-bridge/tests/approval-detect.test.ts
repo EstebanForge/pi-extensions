@@ -11,7 +11,8 @@ import { test } from "vitest";
 import {
 	detectPermissionGateExtensions,
 	resolveGateMode,
-} from "../src/approval-detect.js";import { loadConfig } from "../src/config.js";
+} from "../src/approval-detect.js";
+import { loadConfig } from "../src/config.js";
 
 function tmpHome() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "agy-detect-"));
@@ -25,7 +26,7 @@ test("detects a known permission package from pi settings (npm: specifier)", () 
 		settings,
 		JSON.stringify({ packages: ["npm:@gotgenes/pi-permission-system@31.1.2", "npm:@some/other@1.0.0"] }),
 	);
-	const hits = detectPermissionGateExtensions({ home, settingsFiles: [settings] });
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir: path.join(home, ".pi", "agent"), settingsFiles: [settings] });
 	assert.equal(hits.length, 1);
 	assert.equal(hits[0].name, "@gotgenes/pi-permission-system");
 	assert.match(hits[0].evidence, /^settings:/);
@@ -34,10 +35,11 @@ test("detects a known permission package from pi settings (npm: specifier)", () 
 
 test("detects via on-disk config markers when settings say nothing", () => {
 	const home = tmpHome();
-	const configDir = path.join(home, ".pi", "agent", "extensions", "pi-permission-system");
+	const agentDir = path.join(home, ".pi", "agent");
+	const configDir = path.join(agentDir, "extensions", "pi-permission-system");
 	fs.mkdirSync(configDir, { recursive: true });
 	fs.writeFileSync(path.join(configDir, "config.json"), "{}");
-	const hits = detectPermissionGateExtensions({ home, settingsFiles: [] });
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir, settingsFiles: [] });
 	assert.deepEqual(
 		hits.map((h) => h.name),
 		["@gotgenes/pi-permission-system"],
@@ -48,7 +50,7 @@ test("detects via on-disk config markers when settings say nothing", () => {
 
 test("clean install detects nothing", () => {
 	const home = tmpHome();
-	const hits = detectPermissionGateExtensions({ home, settingsFiles: [] });
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir: path.join(home, ".pi", "agent"), settingsFiles: [] });
 	assert.deepEqual(hits, []);
 	fs.rmSync(home, { recursive: true, force: true });
 });
@@ -58,7 +60,7 @@ test("corrupt settings files are tolerated", () => {
 	const settings = path.join(home, ".pi", "agent", "settings.json");
 	fs.mkdirSync(path.dirname(settings), { recursive: true });
 	fs.writeFileSync(settings, "{not json");
-	assert.deepEqual(detectPermissionGateExtensions({ home, settingsFiles: [settings] }), []);
+	assert.deepEqual(detectPermissionGateExtensions({ home, cwd: home, agentDir: path.join(home, ".pi", "agent"), settingsFiles: [settings] }), []);
 	fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -76,12 +78,70 @@ test("name matching respects package-name boundaries (review finding 4)", () => 
 			],
 		}),
 	);
-	const hits = detectPermissionGateExtensions({ home, settingsFiles: [settings] });
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir: path.join(home, ".pi", "agent"), settingsFiles: [settings] });
 	assert.deepEqual(
 		hits.map((h) => h.name),
 		["@xzzpig/pi-permission-system"],
 	);
 	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("gotgenes global marker follows a relocated agent dir (issue #17)", () => {
+	const home = tmpHome();
+	const agentDir = path.join(home, ".gentle-shell", "agent");
+	const configDir = path.join(agentDir, "extensions", "pi-permission-system");
+	fs.mkdirSync(configDir, { recursive: true });
+	fs.writeFileSync(path.join(configDir, "config.json"), "{}");
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir, settingsFiles: [] });
+	assert.deepEqual(hits.map((h) => h.name), ["@gotgenes/pi-permission-system"]);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("monroewilliams marker reads <agentDir>/pi-permissions.jsonc (not the dead ~/.agent path)", () => {
+	const home = tmpHome();
+	const agentDir = path.join(home, ".gentle-shell", "agent");
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "pi-permissions.jsonc"), "{}");
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir, settingsFiles: [] });
+	assert.deepEqual(hits.map((h) => h.name), ["@monroewilliams/pi-permission-system"]);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("rhedbull marker stays on the literal homedir .pi path the extension hardcodes", () => {
+	const home = tmpHome();
+	const agentDir = path.join(home, ".gentle-shell", "agent");
+	const dir = path.join(home, ".pi", "agent", "extensions");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "permissions.json"), "{}");
+	const hits = detectPermissionGateExtensions({ home, cwd: home, agentDir, settingsFiles: [] });
+	assert.deepEqual(hits.map((h) => h.name), ["@rhedbull/pi-permissions"]);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("project policy marker stays on the literal cwd .pi path both writers hardcode", () => {
+	const home = tmpHome();
+	const cwd = tmpHome();
+	const agentDir = path.join(home, ".gentle-shell", "agent");
+	const dir = path.join(cwd, ".pi", "agent");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "pi-permissions.jsonc"), "{}");
+	const hits = detectPermissionGateExtensions({ home, cwd, agentDir, settingsFiles: [] });
+	assert.deepEqual(hits.map((h) => h.name), ["@gotgenes/pi-permission-system"]);
+	assert.match(hits[0].evidence, /pi-permissions\.jsonc$/);
+	fs.rmSync(home, { recursive: true, force: true });
+	fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("pi-owned settings candidates resolve against agentDir and CONFIG_DIR_NAME project dir", () => {
+	const home = tmpHome();
+	const agentDir = path.join(home, ".gentle-shell", "agent");
+	const cwd = tmpHome();
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:@rhedbull/pi-permissions@1.1.0"] }));
+	const hits = detectPermissionGateExtensions({ home, cwd, agentDir, settingsFiles: [] });
+	assert.deepEqual(hits.map((h) => h.name), ["@rhedbull/pi-permissions"]);
+	fs.rmSync(home, { recursive: true, force: true });
+	fs.rmSync(cwd, { recursive: true, force: true });
 });
 
 test("resolveGateMode matrix", () => {

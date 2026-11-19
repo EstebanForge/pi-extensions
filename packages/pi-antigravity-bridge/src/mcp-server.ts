@@ -20,7 +20,6 @@
 
 import http from "node:http";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,6 +31,7 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
 import { GATED_AGY_TOOL_SET } from "./approval-hook.js";
+import { bridgeDir } from "./config.js";
 
 /** Tools we do NOT expose to agy: it would just error (the provider is already
  *  antigravity, so the tool's own guard refuses; advertising it is noise). */
@@ -137,12 +137,10 @@ function clampProtocolVersionHeader(req: http.IncomingMessage): void {
 	}
 }
 
-const BRIDGE_BASE = path.join(os.homedir(), ".pi", "agent", "antigravity-bridge");
-
 /** Per-process config dir. Each pi session owns its own file, so concurrent
  *  sessions never race on or cross-route through one shared config. */
 export function bridgeMcpConfigDir(): string {
-	return path.join(BRIDGE_BASE, `agy-mcp-${process.pid}`);
+	return path.join(bridgeDir(), `agy-mcp-${process.pid}`);
 }
 
 function bridgeMcpConfigPath(): string {
@@ -166,7 +164,7 @@ export function isPidAlive(pid: number): boolean {
 }
 
 /** Best-effort cleanup of stale per-pid dirs left by crashed sessions. */
-export function sweepStaleBridgeDirs(baseDir: string = BRIDGE_BASE, alive: (pid: number) => boolean = isPidAlive): void {
+export function sweepStaleBridgeDirs(baseDir: string = bridgeDir(), alive: (pid: number) => boolean = isPidAlive): void {
 	let entries: string[];
 	try {
 		entries = fs.readdirSync(baseDir);

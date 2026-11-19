@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -41,7 +41,7 @@ import {
 	type ModelEntry,
 	type Mode,
 } from "@estebanforge/pi-ask-shared";
-import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
+import { extensionsDataDir, loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
 import { redactText } from "./redact.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
 import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
@@ -1169,11 +1169,10 @@ function renderAgentMessagesMarkdown(messages: readonly unknown[]): string {
 	return lines.join("\n");
 }
 
-/** Centralized scratch dir for full-context exports, following the
- *  ~/.pi/extensions-data/<author>/<extension>/ convention (see pi-token-cost-ledger).
- *  Derived from getAgentDir() so rebranded distros resolve correctly. */
+/** Centralized scratch dir for full-context exports (see src/config.ts
+ *  extensionsDataDir). */
 function askContextDir(): string {
-	return path.join(path.dirname(getAgentDir()), "extensions-data", "estebanforge", "pi-antigravity-bridge");
+	return extensionsDataDir();
 }
 
 interface AgyDetails {

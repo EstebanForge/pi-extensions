@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Every bridge-owned path now follows pi's agent dir (`PI_CODING_AGENT_DIR` / `getAgentDir()`) instead of hardcoded `~/.pi` (issue #17).** Isolated or rebranded pi homes (Gentle Shell-style wrappers) previously got their config, session bindings, model cache, ACP homes, per-pid agy-mcp dirs, patch backups, support logs, and suppression marker written under `~/.pi` anyway, and skill discovery plus permission-extension detection read the wrong home. All state now derives from one `bridgeDir()`/`extensionsDataDir()` helper pair anchored at `getAgentDir()`, skill discovery mirrors pi's own loader (`<agentDir>/skills` user, `<project>/<CONFIG_DIR_NAME>/skills` project), and detection markers follow each writer's verified layout: gotgenes and monroewilliams resolve globals via `getAgentDir()` (the old literal `~/.agent/pi-permissions.jsonc` marker matched no path any published monroewilliams release ever wrote, so installs it silently missed now detect), while rhedbull and the project policy file stay on the literal `.pi` paths their packages hardcode. Default installs resolve byte-identical to before; env-override users start fresh — existing `sessions.json` conversation bindings and the model cache under the old path are not migrated. `CONFIG_PATH`/`STORE_PATH`/`MODELS_CACHE_PATH`/`BRIDGE_BASE`/`PATCH_BACKUP_DIR` consts became functions (`configPath()` et al.) so the resolution is per-call, and the `{ home }`/`{ cwd }` test seams gained an `agentDir` override.
+
 ## [1.11.0] - 2026-11-18
 
 ### Added

@@ -1,5 +1,5 @@
 // Runtime config for the antigravity provider. Persisted at
-// ~/.pi/agent/antigravity-bridge/config.json so the /agy command can
+// <agentDir>/antigravity-bridge/config.json so the /agy command can
 // toggle settings that take effect on the next turn.
 //
 // Knobs today:
@@ -11,31 +11,32 @@
 // and one-off runs can force a setting without editing the file.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { normalizeAgyAgentName } from "./agents.js";
 
-const CONFIG_PATH = path.join(
-	os.homedir(),
-	".pi",
-	"agent",
-	"antigravity-bridge",
-	"config.json",
-);
+/** pi's agent dir (env override PI_CODING_AGENT_DIR, else ~/.pi/agent); every
+ *  bridge-owned path derives from it so isolated or rebranded pi homes keep
+ *  their state together (issue #17). */
+export function bridgeDir(agentDir: string = getAgentDir()): string {
+	return path.join(agentDir, "antigravity-bridge");
+}
+
+export function configPath(agentDir: string = getAgentDir()): string {
+	return path.join(bridgeDir(agentDir), "config.json");
+}
+
+/** Scoped extensions-data convention shared with other EstebanForge
+ *  extensions: <configRoot>/extensions-data/<author>/<name>, anchored at
+ *  dirname(getAgentDir()) so it relocates with the agent dir too. */
+export function extensionsDataDir(agentDir: string = getAgentDir()): string {
+	return path.join(path.dirname(agentDir), "extensions-data", "estebanforge", "pi-antigravity-bridge");
+}
 
 /** Daily debug logs land here, sorted by day, for post-mortems and user
- *  support (see src/daily-log.ts). Same homedir convention as CONFIG_PATH;
- *  lives under the scoped extensions-data convention shared with other
- *  EstebanForge extensions. */
-export function logsDir(): string {
-	return path.join(
-		os.homedir(),
-		".pi",
-		"extensions-data",
-		"estebanforge",
-		"pi-antigravity-bridge",
-		"logs",
-	);
+ *  support (see src/daily-log.ts). */
+export function logsDir(agentDir: string = getAgentDir()): string {
+	return path.join(extensionsDataDir(agentDir), "logs");
 }
 
 /** Native `agy acp` is the default for new installs; stream-json remains
@@ -278,21 +279,21 @@ function readConfigFile(configPath: string): Partial<AgyConfig> {
 /** Strip the retired acp.bin key from the raw config file; returns true when
  *  removed. Raw passthrough on purpose (no defaults merge): users keep their
  *  minimal hand-edited shape instead of gaining the full default set. */
-export function removeLegacyAcpBin(configPath: string = CONFIG_PATH): boolean {
-	const file = readConfigFile(configPath) as Record<string, unknown>;
+export function removeLegacyAcpBin(configFile: string = configPath()): boolean {
+	const file = readConfigFile(configFile) as Record<string, unknown>;
 	if (!file.acp || typeof file.acp !== "object" || Array.isArray(file.acp)) return false;
 	const acp = file.acp as Record<string, unknown>;
 	if (!("bin" in acp)) return false;
 	delete acp.bin;
 	// Rename would replace a dotfiles-managed symlink with a regular file;
 	// write through the resolved target so the link survives.
-	writeConfigJson(fs.realpathSync(configPath), file);
+	writeConfigJson(fs.realpathSync(configFile), file);
 	return true;
 }
 
 /** Load config merged over defaults. Env vars override the file when set. */
-export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
-	let file: Partial<AgyConfig> = readConfigFile(configPath);
+export function loadConfig(configFile: string = configPath()): AgyConfig {
+	let file: Partial<AgyConfig> = readConfigFile(configFile);
 
 	// Env overrides file (matches the skipPermissions pattern).
 	// The naive OR `env === "plan" || file.mode === "plan"` would ignore an
@@ -305,7 +306,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	// the acp default is for new installs only - an existing install keeps
 	// the legacy stream-json engine. existsSync is false on EACCES too, which reads as fresh
 	// and picks acp; an unreadable config dir is a broken install either way.
-	const freshInstall = !fs.existsSync(configPath);
+	const freshInstall = !fs.existsSync(configFile);
 	const engineFallback = freshInstall || file.engine !== undefined ? DEFAULT_ENGINE : "stream-json";
 	const engine = narrowEngine(String(process.env.AGY_ENGINE ?? file.engine ?? engineFallback).toLowerCase());
 
@@ -484,8 +485,8 @@ function writeConfigJson(configPath: string, value: unknown): void {
  *  legacy keys (acp.permissions) that loadConfig normalization drops. */
 export type ConfigPatch = Partial<Omit<AgyConfig, "acp">> & { acp?: Partial<AcpConfig> };
 
-export function saveConfig(patch: ConfigPatch, configPath: string = CONFIG_PATH): AgyConfig {
-	const file = readConfigFile(configPath);
+export function saveConfig(patch: ConfigPatch, configFile: string = configPath()): AgyConfig {
+	const file = readConfigFile(configFile);
 	// Null-safe on nested objects: a hand-edited or legacy file can carry
 	// "acp": null; loadConfig tolerates it, so must saveConfig. Key presence
 	// triggers normalization (a null becomes the default shape, never null).
@@ -497,7 +498,7 @@ export function saveConfig(patch: ConfigPatch, configPath: string = CONFIG_PATH)
 	// write the acp default into an existing install's file on any unrelated
 	// save, switching an existing install to ACP on the next start.
 	const persistedEngine = patch.engine ?? file.engine
-		?? (fs.existsSync(configPath) ? "stream-json" : DEFAULT_ENGINE);
+		?? (fs.existsSync(configFile) ? "stream-json" : DEFAULT_ENGINE);
 	const { acp: patchAcp, ...restPatch } = patch;
 	const mergedAcp: AcpConfig = {
 		usageEstimate: patchAcp?.usageEstimate ?? fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate,
@@ -517,8 +518,6 @@ export function saveConfig(patch: ConfigPatch, configPath: string = CONFIG_PATH)
 		acp: mergedAcp,
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 	};
-	writeConfigJson(configPath, next);
+	writeConfigJson(configFile, next);
 	return next;
 }
-
-export { CONFIG_PATH };

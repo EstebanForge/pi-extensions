@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export const ACTIVATE_SKILL_TOOL_NAME = "activate_skill";
 
@@ -41,9 +42,10 @@ function parseFrontmatter(raw: string): { name?: string; description?: string } 
 // "docs/skills.md - Locations") so the bridge's activate_skill catalog
 // matches the [Skills] list pi shows in its system prompt:
 //
-// - Global: ~/.pi/agent/skills (pi style) and ~/.agents/skills (agents style,
+// - Global: <agentDir>/skills (pi style) and ~/.agents/skills (agents style,
 //   the cross-harness standard).
-// - Project: .pi/skills (pi style) and .agents/skills in cwd + ancestors up
+// - Project: <project>/.pi/skills (pi style; CONFIG_DIR_NAME, so rebranded
+//   distros relocate it) and .agents/skills in cwd + ancestors up
 //   to the git repo root (agents style).
 // - Both styles discover every directory holding a SKILL.md, recursively;
 //   grouping folders (no SKILL.md) are descended into and a skill's contents
@@ -64,16 +66,29 @@ export interface SkillLocation {
 
 const MAX_DEPTH = 16; // symlink-loop insurance; real catalogs nest 1-2 levels
 
-/** Ordered skill locations for a session: pi global dirs, then project dirs
- *  (project `.agents/skills` walks cwd ancestors up to the git root). */
-export function skillLocations(projectDir?: string, home: string = os.homedir()): SkillLocation[] {
+export interface SkillScanOptions {
+	/** Project root: adds the project pi-skills dir and ancestor .agents/skills
+	 *  dirs (walked up to the git root). */
+	projectDir?: string;
+	/** HOME override for the cross-harness ~/.agents/skills dir (tests). */
+	home?: string;
+	/** pi agent dir override for pi's user skills dir (tests). */
+	agentDir?: string;
+}
+
+/** Ordered skill locations for a session, mirroring pi's own loader:
+ *  <agentDir>/skills, then cross-harness ~/.agents/skills; with a projectDir
+ *  also <project>/<CONFIG_DIR_NAME>/skills and each ancestor's .agents/skills. */
+export function skillLocations(opts: SkillScanOptions = {}): SkillLocation[] {
+	const home = opts.home ?? os.homedir();
+	const agentDir = opts.agentDir ?? getAgentDir();
 	const out: SkillLocation[] = [
-		{ dir: path.join(home, ".pi", "agent", "skills"), style: "pi" },
+		{ dir: path.join(agentDir, "skills"), style: "pi" },
 		{ dir: path.join(home, ".agents", "skills"), style: "agents" },
 	];
-	if (!projectDir) return out;
-	out.push({ dir: path.join(projectDir, ".pi", "skills"), style: "pi" });
-	let dir = path.resolve(projectDir);
+	if (!opts.projectDir) return out;
+	out.push({ dir: path.join(opts.projectDir, CONFIG_DIR_NAME, "skills"), style: "pi" });
+	let dir = path.resolve(opts.projectDir);
 	for (;;) {
 		out.push({ dir: path.join(dir, ".agents", "skills"), style: "agents" });
 		if (path.dirname(dir) === dir || fs.existsSync(path.join(dir, ".git"))) break;
@@ -144,11 +159,11 @@ function scanLocation(loc: SkillLocation): SkillLite[] {
 }
 
 /** pi-faithful skill catalog: every skill pi itself would load, deduped by
- *  name (first wins). `home` is injectable for tests. */
-export function scanSkills(projectDir?: string, home: string = os.homedir()): SkillLite[] {
+ *  name (first wins). All roots are injectable for tests. */
+export function scanSkills(opts: SkillScanOptions = {}): SkillLite[] {
 	const seen = new Set<string>();
 	const out: SkillLite[] = [];
-	for (const loc of skillLocations(projectDir, home)) {
+	for (const loc of skillLocations(opts)) {
 		for (const skill of scanLocation(loc)) {
 			if (seen.has(skill.name)) continue;
 			seen.add(skill.name);

@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /** npm names of the audited pi permission packages (docs/TODO.md 2.4). */
 export const KNOWN_GATE_PACKAGES = [
@@ -82,22 +83,31 @@ function containsName(lower: string, name: string): boolean {
 /**
  * Detect installed third-party permission extensions.
  *
- * @param opts.home  HOME override for tests.
+ * Pi-owned candidates (settings.json) resolve against pi's agent dir and
+ * CONFIG_DIR_NAME so isolated or rebranded homes are seen. On-disk markers
+ * follow each writer's real layout (verified in the published tarballs,
+ * 2026-11-19): gotgenes and monroewilliams resolve globals via getAgentDir(),
+ * while rhedbull and the project policy file hardcode literal .pi — those
+ * must stay literal or detection misses real installs.
+ *
+ * @param opts.home  HOME override for the literal-.pi markers (tests).
  * @param opts.cwd   project dir override for tests (project settings).
+ * @param opts.agentDir  pi agent dir override (tests).
  * @param opts.settingsFiles  extra settings files to scan (tests).
  */
 export function detectPermissionGateExtensions(
-	opts: { home?: string; cwd?: string; settingsFiles?: string[] } = {},
+	opts: { home?: string; cwd?: string; agentDir?: string; settingsFiles?: string[] } = {},
 ): GateExtensionHit[] {
 	const home = opts.home ?? os.homedir();
 	const cwd = opts.cwd ?? process.cwd();
+	const agentDir = opts.agentDir ?? getAgentDir();
 	const hits: GateExtensionHit[] = [];
 	const seen = new Set<string>();
 
 	const settingsCandidates = [
 		...(opts.settingsFiles ?? []),
-		path.join(home, ".pi", "agent", "settings.json"),
-		path.join(cwd, ".pi", "settings.json"),
+		path.join(agentDir, "settings.json"),
+		path.join(cwd, CONFIG_DIR_NAME, "settings.json"),
 	];
 	for (const file of settingsCandidates) {
 		for (const entry of packagesFrom(file)) {
@@ -109,13 +119,18 @@ export function detectPermissionGateExtensions(
 		}
 	}
 
-	// Known config-file markers from the audit. Presence of the config does
-	// not prove the extension is installed, but every audited package writes
-	// its config only after install + first run, which is evidence enough for
-	// an opt-in default.
+	// On-disk config markers. Pi-resolved globals first: gotgenes reads
+	// getGlobalConfigDir(getAgentDir()); monroewilliams writes
+	// join(getAgentDir(), "pi-permissions.jsonc") (its default agent dir is
+	// getAgentDir(), so the old literal ~/.agent marker never matched any
+	// real install). Literal .pi below: rhedbull hardcodes homedir()/.pi,
+	// and both writers of the project policy file hardcode cwd/.pi.
+	// Marker presence is install evidence, not proof: every audited package
+	// writes its config only after install + first run, which is evidence
+	// enough for an opt-in default.
 	const markers: Array<{ file: string; name: string }> = [
-		{ file: path.join(home, ".pi", "agent", "extensions", "pi-permission-system"), name: "@gotgenes/pi-permission-system" },
-		{ file: path.join(home, ".agent", "pi-permissions.jsonc"), name: "@monroewilliams/pi-permission-system" },
+		{ file: path.join(agentDir, "extensions", "pi-permission-system"), name: "@gotgenes/pi-permission-system" },
+		{ file: path.join(agentDir, "pi-permissions.jsonc"), name: "@monroewilliams/pi-permission-system" },
 		{ file: path.join(home, ".pi", "agent", "extensions", "permissions.json"), name: "@rhedbull/pi-permissions" },
 		{ file: path.join(cwd, ".pi", "agent", "pi-permissions.jsonc"), name: "@gotgenes/pi-permission-system" },
 	];
