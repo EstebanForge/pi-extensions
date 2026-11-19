@@ -1965,15 +1965,24 @@ async function runTurnDriver(
 			store.delete(key);
 			stagedAgentByConversation.delete(existing.conversationId);
 		} else if (outcome.status === "OK" && !outcome.aborted) {
-			store.set(key, {
-				conversationId: outcome.conversationId,
-				lastStepIdx: -1,
-				lastMessageCount: messageCount,
-				digestBoundary: settleBoundary,
-				digestSummaryId: settleSummaryId,
-			});
-			deps.pendingCompactionHandoff?.delete(key);
-			if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
+			// A session_compact rotation may land while this pass is parked in the
+			// old conversation (re-read, not the turn-start flag). Rebinding then
+			// would restore the rotated-away conversation and swallow the handoff;
+			// leave the binding deleted so the next pass takes the compactionResume
+			// path and delivers the summary into a fresh conversation.
+			if (isContinuation && deps.pendingCompactionHandoff?.has(key)) {
+				deps.log?.("rotation-binding-deferred", { conversation: outcome.conversationId, key }, "info");
+			} else {
+				store.set(key, {
+					conversationId: outcome.conversationId,
+					lastStepIdx: -1,
+					lastMessageCount: messageCount,
+					digestBoundary: settleBoundary,
+					digestSummaryId: settleSummaryId,
+				});
+				deps.pendingCompactionHandoff?.delete(key);
+				if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
+			}
 		}
 		// A failed or aborted turn on the SAME conversation keeps the pre-turn
 		// record: whether the prompt actually landed in agy's DB is not

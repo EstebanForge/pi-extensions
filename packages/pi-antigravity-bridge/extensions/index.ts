@@ -616,8 +616,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	});
 	pi.on("session_compact", (_event, ctx) => {
 		try {
-			// getSessionId is missing from the published ReadonlySessionManager
-			// type (dts minification), so shape-cast like model_select below.
+			// Shape-cast as in model_select below: tolerate pi builds whose dts
+			// omits getSessionId.
 			const sm = ctx.sessionManager as { getSessionId?: () => string };
 			const sid = sm.getSessionId?.();
 			const key = sessionKey(sid ? { sessionId: sid } : undefined, ctx.cwd, engine);

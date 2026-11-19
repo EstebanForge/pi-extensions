@@ -726,4 +726,108 @@ describe("post-compaction session rotation and handoff", () => {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("rotation landing mid-park survives the continuation's completion (no rebind, latch kept)", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rotate-midpark-"));
+		try {
+			const requests: DriverTurnRequest[] = [];
+			// The parked agy turn lives in the OLD conversation and is still
+			// running: a live activeHandle parks the bridge call, and a live
+			// reentry handle whose outcome still reports that id is the mid-park
+			// continuation shape.
+			const parkedHandle = {
+				id: "original-turn",
+				outcome: new Promise<never>(() => {}),
+				next: async () => null,
+				pushExternal: () => {},
+			};
+			const reentryHandle = {
+				id: "parked-turn",
+				outcome: Promise.resolve(okOutcome("conv-old", "parked work finished")),
+				next: async () => null,
+				pushExternal: () => {},
+			};
+			const driver = {
+				get activeHandle() {
+					return parkedHandle;
+				},
+				kickIdle: () => {},
+				reentry: () => reentryHandle,
+				snapshot: () => ({ state: "ready", conversationId: "conv-old", stats: {} }),
+				run: async (opts: DriverTurnRequest) => {
+					// First run binds conv-old; later fresh runs land conv-fresh.
+					const conv = requests.length === 0 ? "conv-old" : "conv-fresh";
+					requests.push(opts);
+					return {
+						id: `fake-turn-${requests.length}`,
+						outcome: Promise.resolve(okOutcome(conv, "ok")),
+						next: async () => null,
+						pushExternal: () => {},
+					} satisfies TurnHandle as unknown as TurnHandle;
+				},
+			} as unknown as StreamDriver;
+			const store = new SessionStore(path.join(dir, "sessions.json"));
+			const rt = new ToolRoundTrips(driver);
+			const handoff = new Set<string>();
+			const streamSimple = createStreamSimple({
+				entries: [{ id: model.id, full: "gemini-3.8-flash" }],
+				store,
+				driver,
+				acpDriver: driver,
+				engine: "acp",
+				roundTrips: rt,
+				pendingCompactionHandoff: handoff,
+			});
+			const opts = { cwd: dir, sessionId: "midpark-sess" } as unknown as SimpleStreamOptions;
+			const key = sessionKey(opts, dir, "acp");
+
+			await drainTerminal(streamSimple(model, normalizeContext({ messages: [user("initial task")] }), opts));
+			assert.equal(store.get(key)?.conversationId, "conv-old");
+
+			// session_compact fires while the bridge call below is still parked.
+			assert.equal(rotateSessionOnCompaction(store, key, handoff), "conv-old");
+			const parkedPromise = rt
+				.onToolCall("parked-call-1", "AskClaude", {}, new AbortController().signal)
+				.then(
+					() => "resolved",
+					() => "rejected",
+				);
+
+			// The continuation pass completes the parked turn in conv-old; it must
+			// not rebind the rotated-away conversation nor consume the handoff.
+			await drainTerminal(
+				streamSimple(
+					model,
+					normalizeContext({
+						messages: [user("initial task"), toolResultMsg("parked-call-1", "AskClaude", "late answer")],
+					}),
+					opts,
+				),
+			);
+			await parkedPromise;
+			assert.equal(store.get(key), null);
+			assert.equal(handoff.has(key), true);
+
+			// The surviving handoff still delivers: the next tail turn seeds a
+			// fresh conversation with the compaction summary and consumes the latch.
+			await drainTerminal(
+				streamSimple(
+					model,
+					normalizeContext({
+						messages: [
+							compaction("Key decision: keep SQLite schema v2."),
+							toolResultMsg("parked-call-1", "AskClaude", "late answer"),
+						],
+					}),
+					opts,
+				),
+			);
+			assert.equal(requests[1]?.conversationId, null);
+			assert.match(requests[1]?.contextBlock?.text ?? "", /keep SQLite schema v2/);
+			assert.equal(store.get(key)?.conversationId, "conv-fresh");
+			assert.equal(handoff.has(key), false);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
