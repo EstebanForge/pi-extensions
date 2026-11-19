@@ -795,7 +795,7 @@ describe("post-compaction session rotation and handoff", () => {
 
 			// The continuation pass completes the parked turn in conv-old; it must
 			// not rebind the rotated-away conversation nor consume the handoff.
-			await drainTerminal(
+			const continuation = await drainTerminal(
 				streamSimple(
 					model,
 					normalizeContext({
@@ -804,7 +804,8 @@ describe("post-compaction session rotation and handoff", () => {
 					opts,
 				),
 			);
-			await parkedPromise;
+			assert.equal(await parkedPromise, "resolved");
+			assert.equal(continuation.type, "done");
 			assert.equal(store.get(key), null);
 			assert.equal(handoff.has(key), true);
 
@@ -824,6 +825,84 @@ describe("post-compaction session rotation and handoff", () => {
 			);
 			assert.equal(requests[1]?.conversationId, null);
 			assert.match(requests[1]?.contextBlock?.text ?? "", /keep SQLite schema v2/);
+			assert.equal(store.get(key)?.conversationId, "conv-fresh");
+			assert.equal(handoff.has(key), false);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("rotation survives a strand redelivery into the old conversation (no rebind, latch kept)", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rotate-strand-"));
+		try {
+			const requests: DriverTurnRequest[] = [];
+			const parkedHandle = {
+				id: "original-turn",
+				outcome: new Promise<never>(() => {}),
+				next: async () => null,
+				pushExternal: () => {},
+			};
+			// Strand redelivery targets the OLD conversation (stampConversation);
+			// the follow-up pass lands a fresh one.
+			const convByRequest = ["conv-old", "conv-old", "conv-fresh"];
+			const driver = {
+				get activeHandle() {
+					return parkedHandle;
+				},
+				kickIdle: () => {},
+				reentry: () => null,
+				snapshot: () => ({ state: "ready", conversationId: "conv-old", stats: {} }),
+				run: async (opts: DriverTurnRequest) => {
+					const conv = convByRequest[Math.min(requests.length, convByRequest.length - 1)];
+					requests.push(opts);
+					return {
+						id: `fake-turn-${requests.length}`,
+						outcome: Promise.resolve(okOutcome(conv, "ok")),
+						next: async () => null,
+						pushExternal: () => {},
+					} satisfies TurnHandle as unknown as TurnHandle;
+				},
+			} as unknown as StreamDriver;
+			const store = new SessionStore(path.join(dir, "sessions.json"));
+			const rt = new ToolRoundTrips(driver, undefined, { escalateAfterMs: 1 });
+			const handoff = new Set<string>();
+			const streamSimple = createStreamSimple({
+				entries: [{ id: model.id, full: "gemini-3.8-flash" }],
+				store,
+				driver,
+				acpDriver: driver,
+				engine: "acp",
+				roundTrips: rt,
+				pendingCompactionHandoff: handoff,
+			});
+			const opts = { cwd: dir, sessionId: "strand-sess" } as unknown as SimpleStreamOptions;
+			const key = sessionKey(opts, dir, "acp");
+
+			await drainTerminal(streamSimple(model, normalizeContext({ messages: [user("initial task")] }), opts));
+			assert.equal(store.get(key)?.conversationId, "conv-old");
+
+			// A bridge call escalated, the model ended its turn without polling,
+			// and the answer landed as a strand stamped with the old conversation.
+			const esc = await rt.onToolCall("strand-call-1", "ask_user_question", {}, new AbortController().signal);
+			assert.equal("escalated" in esc && esc.escalated, true);
+			rt.stampConversation("conv-old");
+			rt.resolve("strand-call-1", "user answered yes", false);
+
+			// session_compact fires before the next user prompt.
+			assert.equal(rotateSessionOnCompaction(store, key, handoff), "conv-old");
+
+			// The next pass sweeps the strand and re-delivers it into the OLD
+			// conversation; it must not rebind it nor consume the handoff.
+			await drainTerminal(streamSimple(model, normalizeContext({ messages: [user("next question")] }), opts));
+			assert.equal(requests[1]?.conversationId, "conv-old");
+			assert.match(requests[1]?.prompt ?? "", /user answered yes/);
+			assert.equal(store.get(key), null);
+			assert.equal(handoff.has(key), true);
+
+			// Strand consumed: the next prompt opens the fresh conversation,
+			// binds it, and consumes the one-shot handoff.
+			await drainTerminal(streamSimple(model, normalizeContext({ messages: [user("and one more")] }), opts));
+			assert.equal(requests[2]?.conversationId, null);
 			assert.equal(store.get(key)?.conversationId, "conv-fresh");
 			assert.equal(handoff.has(key), false);
 		} finally {

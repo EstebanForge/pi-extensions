@@ -1557,6 +1557,14 @@ async function runTurnDriver(
 				images: view.images,
 			};
 		});
+	// A rotation that lands mid-turn must win over any bind of a PRE-ROTATION
+	// conversation: continuations and strand redeliveries both target the old
+	// conversation id, so binding their outcomes would restore the
+	// rotated-away binding and swallow the handoff. Evaluated at bind time:
+	// the latch may arm after turn start.
+	const rotationGuardArmed = (): boolean =>
+		(isContinuation || redeliveryConversation !== undefined) &&
+		deps.pendingCompactionHandoff?.has(key) === true;
 	/** Stream-json has no image channel in the turn input: stage the blocks
 	 *  to temp files and let the note point the model at the bridge read
 	 *  tool, whose result images the CLI delivers (probe 2026-09-07). ACP
@@ -1835,7 +1843,7 @@ async function runTurnDriver(
 		// recreated a conversation, so the snapshot id is the real one, and
 		// the staged agent must move with the binding or a stream-json resume
 		// re-runs without its carrier-agent profile.
-		if (!ephemeral && !existing) {
+		if (!ephemeral && !existing && !rotationGuardArmed()) {
 			const parkedConv = deps.driver.snapshot().conversationId;
 			if (parkedConv) {
 				store.set(key, {
@@ -1965,12 +1973,7 @@ async function runTurnDriver(
 			store.delete(key);
 			stagedAgentByConversation.delete(existing.conversationId);
 		} else if (outcome.status === "OK" && !outcome.aborted) {
-			// A session_compact rotation may land while this pass is parked in the
-			// old conversation (re-read, not the turn-start flag). Rebinding then
-			// would restore the rotated-away conversation and swallow the handoff;
-			// leave the binding deleted so the next pass takes the compactionResume
-			// path and delivers the summary into a fresh conversation.
-			if (isContinuation && deps.pendingCompactionHandoff?.has(key)) {
+			if (rotationGuardArmed()) {
 				deps.log?.("rotation-binding-deferred", { conversation: outcome.conversationId, key }, "info");
 			} else {
 				store.set(key, {
