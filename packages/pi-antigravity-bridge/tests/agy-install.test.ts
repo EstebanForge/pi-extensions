@@ -5,11 +5,11 @@ import path from "node:path";
 import { test } from "vitest";
 import { agyAuthenticationMessage, agyInstallCommand, installAgyCli } from "../src/agy-install.js";
 
-test("Linux and macOS use the official shell installer", () => {
+test("Linux and macOS download to a file before executing it", () => {
 	for (const platform of ["linux", "darwin"] as const) {
 		assert.deepEqual(agyInstallCommand(platform), {
 			command: "bash",
-			args: ["-c", "set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+			args: ["-c", "t=$(mktemp) && trap 'rm -f \"$t\"' EXIT && curl -fsSL https://antigravity.google/cli/install.sh -o \"$t\" && bash \"$t\""],
 		});
 	}
 });
@@ -46,12 +46,14 @@ test("installer failure is visible and includes bounded output", async () => {
 	assert.deepEqual(result, { ok: false, error: "download failed" });
 });
 
-test("a zero installer exit without a usable agy is a failure", async () => {
+test("a zero installer exit without a usable agy is a failure with the installer's own tail", async () => {
 	const result = await installAgyCli({
-		run: async () => ({ code: 0, output: "installer claims success" }),
+		run: async () => ({ code: 0, output: "Notice: 'agy' is already installed at /opt/agy/bin/agy.\nlines in between\n" }),
 		verify: () => false,
 	});
-	assert.deepEqual(result, { ok: false, error: "installer finished, but agy is not available in this pi process; open a new terminal, run `agy --version`, then restart pi" });
+	assert.match(result.ok ? "" : result.error, /installer finished, but agy is not available/);
+	assert.match(result.ok ? "" : result.error, /set AGY_BIN/);
+	assert.match(result.ok ? "" : result.error, /already installed at \/opt\/agy\/bin\/agy/);
 });
 
 test("a failed curl cannot masquerade as a successful pipeline", { skip: process.platform === "win32" }, async () => {
@@ -63,6 +65,38 @@ test("a failed curl cannot masquerade as a successful pipeline", { skip: process
 	try {
 		const result = await installAgyCli({ verify: () => true });
 		assert.equal(result.ok, false);
+	} finally {
+		process.env.PATH = previousPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("the downloaded script reaches the consumer as a file, not a pipe", { skip: process.platform === "win32" }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-install-tempfile-"));
+	const marker = path.join(dir, "payload-seen");
+	fs.writeFileSync(
+		path.join(dir, "curl"),
+		[
+			"#!/usr/bin/env bash",
+			'out=""',
+			'prev=""',
+			'for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done',
+			// The payload is itself a script: the inner `bash "$t"` proves the
+			// download arrived on disk as an executable file (issue #19: under
+			// curl|bash a consumer exiting early faked a download failure).
+			`printf '%s\\n' ${JSON.stringify(`printf payload-ran > ${JSON.stringify(marker)}`)} > "$out"`,
+			"",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	// No bash shim in this dir: a fake bash would catch the shims' own
+	// `#!/usr/bin/env bash` lookups and recurse. Only curl is intercepted.
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${dir}${path.delimiter}${previousPath ?? ""}`;
+	try {
+		const result = await installAgyCli({ verify: () => true });
+		assert.equal(result.ok, true);
+		assert.equal(fs.existsSync(marker), true);
 	} finally {
 		process.env.PATH = previousPath;
 		fs.rmSync(dir, { recursive: true, force: true });

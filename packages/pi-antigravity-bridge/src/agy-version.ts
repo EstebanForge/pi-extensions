@@ -19,6 +19,12 @@ import path from "node:path";
  *  and the event mapping rely on; older agy predates verified fields. */
 export const MIN_AGY_VERSION = "1.1.22";
 export const MIN_AGY_ACP_VERSION = "1.5.3";
+
+/** A too-old agy cannot be fixed by the official installer (it no-ops on an
+ *  existing install); the CLI updates itself, so the remedy is `agy update`. */
+export function agyUpdateMessage(version: string, floor: string): string {
+	return `agy ${version} is too old for this engine; run \`agy update\` in a terminal to upgrade to ${floor} or newer (the official installer cannot upgrade an existing install).`;
+}
 /** Highest agy release where the top-level --gemini_dir flag was
  *  live-verified to isolate MCP discovery (issue #14 work, 2026-11-13).
  *  The flag is undocumented upstream and may change shape in future

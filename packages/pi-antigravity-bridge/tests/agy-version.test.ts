@@ -24,6 +24,7 @@ import {
 	resolveStreamHomeMode,
 	resetAgyVersionCache,
 	resetGeminiDirProbeCache,
+	agyUpdateMessage,
 } from "../src/agy-version.js";
 
 /** A fake binary printing `output` to stdout and exiting 0. */
@@ -268,4 +269,12 @@ test("resolveStreamHomeMode: probe-gated isolation and legacy fallback", () => {
 		resolveStreamHomeMode({ engine: "acp", agentsRootOverride: false, probe: undefined }),
 		"legacy",
 	);
+});
+
+test("agyUpdateMessage points at agy update, not at an installer that cannot upgrade", () => {
+	const message = agyUpdateMessage("1.5.11", "1.5.3");
+	assert.match(message, /1\.5\.11 is too old/);
+	assert.match(message, /`agy update`/);
+	assert.match(message, /1\.5\.3 or newer/);
+	assert.match(message, /cannot upgrade/);
 });

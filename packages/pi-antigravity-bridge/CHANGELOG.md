@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The agy installer no longer reports a working install as a failure (issue #19).** The Linux/macOS pipeline ran `curl | bash` under `set -o pipefail`: when Google's `install.sh` found agy already present it exited without draining the pipe, curl died with write error 23, and the bridge surfaced the raw notice plus curl noise as "installation failed" followed by a contradictory "agy is not installed" line. The download now lands in a temp file first (a consumer early-exit can no longer fake a download failure; real curl errors stay loud), the version-floor branch points at `agy update` instead of offering an installer that cannot upgrade an existing install, and the post-install verification failure now names the actual remedy (set `AGY_BIN` or fix PATH for pi) instead of advising a terminal that already works. Installer output in the failure toast is tail-truncated; the full text stays in the daily log.
+
 ## [1.12.0] - 2026-11-19
 
 ### Fixed

@@ -69,7 +69,7 @@ import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { configPath, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
-import { agyVersionVerdict, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
+import { agyVersionVerdict, agyUpdateMessage, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
 import { formatSubagentRoster, SubagentRoster } from "../src/subagent-roster.js";
 import { spawn } from "node:child_process";
@@ -227,6 +227,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let agySetupOffer: (() => Promise<void>) | null = null;
 	let agyMissingWarned = false;
 	let agyVersionWarned = false;
+	let agyVersionMessage = "";
 	// Two turn engines behind one contract: `agy acp` (default for new
 	// installs) and the stream-json `agy` CLI
 	// (fallback). Neither spawns anything until its first turn.
@@ -743,7 +744,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				return;
 			}
 			if (agyVersionWarned) {
-				if (explicit && ctx.mode === "tui") offerSetup(ctx.ui, true);
+				// The installer no-ops on an existing install, so re-offering it
+				// on an explicit re-check would toast a false "installed" (issue #19).
+				if (explicit && ctx.mode === "tui") ctx.ui.notify(agyVersionMessage, "warning");
 				return;
 			}
 			const rawCheck = await checkAgyCliVersion(binary);
@@ -751,11 +754,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const check = agyVersionVerdict(rawCheck.raw, floor);
 			if (check.status !== "unsupported") return;
 			agyVersionWarned = true;
-			const msg = `agy ${check.version} is too old for ${selectedEngine}; install ${floor} or newer.`;
+			agyVersionMessage = agyUpdateMessage(check.version ?? rawCheck.raw, floor);
 			if (ctx.mode === "tui") {
-				ctx.ui.notify(msg, "warning");
-				offerSetup(ctx.ui, explicit);
-			} else console.error(`[antigravity-bridge] ${msg}`);
+				ctx.ui.notify(agyVersionMessage, "warning");
+			} else console.error(`[antigravity-bridge] ${agyVersionMessage}`);
 		} catch (err) {
 			fileLog.log("agy-version-check", { error: String(err) }, "warn");
 		}

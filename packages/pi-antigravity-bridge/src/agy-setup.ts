@@ -6,12 +6,17 @@ export interface AgySetupUi {
 	setStatus: (id: string, text?: string) => void;
 }
 
+const toastError = (error: string): string => {
+	const tail = error.split("\n").slice(-5).join("\n");
+	return tail.length > 600 ? tail.slice(-600) : tail;
+};
+
 export function createAgySetupOffer(opts: {
 	ui: AgySetupUi;
 	binaryOverride?: string;
 	install?: typeof installAgyCli;
 	missingMessage: () => string;
-	log: (event: string, data: unknown, level: "warn" | "info") => void;
+	log: (event: string, data: unknown, level: "warn" | "info" | "error") => void;
 }): () => Promise<void> {
 	let offered = false;
 	let inFlight: Promise<void> | null = null;
@@ -50,13 +55,17 @@ export function createAgySetupOffer(opts: {
 				opts.ui.setStatus("agy-install", "Installing Antigravity CLI…");
 				const result = await install();
 				if (!result.ok) {
-					opts.log("agy-install", { error: result.error }, "warn");
-					notify(`Antigravity CLI installation failed: ${result.error}\n${opts.missingMessage()}`, "warning");
+					// Error tier: the default log keeps only errors, so the full
+					// installer output survives on disk while the toast shows the tail.
+					opts.log("agy-install", { error: result.error }, "error");
+					// The error text carries its own remedy; appending the
+					// missing-CLI copy contradicted "already installed" (issue #19).
+					notify(`Antigravity CLI installation failed: ${toastError(result.error)}`, "warning");
 					return;
 				}
 				notify(`Antigravity CLI installed. ${agyAuthenticationMessage()}`, "info");
 			} catch (err) {
-				opts.log("agy-install", { error: String(err) }, "warn");
+				opts.log("agy-install", { error: String(err) }, "error");
 				notify(`Antigravity CLI setup failed: ${String(err)}\n${opts.missingMessage()}`, "warning");
 			} finally {
 				try {

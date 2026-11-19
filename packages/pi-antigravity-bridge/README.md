@@ -87,7 +87,7 @@ Install with pi's package manager:
 pi install npm:@estebanforge/pi-antigravity-bridge
 ```
 
-Requires the **`agy` CLI** installed and authenticated. On an interactive start without it, the extension offers once per process to run Google's official installer after your confirmation, without blocking bridge startup. Linux and macOS use `set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | bash`; Windows PowerShell uses `irm https://antigravity.google/cli/install.ps1 | iex`. Installation is verified before the success message. Then run `agy` once to complete Google OAuth and restart pi. The extension resolves `agy` on `$PATH`, or via `AGY_BIN`; a bad explicit override gets correction instructions instead of an install. Headless sessions print the instructions without installing.
+Requires the **`agy` CLI** installed and authenticated. On an interactive start without it, the extension offers once per process to run Google's official installer after your confirmation, without blocking bridge startup. Linux and macOS download the install script to a temp file and run it under bash; Windows PowerShell uses `irm https://antigravity.google/cli/install.ps1 | iex`. Installation is verified before the success message. Then run `agy` once to complete Google OAuth and restart pi. The extension resolves `agy` on `$PATH`, or via `AGY_BIN`; a bad explicit override gets correction instructions instead of an install, and a too-old `agy` points at `agy update` (the installer cannot upgrade an existing install). Headless sessions print the instructions without installing.
 
 ## Usage
 

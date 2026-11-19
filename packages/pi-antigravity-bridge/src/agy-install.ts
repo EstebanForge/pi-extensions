@@ -13,9 +13,12 @@ export function agyInstallCommand(platform: NodeJS.Platform = process.platform):
 			args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://antigravity.google/cli/install.ps1 | iex"],
 		};
 	}
+	// curl|bash under pipefail turned install.sh's early "already installed"
+	// exit into curl write error 23, reported as a failed install (issue #19).
+	// Download to a file first so a consumer early-exit cannot fake one.
 	return {
 		command: "bash",
-		args: ["-c", "set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+		args: ["-c", "t=$(mktemp) && trap 'rm -f \"$t\"' EXIT && curl -fsSL https://antigravity.google/cli/install.sh -o \"$t\" && bash \"$t\""],
 	};
 }
 
@@ -77,7 +80,12 @@ export async function installAgyCli(opts: {
 		const result = await (opts.run ?? defaultRunner)(agyInstallCommand(opts.platform), opts.timeoutMs ?? 10 * 60_000);
 		if (result.code !== 0) return { ok: false, error: result.output || `installer exited with code ${result.code ?? "unknown"}` };
 		const verify = opts.verify ?? (() => isAgyInstalled(process.env.AGY_BIN || "agy"));
-		if (!(await verify())) return { ok: false, error: "installer finished, but agy is not available in this pi process; open a new terminal, run `agy --version`, then restart pi" };
+		if (!(await verify())) {
+			// The installer output often names where agy already lives (the
+			// already-installed notice); the tail turns the guidance actionable.
+			const tail = result.output.split("\n").slice(-3).join("\n");
+			return { ok: false, error: `installer finished, but agy is not available in this pi process; set AGY_BIN to the binary path or add its directory to PATH, then restart pi${tail ? `\n${tail}` : ""}` };
+		}
 		return { ok: true, output: result.output };
 	} catch (err) {
 		return { ok: false, error: err instanceof Error ? err.message : String(err) };
