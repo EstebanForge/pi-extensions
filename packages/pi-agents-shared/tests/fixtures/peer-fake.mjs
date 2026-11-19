@@ -43,7 +43,7 @@ switch (mode) {
 		process.exit(0);
 	}
 	case "stderr-flood": {
-		process.stderr.write("e".repeat(100_000));
+		process.stderr.write("e".repeat(1_000_000));
 		process.exit(0);
 	}
 	case "big-line": {

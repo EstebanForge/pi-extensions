@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runProcess, RunSpawnError } from "../src/run.js";
+import { runProcess, RunSpawnError, DEFAULT_STDERR_CAP_CHARS } from "../src/run.js";
 
 // Characterization suite for the child-process lifecycle, vendored verbatim
 // from @estebanforge/pi-ask-shared 0.1.3. Locks the gates this package's
@@ -144,7 +144,9 @@ describe("runProcess — lifecycle", () => {
 	it("caps stderr accumulation below the flood size", async () => {
 		const out = await runProcess({ ...peer("stderr-flood"), timeoutMs: 10_000 });
 		expect(out.stderr.length).toBeGreaterThan(0);
-		expect(out.stderr.length).toBeLessThan(100_000);
+		// The cap check appends whole read chunks, so retention can overshoot
+		// the cap by one chunk; 64KB is the max pipe read.
+		expect(out.stderr.length).toBeLessThanOrEqual(DEFAULT_STDERR_CAP_CHARS + 65_536);
 	});
 
 	it("rejects with RunSpawnError for a missing binary", async () => {

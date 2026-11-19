@@ -42,7 +42,7 @@ export interface RunProcessOptions {
 	 *  on session shutdown and raw peers can poll process state (pid,
 	 *  exitCode) while the tree is alive. */
 	onSpawn?: (killTree: () => void, proc: ChildProcess) => void;
-	/** Max stderr chars retained; further chunks are dropped. */
+	/** Max stderr chars retained; the chunk crossing the cap is kept whole, so retention can exceed the cap by one read chunk. */
 	stderrCapChars?: number;
 	lineBufMaxChars?: number;
 }
