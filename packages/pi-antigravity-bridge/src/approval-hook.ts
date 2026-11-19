@@ -229,8 +229,9 @@ export function stageGateHooks(dir: string, opts: StageOptions): StageResult {
  *  are preserved and only this pid's group is added. An unparsable existing
  *  file is gate-only overwritten: agy could not have read it either. No-op
  *  only when the per-pid gate file is ABSENT (gate off at load); a staged
- *  file that exists but cannot be read or parsed throws, because running the
- *  spawn ungated while the gate is on would fail open (issue #18).
+ *  file that exists but cannot be read, parsed, or does not carry this
+ *  session's usable group throws, because running the spawn ungated while
+ *  the gate is on would fail open (issue #18).
  *  mergeGateGroupIntoAcpHome's delivery is probed live on agy 1.5.12
  *  (scripts/probe-acp-hooks.mjs). */
 export function mergeGateGroupIntoAcpHome(stagedHome: string, sourceDir: string = bridgeMcpConfigDir()): StageResult {
@@ -241,8 +242,13 @@ export function mergeGateGroupIntoAcpHome(stagedHome: string, sourceDir: string 
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { wrote: false, reason: "no staged gate" };
 		throw err;
 	}
+	// The source file is session-private (per-pid dir), so a parsable file
+	// without this session's usable group means something rewrote it between
+	// staging and merge - spawning ungated then would fail open.
 	const group: unknown = staged[gateGroupKey()];
-	if (!group || typeof group !== "object") return { wrote: false, reason: "no staged gate" };
+	if (!group || typeof group !== "object") {
+		throw new Error(`staged approval-gate file has no usable group for this session (${gateGroupKey()}); failing closed`);
+	}
 	const target = path.join(stagedHome, "config", "hooks.json");
 	let merged: Record<string, unknown> = {};
 	try {

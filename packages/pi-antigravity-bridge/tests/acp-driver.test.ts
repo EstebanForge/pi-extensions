@@ -1077,6 +1077,29 @@ describe("acp/driver silent tool failure (issue #18 F4)", () => {
 		assert.equal(outcome.response, "Recovered and here is the summary.");
 	});
 
+	test("whitespace-only model text still counts as silent", async () => {
+		const run = await tracked("tool-fail-whitespace", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.match(outcome.response, /A native tool failed earlier in this turn/);
+		assert.match(outcome.response, /boom: exit 1/);
+	});
+
+	test("a later successful tool does not suppress the note, which reports the earlier failure", async () => {
+		const run = await tracked("tool-fail-then-success", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.match(outcome.response, /A native tool failed earlier in this turn/);
+		assert.match(outcome.response, /boom: exit 1/);
+	});
+
+	test("a failed bridge MCP tool does not trigger the synthesized note", async () => {
+		const run = await tracked("bridge-tool-fail-silent", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "");
+	});
+
 	test("non-ACP stop reasons are logged as a warning", async () => {
 		const events: string[] = [];
 		const run = await tracked("silent-tool-fail", {

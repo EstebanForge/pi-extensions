@@ -96,6 +96,20 @@ test("merge throws on a corrupt staged gate file instead of failing open", () =>
 	assert.equal(fs.existsSync(path.join(stagedHome, "config", "hooks.json")), false);
 });
 
+test("merge throws when the staged gate file lacks this session's group", () => {
+	// Session-private file, so a parsable file without our key means something
+	// rewrote it between staging and merge - spawning ungated would fail open.
+	const root = tmpRoot();
+	const bridgeDir = path.join(root, "bridge");
+	fs.mkdirSync(path.join(bridgeDir, ".agents"), { recursive: true });
+	fs.writeFileSync(path.join(bridgeDir, ".agents", "hooks.json"), JSON.stringify({ "some-other-tool": { matcher: "*", hooks: [] } }));
+	const stagedHome = path.join(root, "home");
+	fs.mkdirSync(path.join(stagedHome, "config"), { recursive: true });
+
+	assert.throws(() => mergeGateGroupIntoAcpHome(stagedHome, bridgeDir));
+	assert.equal(fs.existsSync(path.join(stagedHome, "config", "hooks.json")), false);
+});
+
 test("merge is a no-op when this session never staged a gate", () => {
 	const root = tmpRoot();
 	const bridgeDir = path.join(root, "bridge");

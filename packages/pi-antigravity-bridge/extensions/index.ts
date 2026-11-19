@@ -1422,6 +1422,12 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					for (const entry of snap.lifecycle.slice(-5)) lines.push(`    ${entry}`);
 				}
 				if (engine === "acp") lines.push("  acp transport: agy acp (shared CLI authentication, isolated MCP home)");
+			if (engine === "acp" && resolveGateMode(config.approvals.gateMode, detectPermissionGateExtensions()) !== "off"
+				&& rawCliCheck.status === "ok" && agyVersionVerdict(rawCliCheck.raw, "1.5.12").status === "unsupported") {
+				// Same condition as the session_start wiring warn, surfaced here
+				// because a daily-log-only signal is easy to miss (review S2).
+				lines.push(`  approval gate: ON but hook delivery is verified only on agy >= 1.5.12 (this: ${rawCliCheck.raw}; issue #18)`);
+			}
 				if (engine === "stream-json" && ctx.streamIsolated) lines.push("  stream transport: agy stream-json (shared CLI authentication, isolated MCP home)");
 				if (engine === "stream-json" && !ctx.streamIsolated) lines.push("  stream transport: agy stream-json (shared CLI authentication, GLOBAL MCP registration: isolation unavailable)");
 				const retiredAuth = path.join(os.homedir(), ".gemini", "antigravity-acp");

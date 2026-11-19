@@ -24,6 +24,7 @@ import { AcpConnection, type AcpMcpServer, type AcpPermissionRequest } from "./c
 import type { AcpPermissionHandler } from "./connection.js";
 import { JsonRpcTimeoutError } from "./jsonrpc.js";
 import { KNOWN_STOP_REASONS, mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
+import { redactText } from "../redact.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
 	AgyUsage,
@@ -501,8 +502,13 @@ export class AcpDriver implements TurnDriver {
 				const entry = turn.toolCalls.get(mapped.toolCallId);
 				turn.toolCalls.delete(mapped.toolCallId);
 				const name = entry?.name ?? "tool";
-				turn.sawToolError = true;
-				turn.lastToolError = { name, message: mapped.message };
+				// Only native failures feed the silent-failure note: bridge tool
+				// errors are pi's own parking surface (the provider already surfaces
+				// them), not an agy-native tool the model failed to recover from.
+				if (!mapped.mcpServer) {
+					turn.sawToolError = true;
+					turn.lastToolError = { name, message: mapped.message };
+				}
 				this.#emit(turn, { type: "tool_error", name, message: mapped.message, mcpServer: mapped.mcpServer ?? entry?.mcpServer, toolCallId: mapped.toolCallId });
 				return;
 			}
@@ -787,7 +793,11 @@ export class AcpDriver implements TurnDriver {
 		// server still ended OK (its "stop" is not even an ACP enum value).
 		// An empty final report hides the failure from the pi caller.
 		if (outcome.status === "OK" && !outcome.aborted && !outcome.response.trim() && turn.sawToolError && turn.lastToolError) {
-			outcome.response = `[bridge] The turn ended without model output. Last native tool failed: ${turn.lastToolError.name} (${turn.lastToolError.message}).`;
+			// rawOutput rides unfiltered in the message; redact, collapse to one
+			// line and cap - this text lands in the transcript and later in the
+			// model's context digest.
+			const detail = redactText(turn.lastToolError.message).replace(/\s+/g, " ").trim().slice(0, 300);
+			outcome.response = `[bridge] The turn ended without model output. A native tool failed earlier in this turn: ${turn.lastToolError.name}${detail ? ` (${detail})` : ""}.`;
 		}
 		// Gate B stopgap: synthesize usage on clean turns while the server sends
 		// none. Runs BEFORE close so the usage activity drains through the

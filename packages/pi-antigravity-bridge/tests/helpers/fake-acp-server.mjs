@@ -302,7 +302,8 @@ async function handle(msg) {
         streaming = false;
         return;
       }
-      if (scenario === "silent-tool-fail" || scenario === "tool-fail-with-text") {
+      if (scenario === "silent-tool-fail" || scenario === "tool-fail-with-text" || scenario === "tool-fail-whitespace"
+        || scenario === "tool-fail-then-success") {
         // Issue #18 F4: a native tool fails, the model never speaks, and the
         // server ends the turn with the non-ACP stopReason "stop". The
         // caller must not receive an empty final report.
@@ -329,7 +330,42 @@ async function handle(msg) {
             update: { toolCallId: "fake-session-0001:9", status: "failed", rawOutput: "boom: exit 1", sessionUpdate: "tool_call_update" },
           },
         });
+        if (scenario === "tool-fail-then-success") {
+          send({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId,
+              update: { toolCallId: "fake-session-0001:10", title: "Read file", kind: "read", status: "completed", rawOutput: "ok", sessionUpdate: "tool_call_update" },
+            },
+          });
+        }
         if (scenario === "tool-fail-with-text") notifyChunk("Recovered and here is the summary.");
+        if (scenario === "tool-fail-whitespace") notifyChunk("   \n\t  ");
+        result(id, { stopReason: "stop" });
+        pendingPromptId = null;
+        streaming = false;
+        return;
+      }
+      if (scenario === "bridge-tool-fail-silent") {
+        // A pi-bridge MCP tool fails; not a native failure, so the
+        // silent-failure note must not fire.
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              toolCallId: "fake-session-0001:11",
+              title: "Run antigravity_tools?",
+              kind: "other",
+              status: "failed",
+              rawOutput: "bridge tool refused",
+              _meta: { mcp: { server: "pi-bridge" } },
+              sessionUpdate: "tool_call_update",
+            },
+          },
+        });
         result(id, { stopReason: "stop" });
         pendingPromptId = null;
         streaming = false;
