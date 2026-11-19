@@ -639,8 +639,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				digestEnabled: loadConfig().digest,
 				source: event.source,
 				bound: (() => {
-					// getSessionId is missing from the published ReadonlySessionManager
-					// type (dts minification), so shape-cast instead of trusting it.
+					// Shape-cast as in the session_compact handler above: tolerate pi
+					// builds whose dts omits getSessionId.
 					const sm = ctx.sessionManager as { getSessionId?: () => string };
 					const sid = sm.getSessionId?.();
 					const key = sessionKey(sid ? { sessionId: sid } : undefined, ctx.cwd, engine);
