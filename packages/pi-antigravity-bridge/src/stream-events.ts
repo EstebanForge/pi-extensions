@@ -120,3 +120,42 @@ export function toPiUsage(
 	piUsage.cacheRead = u.cache_read_tokens ?? piUsage.cacheRead;
 	piUsage.totalTokens = u.total_tokens ?? piUsage.input + piUsage.output;
 }
+
+/**
+ * Prevent pi-ai's silent-overflow detector (`isContextOverflow` Case 2) from
+ * false-triggering on multi-inference billing sums.
+ *
+ * In multi-step turns (several tool inferences inside one prompt), agy sums
+ * `input_tokens` and `cache_read_tokens` across every inference. `AcpDriver`
+ * keeps those billing fields while replacing `total_tokens` with single-turn
+ * context occupancy (issue #12). However, pi-ai's `isContextOverflow` ignores
+ * `totalTokens` and checks `usage.input + usage.cacheRead > contextWindow` on
+ * `stopReason === "stop"`, which triggers emergency overflow compaction at a
+ * fraction of the real context window.
+ *
+ * When live occupancy (`totalTokens`) fits inside `contextWindow` but
+ * `input + cacheRead` exceeds it, scale `input` and `cacheRead` proportionally
+ * to fit within the single-turn input budget (preserving the cache-hit ratio).
+ * Normal turns (`input + cacheRead <= contextWindow`) and genuine silent
+ * overflows (`totalTokens > contextWindow`) are left untouched.
+ */
+export function clampOverflowUsage(
+	usage: { input: number; output: number; cacheRead: number; totalTokens: number },
+	contextWindow: number | undefined,
+): void {
+	if (contextWindow === undefined || !Number.isFinite(contextWindow) || contextWindow <= 0) return;
+	if (!Number.isFinite(usage.totalTokens) || usage.totalTokens <= 0) return;
+	if (usage.totalTokens > contextWindow) return;
+	if (!Number.isFinite(usage.input) || !Number.isFinite(usage.cacheRead)) return;
+	if (usage.input < 0 || usage.cacheRead < 0) return;
+	const rawInput = usage.input + usage.cacheRead;
+	if (rawInput <= contextWindow) return;
+
+	const target =
+		Number.isFinite(usage.output) && usage.output >= 0 && usage.output < usage.totalTokens
+			? usage.totalTokens - usage.output
+			: usage.totalTokens;
+	const scaledInput = Math.min(target, Math.max(0, Math.round((usage.input / rawInput) * target)));
+	usage.input = scaledInput;
+	usage.cacheRead = target - scaledInput;
+}

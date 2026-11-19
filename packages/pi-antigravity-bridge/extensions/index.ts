@@ -46,6 +46,7 @@ import {
 	defaultEscalateAfterMs,
 	formatEscalatedAck,
 	formatPollAnswer,
+	rotateSessionOnCompaction,
 	sessionKey,
 	type NativeDisplayEvent,
 } from "../src/provider.js";
@@ -603,10 +604,30 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			fileLog.log("background-watch-sweep-error", { error: err instanceof Error ? err.message : String(err) }, "warn");
 		}
 	});
+	// Session keys whose bound agy conversation was rotated on session_compact
+	// so the next turn starts a fresh backend conversation and ships the
+	// compaction summary once (even when config.digest is disabled).
+	const pendingCompactionHandoff = new Set<string>();
 	pi.on("session_shutdown", () => {
 		backgroundWatchDisposed = true;
 		for (const handle of backgroundWatchers.values()) handle.stop();
 		backgroundWatchers.clear();
+		pendingCompactionHandoff.clear();
+	});
+	pi.on("session_compact", (_event, ctx) => {
+		try {
+			// getSessionId is missing from the published ReadonlySessionManager
+			// type (dts minification), so shape-cast like model_select below.
+			const sm = ctx.sessionManager as { getSessionId?: () => string };
+			const sid = sm.getSessionId?.();
+			const key = sessionKey(sid ? { sessionId: sid } : undefined, ctx.cwd, engine);
+			const rotated = rotateSessionOnCompaction(store, key, pendingCompactionHandoff);
+			if (rotated) {
+				fileLog.log("session-compact-rotate", { key, previousConversation: rotated }, "info");
+			}
+		} catch (err) {
+			fileLog.log("session-compact-rotate-error", { error: err instanceof Error ? err.message : String(err) }, "warn");
+		}
 	});
 	// Model-switch handoff toast: entering an unbound antigravity model
 	// mid-session opens a fresh agy conversation on the next turn; the
@@ -645,6 +666,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		onNativeEvent,
 		onNativeBackground: (info) => armConversationWatcher(info.conversationId, info.turnStartMs),
 		roster,
+		pendingCompactionHandoff,
 		engine,
 		log: fileLog.log.bind(fileLog),
 	});
@@ -681,6 +703,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		hiddenBridgeTools,
 		fileLog,
 		roster,
+		pendingCompactionHandoff,
 		checkAgySetup,
 	});
 
@@ -1216,6 +1239,7 @@ interface AgyCommandCtx {
 	fileLog: DailyLogger;
 	/** Live subagent roster (folded in the provider); /agy subagents. */
 	roster: SubagentRoster;
+	pendingCompactionHandoff: Set<string>;
 	checkAgySetup: (ctx: { ui: ExtensionUIContext; mode: string }, engine: Engine, explicit?: boolean) => Promise<void>;
 }
 
@@ -1290,6 +1314,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			// Direct subcommands work everywhere (headless + TUI).
 			if (sub === "clear") {
 				ctx.store.clear();
+				ctx.pendingCompactionHandoff.clear();
 				ui?.notify("Cleared all antigravity session bindings.", "info");
 				return;
 			}

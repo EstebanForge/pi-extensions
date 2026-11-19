@@ -36,7 +36,7 @@ import type { Api } from "@earendil-works/pi-ai";
 import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
 import { looksBackgroundNativeCall } from "./background-watch.js";
 import { SubagentRoster } from "./subagent-roster.js";
-import { toPiUsage } from "./stream-events.js";
+import { clampOverflowUsage, toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
@@ -151,6 +151,12 @@ const COMPACTION_MARKER = "compacted into the following summary";
 export const RESUME_PROMPT =
 	"[The previous attempt of this turn failed and was discarded. Check your conversation history for the last step you completed, then continue the task from there. Do not repeat completed actions.]";
 
+/** Synthetic prompt for resuming into a fresh agy conversation right after pi
+ *  compacts mid-tool-loop (transcript ends in a toolResult or assistant
+ *  message after the bound conversation was rotated on session_compact). */
+export const COMPACTION_RESUME_PROMPT =
+	"[The conversation was compacted into a summary and moved to a fresh Antigravity session. Continue the task from the compaction summary and any recent context above without repeating completed actions.]";
+
 export const DIGEST_PREAMBLE =
 	"[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]";
 
@@ -244,6 +250,11 @@ export interface DigestOptions {
 	 *  the front, so every compaction lands at the same index; content
 	 *  identity ships a NEW summary exactly once. */
 	seenSummaryId?: string;
+	/** Include the trailing message in the delta window instead of reserving
+	 *  it as the current user prompt. Used when resuming into a fresh
+	 *  post-compaction conversation whose transcript ends in a toolResult or
+	 *  assistant message. Default false. */
+	includeLast?: boolean;
 }
 
 /** Soft cap on the digest body when no tighter budget applies. */
@@ -356,7 +367,7 @@ export function buildContextDigest(
 	} else if (watermark > messages.length) {
 		start = 0;
 	}
-	const end = Math.max(0, messages.length - 1);
+	const end = opts.includeLast ? messages.length : Math.max(0, messages.length - 1);
 	for (let i = start; i < end; i++) {
 		const m = messages[i];
 		if (m.role === "assistant") {
@@ -445,6 +456,25 @@ export function sessionKey(
 	return base + (engine === "acp" ? "@acp" : "");
 }
 
+/** Rotate the bound agy conversation after pi compacts the session.
+ *  Deleting the binding forces the next turn onto a fresh agy conversation so
+ *  server-side context is freed alongside pi's transcript; recording the key
+ *  in `pendingCompactionHandoff` guarantees a one-shot compaction handoff even
+ *  when `config.digest` is disabled. Returns the rotated conversation id, or
+ *  null when the session had no binding. */
+export function rotateSessionOnCompaction(
+	store: SessionStore,
+	key: string,
+	pendingCompactionHandoff?: Set<string>,
+): string | null {
+	const existing = store.get(key);
+	if (!existing) return null;
+	store.delete(key);
+	stagedAgentByConversation.delete(existing.conversationId);
+	pendingCompactionHandoff?.add(key);
+	return existing.conversationId;
+}
+
 /** Track which content block is currently open so we close-on-switch.
  *  At most one of textIdx / thinkingIdx is non-null at a time. */
 export interface BlockState {
@@ -497,6 +527,9 @@ export interface StreamSimpleDeps {
 	onNativeBackground?: (info: { conversationId: string; turnStartMs: number }) => void;
 	/** Subagent roster (both engines); folded from every activity. */
 	roster?: SubagentRoster;
+	/** Session keys rotated on `session_compact` awaiting a one-shot
+	 *  compaction handoff into a fresh agy conversation. */
+	pendingCompactionHandoff?: Set<string>;
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -1197,6 +1230,9 @@ export interface DriverDeps {
 	onNativeBackground?: (info: { conversationId: string; turnStartMs: number }) => void;
 	/** Subagent roster fold target (both engines; best-effort telemetry). */
 	roster?: SubagentRoster;
+	/** Session keys rotated on `session_compact` awaiting a one-shot
+	 *  compaction handoff into a fresh agy conversation. */
+	pendingCompactionHandoff?: Set<string>;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
@@ -1431,7 +1467,16 @@ async function runTurnDriver(
 
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const key = sessionKey(options, cwd, deps.engine);
-	const existing = store.get(key);
+	// Ephemeral helper calls (pi compaction / branch summarization set
+	// cacheRetention: "none"; cache warming / replay callers set
+	// disableContinuation: true) must run in a fresh, isolated agy
+	// conversation: never reuse or mutate the live session's SessionStore
+	// binding, never claim dead/stranded tool results, and never arm
+	// background watchers for throwaway turns.
+	const ephemeral = options?.cacheRetention === "none" || options?.disableContinuation === true;
+	const existing = ephemeral ? null : store.get(key);
+	const compactionHandoff =
+		!ephemeral && !existing?.conversationId && Boolean(deps.pendingCompactionHandoff?.has(key));
 	const messageCount = context.messages.length;
 	const config = loadConfig();
 	// Settle bookkeeping shared by both store.set paths: the boundary
@@ -1472,7 +1517,7 @@ async function runTurnDriver(
 	// nor start a new prompt. Leave the tombstone for the next fresh pass
 	// instead of consuming it blind.
 	const late: LateToolResult[] = [];
-	if (!isContinuation) {
+	if (!ephemeral && !isContinuation) {
 		for (const r of collectToolResults(context.messages, deps.roundTrips.deadIds)) {
 			const dead = deps.roundTrips.consumeDead(r.toolCallId);
 			if (dead)
@@ -1487,7 +1532,7 @@ async function runTurnDriver(
 		if (late.length > 0) {
 			deps.log?.("late-result", { tools: late.map((l) => l.name), freshConversation: !existing?.conversationId }, "info");
 		}
-	} else if (deps.roundTrips.deadIds.length > 0) {
+	} else if (!ephemeral && deps.roundTrips.deadIds.length > 0) {
 		deps.log?.("late-result-deferred", { count: deps.roundTrips.deadIds.length }, "info");
 	}
 
@@ -1544,7 +1589,7 @@ async function runTurnDriver(
 	} else {
 		// Dead turn: claim NOW (single-use). A live turn claims after outcome
 		// instead — claiming here would eat the post-outcome recovery.
-		late.push(...collectStranded());
+		if (!ephemeral) late.push(...collectStranded());
 		if (isContinuation && late.length === 0) {
 			if (escalatedNames.length === 0) {
 				deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
@@ -1582,14 +1627,29 @@ async function runTurnDriver(
 		// transcript (lastRole undefined) and a user tail both keep their
 		// existing behavior.
 		const lastRole = context.messages[context.messages.length - 1]?.role;
+		const hasCompactionSummary = findLastCompactionIdx(context.messages) >= 0;
 		const resume =
 			!userPrompt &&
 			images.length === 0 &&
 			late.length === 0 &&
 			Boolean(existing?.conversationId) &&
 			(lastRole === "toolResult" || lastRole === "assistant");
-		const prompt = resume ? RESUME_PROMPT : userPrompt;
+		// Post-compaction mid-tool-loop resume: session_compact rotated the old
+		// agy conversation (so existing is null), and pi's compacted transcript
+		// ends in a toolResult or assistant message. Seed a fresh agy
+		// conversation with the compaction summary + trailing messages instead
+		// of failing with the unretryable "No user message" error.
+		const compactionResume =
+			!ephemeral &&
+			!userPrompt &&
+			images.length === 0 &&
+			late.length === 0 &&
+			!existing?.conversationId &&
+			(compactionHandoff || hasCompactionSummary) &&
+			(lastRole === "toolResult" || lastRole === "assistant");
+		const prompt = resume ? RESUME_PROMPT : compactionResume ? COMPACTION_RESUME_PROMPT : userPrompt;
 		if (resume) deps.log?.("resume-turn", { conversation: existing?.conversationId }, "error");
+		if (compactionResume) deps.log?.("compaction-resume-turn", { key, handoff: compactionHandoff }, "info");
 		// An image-only message (no text) is valid on the ACP engine; only fail
 		// when there is nothing at all to send (no text, no images, no late
 		// tool results to deliver).
@@ -1615,15 +1675,20 @@ async function runTurnDriver(
 		// Late and resume turns re-open the conversation with a synthetic
 		// prompt; the digest would re-send context agy already holds (against a
 		// stale watermark: a failed pass never advances it), so skip it.
+		// Post-compaction handoff / compactionResume always ships the digest
+		// once even if config.digest is false, because the old agy conversation
+		// was rotated and the fresh conversation has no prior history.
 		const engine = deps.engine ?? config.engine;
 		const promptBytes = Buffer.byteLength(prompt ?? "", "utf8");
 		const maxChars = digestMaxCharsForEngine(engine, promptBytes);
+		const wantDigest = config.digest || compactionHandoff || compactionResume;
 		const digest =
-			config.digest && maxChars !== null && late.length === 0 && !resume
+			wantDigest && maxChars !== null && late.length === 0 && !resume
 				? buildContextDigest(context.messages, watermark, {
 						bound: Boolean(existing?.conversationId),
 						seenSummaryId: existing?.digestSummaryId,
 						maxChars,
+						includeLast: compactionResume,
 					})
 				: "";
 		// Byte-level fail closed (issue #2): the char budget over-reserves for
@@ -1770,7 +1835,7 @@ async function runTurnDriver(
 		// recreated a conversation, so the snapshot id is the real one, and
 		// the staged agent must move with the binding or a stream-json resume
 		// re-runs without its carrier-agent profile.
-		if (!existing) {
+		if (!ephemeral && !existing) {
 			const parkedConv = deps.driver.snapshot().conversationId;
 			if (parkedConv) {
 				store.set(key, {
@@ -1780,6 +1845,7 @@ async function runTurnDriver(
 					digestBoundary: settleBoundary,
 					digestSummaryId: settleSummaryId,
 				});
+				deps.pendingCompactionHandoff?.delete(key);
 				if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
 			}
 		}
@@ -1807,7 +1873,7 @@ async function runTurnDriver(
 		outcome.modelOutputSeen === false &&
 		Boolean(existing?.conversationId);
 	if (silentDrop || poisonedResume) {
-		if (existing?.conversationId || outcome.conversationId) {
+		if (!ephemeral && (existing?.conversationId || outcome.conversationId)) {
 			store.delete(key);
 			if (outcome.conversationId) stagedAgentByConversation.delete(outcome.conversationId);
 		}
@@ -1852,7 +1918,7 @@ async function runTurnDriver(
 	// fix: sweep and deliver as a late run in the same conversation. Single
 	// shot: claims are single-use, so a re-delivered strand cannot reappear
 	// here; a late run that parks hands recovery to the next pi pass.
-	if (isContinuation && outcome.status === "OK" && !outcome.aborted) {
+	if (!ephemeral && isContinuation && outcome.status === "OK" && !outcome.aborted) {
 		const more = collectStranded();
 		if (more.length > 0) {
 			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
@@ -1886,7 +1952,7 @@ async function runTurnDriver(
 			}
 		}
 	}
-	if (outcome.conversationId) {
+	if (!ephemeral && outcome.conversationId) {
 		// A different id than the stored one means the driver recreated the
 		// conversation under us (ACP session-load fallback, stream-json CLI
 		// dropping a stale --conversation). The recreated conversation has seen
@@ -1906,6 +1972,7 @@ async function runTurnDriver(
 				digestBoundary: settleBoundary,
 				digestSummaryId: settleSummaryId,
 			});
+			deps.pendingCompactionHandoff?.delete(key);
 			if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
 		}
 		// A failed or aborted turn on the SAME conversation keeps the pre-turn
@@ -1928,10 +1995,15 @@ async function runTurnDriver(
 	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
 		ensureTextOpen(stream, blocks);
 	}
-	if (nativeBackgroundSeen && outcome.conversationId) {
+	if (!ephemeral && nativeBackgroundSeen && outcome.conversationId) {
 		deps.onNativeBackground?.({ conversationId: outcome.conversationId, turnStartMs });
 		deps.log?.("native-background-arm", { conversation: outcome.conversationId, turnStartMs }, "info");
 	}
+	// Multi-inference billing sums in usage.input + usage.cacheRead can exceed
+	// model.contextWindow even when live occupancy (totalTokens) is well under
+	// the window. Clamp before emitting stop so pi-ai's isContextOverflow()
+	// Case 2 does not trigger a phantom overflow compaction on a healthy turn.
+	clampOverflowUsage(blocks.partial.usage, model.contextWindow);
 	finalize(stream, blocks, "stop");
 }
 
@@ -2020,6 +2092,7 @@ export function createStreamSimple(
 				onNativeEvent: deps.onNativeEvent,
 				onNativeBackground: deps.onNativeBackground,
 				roster: deps.roster,
+				pendingCompactionHandoff: deps.pendingCompactionHandoff,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream
