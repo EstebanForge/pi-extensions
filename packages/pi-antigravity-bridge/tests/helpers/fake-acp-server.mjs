@@ -302,6 +302,39 @@ async function handle(msg) {
         streaming = false;
         return;
       }
+      if (scenario === "silent-tool-fail" || scenario === "tool-fail-with-text") {
+        // Issue #18 F4: a native tool fails, the model never speaks, and the
+        // server ends the turn with the non-ACP stopReason "stop". The
+        // caller must not receive an empty final report.
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              toolCallId: "fake-session-0001:9",
+              title: "Run boom-cmd?",
+              kind: "execute",
+              status: "pending",
+              rawInput: { CommandLine: "boom-cmd" },
+              sessionUpdate: "tool_call",
+            },
+          },
+        });
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { toolCallId: "fake-session-0001:9", status: "failed", rawOutput: "boom: exit 1", sessionUpdate: "tool_call_update" },
+          },
+        });
+        if (scenario === "tool-fail-with-text") notifyChunk("Recovered and here is the summary.");
+        result(id, { stopReason: "stop" });
+        pendingPromptId = null;
+        streaming = false;
+        return;
+      }
       if (scenario === "permission" || scenario === "permission-twice" || scenario === "permission-late" || scenario === "permission-cancel") {
         send({
           jsonrpc: "2.0",

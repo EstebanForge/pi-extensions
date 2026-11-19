@@ -23,7 +23,7 @@ import type { UsageEstimate } from "../config.js";
 import { AcpConnection, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
 import type { AcpPermissionHandler } from "./connection.js";
 import { JsonRpcTimeoutError } from "./jsonrpc.js";
-import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
+import { KNOWN_STOP_REASONS, mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
 	AgyUsage,
@@ -121,6 +121,11 @@ interface ActiveTurn {
 	/** toolCallId → tool name + args + optional native diff (diff rides on
 	 *  the pending tool_call frame; updates don't repeat it). */
 	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }>;
+	/** Issue #18 F4: a native tool failed this turn. With an OK stop and no
+	 *  model output the caller would otherwise receive an empty final report
+	 *  (the reporter's stopReason "stop" after a failed run_command). */
+	sawToolError: boolean;
+	lastToolError: { name: string; message: string } | null;
 }
 
 /** Map our config knobs onto ACP session modes. skipPermissions=false also
@@ -371,6 +376,11 @@ export class AcpDriver implements TurnDriver {
 				this.#emit(turn, { type: "usage", usage: settleUsage });
 			}
 			const mapped = mapStopReason(result.stopReason);
+			if (!KNOWN_STOP_REASONS.has(String(result.stopReason))) {
+				// "stop" (issue #18 F4) is not an ACP enum value; silence would
+				// hide exactly the server drift that produced the empty report.
+				this.#log("acp-unknown-stop-reason", { stopReason: result.stopReason });
+			}
 			this.#settle(turn, {
 				conversationId: turn.sessionId,
 				status: mapped.status,
@@ -491,6 +501,8 @@ export class AcpDriver implements TurnDriver {
 				const entry = turn.toolCalls.get(mapped.toolCallId);
 				turn.toolCalls.delete(mapped.toolCallId);
 				const name = entry?.name ?? "tool";
+				turn.sawToolError = true;
+				turn.lastToolError = { name, message: mapped.message };
 				this.#emit(turn, { type: "tool_error", name, message: mapped.message, mcpServer: mapped.mcpServer ?? entry?.mcpServer, toolCallId: mapped.toolCallId });
 				return;
 			}
@@ -664,6 +676,8 @@ export class AcpDriver implements TurnDriver {
 			overallDeadline: null,
 			overallRemainingMs: null,
 			toolCalls: new Map(),
+			sawToolError: false,
+			lastToolError: null,
 		};
 		return turn;
 	}
@@ -769,6 +783,12 @@ export class AcpDriver implements TurnDriver {
 			this.#emit(turn, { type: "text", delta: flushed });
 		}
 		outcome.response = turn.response.text;
+		// Issue #18 F4: a native tool failed, the model never spoke, and the
+		// server still ended OK (its "stop" is not even an ACP enum value).
+		// An empty final report hides the failure from the pi caller.
+		if (outcome.status === "OK" && !outcome.aborted && !outcome.response.trim() && turn.sawToolError && turn.lastToolError) {
+			outcome.response = `[bridge] The turn ended without model output. Last native tool failed: ${turn.lastToolError.name} (${turn.lastToolError.message}).`;
+		}
 		// Gate B stopgap: synthesize usage on clean turns while the server sends
 		// none. Runs BEFORE close so the usage activity drains through the
 		// normal #nextActivity loop (provider maps it onto partial.usage).

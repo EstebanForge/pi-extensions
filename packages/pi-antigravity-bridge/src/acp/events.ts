@@ -223,6 +223,17 @@ export function mapStopReason(stopReason: unknown): {
 	}
 }
 
+/** Stop reasons the ACP spec defines. Anything else hitting mapStopReason's
+ *  default (OK) is server drift; the driver logs it (issue #18 F4: agy sent
+ *  the stream-json-style "stop"). */
+export const KNOWN_STOP_REASONS: ReadonlySet<string> = new Set([
+	"end_turn",
+	"cancelled",
+	"max_tokens",
+	"refusal",
+	"max_turn_requests",
+]);
+
 /** Defensive accumulation with the cumulative-resend port. Native agy streams
  *  deltas, so on
  *  a compliant server the resend branch stays inert; it exists because the
