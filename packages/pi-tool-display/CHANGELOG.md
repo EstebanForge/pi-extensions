@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Internal render types widened to `readonly string[]` for pi-tui 1.6.0.** pi 1.6.0 made `render()` return `readonly string[]` and cache Container output (#9549); the user-message patch pipeline is copy-only and now typed to match. No behavior change.
+
 ## [1.3.3] - 2026-11-10
 
 ### Added

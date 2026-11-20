@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { Box, type Component } from "@earendil-works/pi-tui";
 import { renderEditDiffResult } from "../lib/diff-renderer";
 
-function renderRawInsideToolBox(component: Component, width: number): string[] {
+function renderRawInsideToolBox(component: Component, width: number): readonly string[] {
 	const box = new Box(1, 1);
 	box.addChild(component);
 	return box.render(width);
@@ -12,7 +12,7 @@ function renderRawInsideToolBox(component: Component, width: number): string[] {
 function renderAddedLineWithTheme(theme: {
 	fg(color: string, text: string): string;
 	bold(text: string): string;
-}): string[] {
+}): readonly string[] {
 	const component = renderEditDiffResult(
 		{
 			diff: "--- a/demo.ts\n+++ b/demo.ts\n@@ -0,0 +1 @@\n+const answer = 42;\n",

@@ -32,9 +32,9 @@ interface CachedUserMessageMarkdownRenderer {
   text: string;
   theme: unknown;
   defaultTextStyle?: Record<string, unknown>;
-  renderer: { render(width: number): string[] };
+  renderer: { render(width: number): readonly string[] };
   renderedWidth: number;
-  renderedLines: string[];
+  renderedLines: readonly string[];
 }
 
 interface CachedUserMessageFinalOutput {
@@ -44,12 +44,12 @@ interface CachedUserMessageFinalOutput {
   text?: string;
   markdownTheme?: unknown;
   defaultTextStyle?: Record<string, unknown>;
-  output: string[];
+  output: readonly string[];
 }
 
 interface CachedUserMessageBodyLines {
   width: number;
-  lines: string[];
+  lines: readonly string[];
 }
 
 const MIN_BORDER_WIDTH = 8;
@@ -146,7 +146,7 @@ function wrapContentLine(
 
 function createMarkdownRenderer(
   markdownState: UserMessageMarkdownState,
-): { render(width: number): string[] } {
+): { render(width: number): readonly string[] } {
   return new Markdown(
     markdownState.text,
     0,
@@ -236,7 +236,7 @@ function toFinalOutputCacheEntry(
   width: number,
   theme: UserMessageTheme | undefined,
   markdownState: UserMessageMarkdownState | undefined,
-  output: string[],
+  output: readonly string[],
 ): CachedUserMessageFinalOutput {
   if (!markdownState) {
     return {
@@ -274,12 +274,12 @@ export function shouldBypassUserMessageMarkdownRebuild(
 export function createUserMessageMarkdownLineRenderer(
   buildRenderer: (
     markdownState: UserMessageMarkdownState,
-  ) => { render(width: number): string[] } = createMarkdownRenderer,
+  ) => { render(width: number): readonly string[] } = createMarkdownRenderer,
 ): (
   instance: object,
   markdownState: UserMessageMarkdownState,
   width: number,
-) => string[] {
+) => readonly string[] {
   const cache = new WeakMap<object, CachedUserMessageMarkdownRenderer>();
 
   return (instance, markdownState, width) => {
@@ -316,12 +316,12 @@ const renderCachedUserMessageMarkdownLines =
 function renderUserMessageBodyLines(
   instance: unknown,
   innerWidth: number,
-  originalRender: (width: number) => string[],
+  originalRender: (width: number) => readonly string[],
   markdownState: UserMessageMarkdownState | undefined,
   originalBodyLineCache?: WeakMap<object, CachedUserMessageBodyLines>,
-): string[] {
+): readonly string[] {
   if (typeof instance !== "object" || instance === null) {
-    return originalRender.call(instance, innerWidth) as string[];
+    return originalRender.call(instance, innerWidth) as readonly string[];
   }
 
   if (!markdownState) {
@@ -330,13 +330,13 @@ function renderUserMessageBodyLines(
       return cached.lines;
     }
 
-    const lines = originalRender.call(instance, innerWidth) as string[];
+    const lines = originalRender.call(instance, innerWidth) as readonly string[];
     originalBodyLineCache?.set(instance, { width: innerWidth, lines });
     return lines;
   }
 
   if (shouldBypassUserMessageMarkdownRebuild(markdownState)) {
-    return originalRender.call(instance, innerWidth) as string[];
+    return originalRender.call(instance, innerWidth) as readonly string[];
   }
 
   try {
@@ -346,7 +346,7 @@ function renderUserMessageBodyLines(
       innerWidth,
     );
   } catch {
-    return originalRender.call(instance, innerWidth) as string[];
+    return originalRender.call(instance, innerWidth) as readonly string[];
   }
 }
 
@@ -364,10 +364,10 @@ export function patchNativeUserMessagePrototype(
     (originalRender) =>
       // this: unknown — the patched method runs on the untyped user-message prototype;
       // every use below narrows or casts explicitly.
-      function renderWithNativeUserBorder(this: unknown, width: number): string[] {
+      function renderWithNativeUserBorder(this: unknown, width: number): readonly string[] {
         const safeWidth = Math.max(0, Math.floor(width));
         if (!isEnabled() || safeWidth < MIN_BORDER_WIDTH) {
-          return originalRender.call(this, safeWidth) as string[];
+          return originalRender.call(this, safeWidth) as readonly string[];
         }
 
         const canCacheFinalOutput = typeof this === "object" && this !== null;
@@ -375,7 +375,7 @@ export function patchNativeUserMessagePrototype(
           ? extractUserMessageMarkdownState(this as { children?: unknown[] })
           : undefined;
         if (markdownState && shouldBypassUserMessageMarkdownRebuild(markdownState)) {
-          return originalRender.call(this, safeWidth) as string[];
+          return originalRender.call(this, safeWidth) as readonly string[];
         }
 
         const theme = getTheme();

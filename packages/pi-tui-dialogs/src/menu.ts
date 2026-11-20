@@ -269,7 +269,7 @@ type CustomFactory<T> = (
 	theme: Theme,
 	keys: unknown,
 	done: (value: T) => void,
-) => { render(width: number): string[]; invalidate(): void; handleInput?(data: string): void };
+) => { render(width: number): readonly string[]; invalidate(): void; handleInput?(data: string): void };
 
 /** Headless guard: dialogs need the interactive TUI. */
 export function canOpenDialog(ctx: DialogContext): boolean {

@@ -17,7 +17,7 @@ const diffConfig = {
 	expandedPreviewMaxLines: 32,
 };
 
-function renderInsideToolBox(component: Component, width: number): string[] {
+function renderInsideToolBox(component: Component, width: number): readonly string[] {
 	const box = new Box(1, 1);
 	box.addChild(component);
 	return box.render(width);

@@ -55,20 +55,20 @@ function resolveInlineHighlightPalette(baseBg: RgbColor, addFg: RgbColor, remove
 	};
 }
 
-function renderInsideToolBox(component: Component, width: number): string[] {
+function renderInsideToolBox(component: Component, width: number): readonly string[] {
 	const box = new Box(1, 1);
 	box.addChild(component);
 	return box.render(width);
 }
 
-function renderInsideThemedToolBox(component: Component, width: number, background: RgbColor): string[] {
+function renderInsideThemedToolBox(component: Component, width: number, background: RgbColor): readonly string[] {
 	const backgroundAnsi = rgbToBgAnsi(background);
 	const box = new Box(1, 1, (text: string) => `${backgroundAnsi}${text}\x1b[0m`);
 	box.addChild(component);
 	return box.render(width);
 }
 
-function assertLinesFitWidth(lines: string[], width: number): void {
+function assertLinesFitWidth(lines: readonly string[], width: number): void {
 	for (const line of lines) {
 		assert.ok(
 			visibleWidth(line) <= width,
