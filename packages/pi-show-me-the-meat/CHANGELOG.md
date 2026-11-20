@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **The abridging sub-agent no longer forces thinking `off`.** Models whose spec has no off thinking level (the new provider defaults in pi 1.6.0) reject the forced value, so default-model users failed on every lookup. Unset now inherits the model's own default; an explicit level is still forwarded unchanged.
+
 ## 1.0.3 — 2026-11-02
 
 ### Fixed

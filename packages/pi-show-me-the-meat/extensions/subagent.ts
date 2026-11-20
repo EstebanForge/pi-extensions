@@ -151,9 +151,9 @@ export async function abridgeViaSubagent(opts: AbridgeOptions): Promise<Submissi
 	const { session } = await createAgentSession({
 		cwd,
 		model,
-		// Default to thinking-off for the sub-agent: some providers reject the
-		// thinking param and the abridge task is high-quality without it.
-		thinkingLevel: thinkingLevel ?? ("off" as ThinkingLevel),
+		// Unset means inherit the model's own default: a forced "off" is rejected
+		// by models whose spec has no off level (GPT-6.2 on openai/azure/codex).
+		thinkingLevel,
 		// Allowlist is the control: only read, grep, and our submit are active.
 		// Every other tool (including this extension's own meat tool) is filtered
 		// out, so the sub-agent cannot recurse or wander into write/edit/bash.
