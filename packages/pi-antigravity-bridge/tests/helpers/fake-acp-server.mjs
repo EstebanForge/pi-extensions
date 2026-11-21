@@ -44,6 +44,8 @@
 //                      the Gate B synthesis)
 //   usage-occ-once     prompt 1 -> usage_update + aggregate; prompt 2 ->
 //                      aggregate only (per-turn occupancy must not leak)
+//   reuse-retry        prompt 1 ok; prompt 2 -> -32000 (dropped session);
+//                      prompt 3+ ok (driver must reload and re-prompt)
 
 import fs from "node:fs";
 import readline from "node:readline";
@@ -402,6 +404,12 @@ async function handle(msg) {
         // Die with the request still parked: the client must settle the
         // pending permission and fail the turn, never hang.
         setTimeout(() => process.exit(0), 50);
+        return;
+      }
+      if (scenario === "reuse-retry" && promptCount === 1) {
+        promptCount += 1;
+        error(id, -32000, "unknown session");
+        pendingPromptId = null;
         return;
       }
       await streamPrompt();

@@ -72,6 +72,24 @@ test("tool priority note makes image visibility and poll discipline explicit (20
 	assert.match(TOOL_PRIORITY_NOTE, /STILL RUNNING[^"]*?poll bridge_poll_result before (doing )?other work/i);
 });
 
+test("tool priority note forbids native background runs and timers", () => {
+	// agy's background run_command and schedule timers rely on agy waking
+	// itself after the reply ends. Nothing in pi waits for that: a
+	// pi-subagents child exits as complete, and a self-wake in the main
+	// session fails every bridge call with "no active antigravity turn".
+	assert.doesNotMatch(TOOL_PRIORITY_NOTE, /background agents so you keep working/);
+	assert.match(TOOL_PRIORITY_NOTE, /never let a native run_command go to the background/);
+	assert.match(TOOL_PRIORITY_NOTE, /never use the native schedule tool/);
+});
+
+test("tool priority note caps native foreground waits under the idle cap", () => {
+	// A foreground run_command emits no update frames; past pi's 5-minute
+	// idle cap the turn and connection are killed. The note must bound
+	// native waits instead of asking for full-command waits (issue #21).
+	assert.match(TOOL_PRIORITY_NOTE, /WaitMsBeforeAsync at 0/);
+	assert.match(TOOL_PRIORITY_NOTE, /under two minutes/);
+});
+
 test("empty-string system prompt is treated as absent", () => {
 	assert.equal(buildFullPrompt("", "", "hello"), "hello");
 });

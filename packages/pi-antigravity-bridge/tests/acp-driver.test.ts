@@ -199,6 +199,55 @@ describe("acp/driver load replay (run 6 rules)", () => {
 	});
 });
 
+describe("acp/driver session reuse", () => {
+	// Re-loading a session the server process already holds restarts agy's
+	// update stream; the old stream's completion signal can then land after
+	// the next session/prompt and end it early (agy 1.5.13). Load once per
+	// connection.
+	async function nextTurn(run: DriverRun, conversationId: string) {
+		const handle = await run.driver.run({
+			cwd: path.dirname(run._logPath),
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			conversationId,
+			prompt: "again",
+		});
+		while ((await handle.next()) !== null) {}
+		return handle.outcome;
+	}
+
+	test("a session the connection created is prompted again without session/load", async () => {
+		const run = await tracked("happy", { prompt: "hi" });
+		const outcome = await nextTurn(run, SESSION_ID);
+		assert.equal(outcome.status, "OK");
+		const methods = sentRequests(run._logPath).map((r) => r.method);
+		assert.equal(methods.includes("session/load"), false);
+		assert.equal(methods.filter((m) => m === "session/prompt").length, 2);
+	});
+
+	test("a loaded session is loaded once per connection", async () => {
+		const run = await tracked("load-replay", { conversationId: SESSION_ID, prompt: "live" });
+		const outcome = await nextTurn(run, SESSION_ID);
+		assert.equal(outcome.status, "OK");
+		const loads = sentRequests(run._logPath).filter((r) => r.method === "session/load");
+		assert.equal(loads.length, 1);
+	});
+
+	// agy can drop a held session; the reload is the only restore, so a
+	// failed reuse prompt must drop, reload, and re-prompt once (issue #21).
+	test("a failed prompt on a reused session reloads it and retries once", async () => {
+		const run = await tracked("reuse-retry", { prompt: "hi" });
+		const outcome = await nextTurn(run, SESSION_ID);
+		assert.equal(outcome.status, "OK");
+		const methods = sentRequests(run._logPath).map((r) => r.method);
+		assert.equal(methods.filter((m) => m === "session/load").length, 1);
+		assert.equal(methods.filter((m) => m === "session/prompt").length, 3);
+		assert.match(outcome.response, /HELLO/);
+	});
+});
+
 describe("acp/driver permission policy", () => {
 	test("request_permission is answered in-connection with allow when skipPermissions", async () => {
 		const run = await tracked("permission", { prompt: "make the file" });
