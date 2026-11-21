@@ -238,13 +238,37 @@ describe("acp/driver session reuse", () => {
 	// agy can drop a held session; the reload is the only restore, so a
 	// failed reuse prompt must drop, reload, and re-prompt once (issue #21).
 	test("a failed prompt on a reused session reloads it and retries once", async () => {
-		const run = await tracked("reuse-retry", { prompt: "hi" });
+		const logs: string[] = [];
+		const run = await tracked("reuse-retry", { prompt: "hi", log: (msg) => logs.push(msg) });
 		const outcome = await nextTurn(run, SESSION_ID);
 		assert.equal(outcome.status, "OK");
+		assert.ok(logs.includes("session-reuse"));
+		assert.ok(logs.includes("session-reload-retry"));
 		const methods = sentRequests(run._logPath).map((r) => r.method);
 		assert.equal(methods.filter((m) => m === "session/load").length, 1);
 		assert.equal(methods.filter((m) => m === "session/prompt").length, 3);
 		assert.match(outcome.response, /HELLO/);
+	});
+
+	// A turn that already streamed output must not retry: the re-prompt
+	// would run a second generation and double native side effects.
+	test("a prompt that already streamed output is not retried", async () => {
+		const run = await tracked("reuse-retry-late", { prompt: "hi" });
+		const outcome = await nextTurn(run, SESSION_ID);
+		assert.equal(outcome.status, "ERROR");
+		const methods = sentRequests(run._logPath).map((r) => r.method);
+		assert.equal(methods.includes("session/load"), false);
+		assert.equal(methods.filter((m) => m === "session/prompt").length, 2);
+		assert.match(outcome.response, /PARTIAL/);
+	});
+
+	test("a failed retry reload settles the turn ERROR", async () => {
+		const run = await tracked("reuse-retry-dead", { prompt: "hi" });
+		const outcome = await nextTurn(run, SESSION_ID);
+		assert.equal(outcome.status, "ERROR");
+		const methods = sentRequests(run._logPath).map((r) => r.method);
+		assert.equal(methods.filter((m) => m === "session/load").length, 1);
+		assert.equal(methods.filter((m) => m === "session/prompt").length, 2);
 	});
 });
 

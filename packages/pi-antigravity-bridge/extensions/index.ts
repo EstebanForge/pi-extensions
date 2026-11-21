@@ -1741,7 +1741,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(
 						ctx.getMcpPort() === null
 							? `bridge ${next.bridgeTools}. The bridge server is not running; /reload to apply.`
-							: `bridge ${next.bridgeTools}. The active catalog and call guard update now; ACP may keep cached tool schemas until a session reloads or the agy process restarts.`,
+							: `bridge ${next.bridgeTools}. The active catalog and call guard update now; ACP may keep cached tool schemas until a session reloads or an agy process restarts (/reload applies it).`,
 						"info",
 					);
 				} else {

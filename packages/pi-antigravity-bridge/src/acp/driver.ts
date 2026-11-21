@@ -347,18 +347,10 @@ export class AcpDriver implements TurnDriver {
 		// are a parity break); mode failure is best-effort (auto policy makes
 		// the modes converge anyway).
 		try {
-			await this.#sessionStep(conn, turn, reused, async () => {
-				await conn.setConfigOption(turn.sessionId, "model", request.model);
-				if (request.effort) await conn.setConfigOption(turn.sessionId, "thought_level", request.effort);
-			});
+			await this.#sessionStep(conn, turn, reused, () => this.#applyTurnConfig(conn, turn));
 		} catch (err) {
 			this.#failTurn(turn, `ACP model selection failed: ${describe(err)}`);
 			return;
-		}
-		try {
-			await conn.setConfigOption(turn.sessionId, "mode", acpMode(request.mode, request.skipPermissions));
-		} catch (err) {
-			this.#log("mode-apply-failed", { message: describe(err) });
 		}
 		if (turn.closed) return;
 
@@ -373,8 +365,13 @@ export class AcpDriver implements TurnDriver {
 		try {
 			// Nothing to cancel before the prompt RPC exists; see promptStarted.
 			turn.promptStarted = true;
-			const result = await this.#sessionStep(conn, turn, reused, () =>
-				conn.prompt(turn.sessionId, request.prompt, request.images, request.contextBlock),
+			const result = await this.#sessionStep(
+				conn,
+				turn,
+				reused,
+				() => conn.prompt(turn.sessionId, request.prompt, request.images, request.contextBlock),
+				// A load does not preserve config; re-apply before re-prompting.
+				() => this.#applyTurnConfig(conn, turn),
 			);
 			if (turn.closed) return;
 			turn.sawResult = true;
@@ -415,21 +412,52 @@ export class AcpDriver implements TurnDriver {
 		}
 	}
 
-	/** Reload-retry for reused sessions: agy may drop a held session, and
-	 *  the reload is the only restore. */
+	/** Model + thought level (parity-critical), then mode (best-effort: auto
+	 *  policy converges the modes anyway). */
+	#applyTurnConfig(conn: AcpConnection, turn: ActiveTurn): Promise<void> {
+		const request = turn.request;
+		return (async () => {
+			await conn.setConfigOption(turn.sessionId, "model", request.model);
+			if (request.effort) await conn.setConfigOption(turn.sessionId, "thought_level", request.effort);
+			try {
+				await conn.setConfigOption(turn.sessionId, "mode", acpMode(request.mode, request.skipPermissions));
+			} catch (err) {
+				this.#log("mode-apply-failed", { message: describe(err) });
+			}
+		})();
+	}
+
+	/** Reload-retry for reused sessions: agy may drop a held session, and the
+	 *  reload is the only restore. Only quiet, live turns retry — a turn that
+	 *  already streamed output or parks would double-run side effects, and a
+	 *  closing turn (abort, timer, connection exit) must settle as-is. */
 	async #sessionStep<T>(
 		conn: AcpConnection,
 		turn: ActiveTurn,
 		reused: boolean,
 		step: () => Promise<T>,
+		onReload?: () => Promise<void>,
 	): Promise<T> {
+		const retryable = () =>
+			reused &&
+			!turn.closed &&
+			!turn.aborted &&
+			turn.abortedBy === null &&
+			turn.textDeltas === 0 &&
+			turn.thoughtDeltas === 0 &&
+			turn.toolCalls.size === 0 &&
+			turn.parks === 0;
 		try {
 			return await step();
 		} catch (err) {
-			if (!reused || turn.aborted) throw err;
+			if (!retryable()) throw err;
 			this.#log("session-reload-retry", { sessionId: turn.sessionId, message: describe(err) });
 			conn.dropSession(turn.sessionId);
+			this.#stats.sessionsLoaded += 1;
 			await conn.loadSession(turn.sessionId, turn.request.cwd);
+			if (!retryable()) throw err;
+			this.#armIdle(turn);
+			if (onReload) await onReload();
 			return await step();
 		}
 	}

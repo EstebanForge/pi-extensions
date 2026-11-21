@@ -44,8 +44,12 @@
 //                      the Gate B synthesis)
 //   usage-occ-once     prompt 1 -> usage_update + aggregate; prompt 2 ->
 //                      aggregate only (per-turn occupancy must not leak)
-//   reuse-retry        prompt 1 ok; prompt 2 -> -32000 (dropped session);
+//   reuse-retry       prompt 1 ok; prompt 2 -> -32000 (dropped session);
 //                      prompt 3+ ok (driver must reload and re-prompt)
+//   reuse-retry-late   prompt 2 emits a chunk THEN -32000 (activity gate:
+//                      a turn that already produced output must not retry)
+//   reuse-retry-dead   prompt 2 -> -32000 AND session/load -> -32000 (a
+//                      failed retry reload settles ERROR)
 
 import fs from "node:fs";
 import readline from "node:readline";
@@ -234,7 +238,7 @@ async function handle(msg) {
         });
         notifyChunk("OLD REPLY FULL TEXT");
       }
-      if (scenario === "load-fails") {
+      if (scenario === "load-fails" || scenario === "reuse-retry-dead") {
         error(id, -32000, "unknown session");
         return;
       }
@@ -408,6 +412,13 @@ async function handle(msg) {
       }
       if (scenario === "reuse-retry" && promptCount === 1) {
         promptCount += 1;
+        error(id, -32000, "unknown session");
+        pendingPromptId = null;
+        return;
+      }
+      if ((scenario === "reuse-retry-late" || scenario === "reuse-retry-dead") && promptCount === 1) {
+        promptCount += 1;
+        if (scenario === "reuse-retry-late") notifyChunk("PARTIAL");
         error(id, -32000, "unknown session");
         pendingPromptId = null;
         return;
