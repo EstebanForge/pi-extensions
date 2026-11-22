@@ -165,6 +165,10 @@ test("file skipPermissions accepts the on/off vocabulary (issue #23)", async () 
 		["true", true],
 		["1", true],
 		[true, true],
+		// JSON numbers: 0/1 count, other numbers are junk with the safe default
+		[0, false],
+		[1, true],
+		[2, true],
 		// junk keeps the safe default (auto-approve, so -p runs do not hang)
 		["banana", true],
 		["", true],

@@ -149,6 +149,9 @@ interface Config {
 	/** Pass --dangerously-skip-permissions so commands don't hang on an
 	 *  unanswerable y/n prompt in non-interactive -p mode. Default true. */
 	skipPermissions: boolean;
+	/** Present-but-unparseable file values that fell back (issue #23);
+	 *  undefined when every value parsed. Never persisted. */
+	parseWarnings?: string[];
 }
 
 /** Layered config paths: global is ~/.pi/agent (homedir, NOT getAgentDir —
@@ -163,19 +166,24 @@ function configPathsFor() {
 
 /** Hand-edited booleans may use the /agy on/off vocabulary (issue #23);
  *  only the exact boolean false was honored before, so "off" stayed
- *  auto-approved. Unparseable values keep the safe default. */
-function parseBoolish(raw: unknown, fallback: boolean): boolean {
+ *  auto-approved. JSON numbers 0/1 count; unparseable values keep the safe
+ *  default and warn through the optional channel. */
+function parseBoolish(raw: unknown, fallback: boolean, warnings?: string[]): boolean {
 	if (typeof raw === "boolean") return raw;
+	if (raw === 0 || raw === 1) return raw === 1;
 	if (typeof raw === "string") {
 		const v = raw.trim().toLowerCase();
 		if (v === "1" || v === "true" || v === "on") return true;
 		if (v === "0" || v === "false" || v === "off") return false;
 	}
+	if (raw === undefined || raw === null) return fallback;
+	warnings?.push(`skipPermissions: ${JSON.stringify(raw)} is not a recognized boolean (true/false, on/off, 1/0); using default ${fallback}`);
 	return fallback;
 }
 
 function loadConfig(): Config {
 	const { merged } = loadLayeredRaw(configPathsFor());
+	const parseWarnings: string[] = [];
 
 	const thinkingRaw = String(merged.defaultThinking ?? DEFAULT_THINKING).toLowerCase();
 	const thinking: ThinkingTier =
@@ -185,12 +193,13 @@ function loadConfig(): Config {
 	const skipPermissions =
 		envPerm !== undefined
 			? envPerm === "1" || envPerm.toLowerCase() === "true"
-			: parseBoolish(merged.skipPermissions, DEFAULT_SKIP_PERMISSIONS);
+			: parseBoolish(merged.skipPermissions, DEFAULT_SKIP_PERMISSIONS, parseWarnings);
 
 	return {
 		defaultModel: String(merged.defaultModel ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL,
 		defaultThinking: thinking,
 		skipPermissions,
+		parseWarnings: parseWarnings.length > 0 ? parseWarnings : undefined,
 	};
 }
 
@@ -768,6 +777,19 @@ export default async function (
 			registry.get(run.runId)?.status === "finishing"
 				? `Run ${run.runId} already finished; its result is being delivered.`
 				: null,
+	});
+	// A hand editor never opens /agy: surface parse fallbacks at startup
+	// (issue #23). Headless sessions see the effective state in the /agy
+	// status snapshot instead.
+	pi.on("session_start", (event, ctx) => {
+		const warnings = loadConfig().parseWarnings;
+		if (!warnings?.length) return;
+		if (ctx.hasUI) {
+			ctx.ui.notify(
+				`ask-antigravity config: ${warnings.length} unparseable value${warnings.length === 1 ? "" : "s"} fell back to defaults; fix ask-antigravity.json or use /agy.`,
+				"warning",
+			);
+		}
 	});
 	pi.on("session_shutdown", () => {
 		// Latch first so close-handler wakes stay silent, then kill children,

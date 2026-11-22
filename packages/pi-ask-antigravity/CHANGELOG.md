@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **`skipPermissions` accepts JSON numbers `0`/`1`, and parse fallbacks warn on session start (issue #23 review follow-up).** Junk values previously fell back to the safe default with no signal anywhere; the startup toast names the problem and points at `ask-antigravity.json`.
 - **String booleans in the config file no longer leave commands auto-approved (issue #23).** `skipPermissions` honored only the exact JSON `false`, so a hand-edited `"off"`, `"false"`, or `"0"` - spellings the README and `/agy` display elsewhere - stayed truthy and kept `--dangerously-skip-permissions` on accept-edits runs. The file path now accepts `true`/`false`/`on`/`off`/`1`/`0` (case and whitespace tolerated); unparseable values keep the safe default so non-interactive runs don't start hanging, and the `AGY_SKIP_PERMISSIONS` env grammar is unchanged.
 
 ## [1.3.5] - 2026-11-13
