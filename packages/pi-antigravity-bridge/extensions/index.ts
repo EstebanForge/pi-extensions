@@ -68,7 +68,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { configPath, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, agyUpdateMessage, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -841,6 +841,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (!legacyFileAcpWarningShown && legacyConfigCleanupFailed) {
 			legacyFileAcpWarningShown = true;
 			const msg = `Couldn't remove the old "bin" setting from ${configPath()} (details in the bridge log). Delete the "bin" line under "acp" by hand; turns run "agy acp" from the CLI.`;
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+			else console.error(`[antigravity-bridge] ${msg}`);
+		}
+		// A hand editor never runs /agy: surface parse fallbacks where they
+		// happen (issue #23). Headless sessions keep the stderr record.
+		const configWarnings = loadConfig().parseWarnings;
+		if (configWarnings?.length) {
+			const msg = configWarningsMessage(configWarnings);
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
 		}

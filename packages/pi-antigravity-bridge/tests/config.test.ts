@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadConfig, saveConfig } from "../src/config.js";
+import { configWarningsMessage, loadConfig, saveConfig } from "../src/config.js";
 
 function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
@@ -374,4 +374,70 @@ test("config: AGY_TURN_TIMEOUT_MIN env overrides the file, 0 disables", () => {
 		else process.env.AGY_TURN_TIMEOUT_MIN = prev;
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
+});
+
+test("config: string booleans take the /agy vocabulary, JSON numbers 0/1 count (issue #23)", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ skipPermissions: "off", askTool: "false", webTools: "1", digest: "on", systemPrompt: "0" }));
+			const c = loadConfig(p);
+			assert.equal(c.skipPermissions, false);
+			assert.equal(c.askTool, false);
+			assert.equal(c.webTools, true);
+			assert.equal(c.digest, true);
+			assert.equal(c.systemPrompt, false);
+			assert.equal(c.parseWarnings, undefined);
+
+			fs.writeFileSync(p, JSON.stringify({ skipPermissions: 0, askTool: 1 }));
+			const n = loadConfig(p);
+			assert.equal(n.skipPermissions, false);
+			assert.equal(n.askTool, true);
+			assert.equal(n.parseWarnings, undefined);
+
+			fs.writeFileSync(p, JSON.stringify({ skipPermissions: 2 }));
+			const junk = loadConfig(p);
+			assert.equal(junk.skipPermissions, true, "junk numbers fall back to the safe default");
+			assert.ok(junk.parseWarnings?.some((w) => w.includes("skipPermissions")), "junk number warns");
+		});
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: env override suppresses the file warning (file value never parsed)", () => {
+	const p = tmpConfig();
+	const prev = process.env.AGY_SKIP_PERMISSIONS;
+	try {
+		fs.writeFileSync(p, JSON.stringify({ skipPermissions: "banana" }));
+		process.env.AGY_SKIP_PERMISSIONS = "0";
+		const c = loadConfig(p);
+		assert.equal(c.skipPermissions, false, "env wins");
+		assert.equal(c.parseWarnings, undefined, "no warning for a value that was never parsed");
+	} finally {
+		if (prev === undefined) delete process.env.AGY_SKIP_PERMISSIONS;
+		else process.env.AGY_SKIP_PERMISSIONS = prev;
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: a hand-carried parseWarnings key never persists through saveConfig", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ parseWarnings: ["junk"], engine: "acp" }));
+		withoutAgyEnvs(() => saveConfig({ inactivityTimeoutMin: 9 }, p));
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+		assert.ok(!("parseWarnings" in raw), "computed warnings must not round-trip to disk");
+		assert.equal(raw.inactivityTimeoutMin, 9);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: the startup warning message names the problem and the escape hatch", () => {
+	const msg = configWarningsMessage(['skipPermissions: "banana" is not a recognized boolean (true/false, on/off, 1/0); using default true']);
+	assert.match(msg, /unparseable/);
+	assert.match(msg, /\/agy doctor/);
+	assert.match(configWarningsMessage(["a", "b"]), /2 unparseable values/);
+	assert.match(configWarningsMessage(["a"]), /1 unparseable value(?!s)/);
 });

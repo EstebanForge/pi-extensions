@@ -271,11 +271,12 @@ const BOOLISH_TRUE = new Set(["1", "true", "on"]);
 const BOOLISH_FALSE = new Set(["0", "false", "off"]);
 
 /** Parse a config.json boolean that a hand editor may have written as a
- *  string ("off", "false", "0" - the README and /agy vocabulary). Present
- *  but unparseable values fall back to the given default and warn; the
- *  silence is what made issue #23 invisible. */
+ *  string ("off", "false", "0" - the README and /agy vocabulary) or as the
+ *  JSON numbers 0/1. Present but unparseable values fall back to the given
+ *  default and warn; the silence is what made issue #23 invisible. */
 function parseBoolish(raw: unknown, label: string, fallback: boolean, warnings: string[]): boolean {
 	if (typeof raw === "boolean") return raw;
+	if (raw === 0 || raw === 1) return raw === 1;
 	if (typeof raw === "string") {
 		const v = raw.trim().toLowerCase();
 		if (BOOLISH_TRUE.has(v)) return true;
@@ -304,6 +305,13 @@ function parseReadOnlyValue(raw: unknown, warnings: string[]): boolean {
 	}
 	if (raw === undefined || raw === null) return DEFAULTS.readOnly;
 	return failClosed(raw);
+}
+
+/** One-line startup/doctor summary for unparseable config values (issue
+ *  #23). The toast points at /agy doctor because the per-value detail
+ *  (label, raw value, fallback) lives in the parseWarnings row list. */
+export function configWarningsMessage(warnings: string[]): string {
+	return `config.json: ${warnings.length} unparseable value${warnings.length === 1 ? "" : "s"} fell back to defaults (readOnly fails closed); run /agy doctor for details.`;
 }
 
 /** Read the raw config file (no defaults, no env). Shared by loadConfig and
