@@ -269,3 +269,11 @@ test("digestMaxCharsForEngine: acp uncapped by the prompt, stream-json byte-budg
 	assert.equal(digestMaxCharsForEngine("stream-json", 21_000), null);
 	assert.equal(digestMaxCharsForEngine("stream-json", 25_000), null);
 });
+
+test("digest: the window can stop at an explicit end (trailing user run joins the prompt)", () => {
+	const msgs = [user("backlog question"), user("current prompt"), user("note")];
+	const digest = buildContextDigest(msgs, 0, { bound: false, end: 1 });
+	assert.ok(digest.includes("backlog question"), "pre-run backlog stays digest context");
+	assert.ok(!digest.includes("current prompt"), "joined prompt members must not reappear in the digest");
+	assert.ok(!digest.includes("note"), "the whole run is excluded, not just the last message");
+});

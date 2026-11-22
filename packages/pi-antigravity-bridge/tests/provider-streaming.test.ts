@@ -567,7 +567,12 @@ test("streamSimple: stream-json budgets the prompt in bytes, not chars", () => {
 				),
 			);
 			assert.doesNotMatch(seen.opts?.prompt ?? "", /context from the broader pi session/);
-			assert.ok(seen.opts?.prompt.includes(cjk), "the user prompt still rides");
+			// The over-cap run is hard-sliced with a visible marker (issue #24
+			// prompt guard) instead of shipping a silently dropped turn.
+			const delivered = seen.opts?.prompt ?? "";
+			assert.ok(delivered.startsWith("[truncated]"), "over-cap prompt truncates visibly");
+			assert.ok(delivered.includes("漢"), "the sliced head keeps the prompt intent");
+			assert.ok(Buffer.byteLength(delivered, "utf8") <= 25_000, "the delivered prompt fits the cap");
 		} finally {
 			delete process.env.AGY_ENGINE;
 			delete process.env.AGY_DIGEST;

@@ -182,13 +182,16 @@ test("recreated conversation: stale record is dropped and the backlog is re-deli
 				assert.ok(!(key in disk2), "dropped record must not persist");
 			});
 
-			// Turn 3: a fresh conversation with watermark 0 must re-deliver the
-			// pi-side backlog it never saw.
+			// Turn 3: a fresh conversation with watermark 0. The whole stacked
+			// user run is one turn for pi, so under trailing-run extraction
+			// (issue #24) it ships as ONE joined prompt - no digest, no
+			// demotion; the fresh agy conversation receives the full intent.
 			await runTurn(h, ["first task", "second", "continue"]);
 			assert.equal(h.seen.opts?.conversationId, null, "next turn starts a fresh conversation");
 			const prompt = h.seen.opts?.prompt ?? "";
-			assert.ok(prompt.includes("[earlier user message]"), "digest must be present");
-			assert.ok(prompt.includes("first task"), "backlog must include the pre-recreation turn");
+			assert.ok(!prompt.includes("[earlier user message]"), "a fresh conversation gets the run as prompt, not as digest");
+			assert.ok(prompt.includes("first task"), "the full backlog reaches the fresh conversation");
+			assert.ok(prompt.includes("second"));
 			assert.ok(prompt.endsWith("continue"));
 		} finally {
 			fs.rmSync(h.dir, { recursive: true, force: true });
@@ -257,8 +260,12 @@ test("failed turn on the same conversation: watermark is not advanced (backlog r
 
 			await runTurn(h, ["first task", "second", "continue"], SYS);
 			const prompt = h.seen.opts?.prompt ?? "";
-			assert.ok(prompt.includes("[earlier user message]"), "digest present");
-			assert.ok(prompt.includes("second"), "the missed turn is re-delivered");
+			// Trailing-run extraction (issue #24): the failed turn's own addition
+			// ("second") is pi's active context, so it joins the prompt instead
+			// of riding the digest; "first task" sits at the watermark and stays
+			// excluded either way.
+			assert.ok(!prompt.includes("[earlier user message]"), "the run joins the prompt, no digest demotion");
+			assert.ok(prompt.includes("second"), "the missed turn is delivered as prompt");
 			assert.ok(prompt.endsWith("continue"));
 			// The record survived, so the gate stays closed: the conversation is
 			// still bound and must not receive a second system prompt. Staged

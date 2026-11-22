@@ -99,33 +99,80 @@ function zeroUsage(): Usage {
 	};
 }
 
-/** Extract the latest user message as a flat prompt string. agy maintains its
- *  own conversation history via --conversation, so we collapse pi's structured
- *  message to text. Returns null if the last message isn't a user message. */
-function extractUserPrompt(context: TranscriptContext): string | null {
-	const last = context.messages[context.messages.length - 1];
-	if (!last || last.role !== "user") return null;
-	const content = last.content;
-	if (typeof content === "string") return content;
-	// Flatten text blocks; images ride separately via extractImages (native
-	// blocks on ACP, staged files on stream-json via prompt-images.ts).
-	return content
-		.filter((b): b is { type: "text"; text: string } => b.type === "text")
-		.map((b) => b.text)
-		.join("\n")
-		.trim() || null;
+/** Flatten one message's text + image blocks (pi-ai ImageContent: base64
+ *  data + mimeType). The pre-#24 extraction shape, kept for the untrusted-
+ *  boundary fallback and the single-message resume paths. */
+function lastMessageParts(m: Message | undefined): { text: string | null; images: Array<{ data: string; mimeType: string }> } {
+	if (!m || m.role !== "user") return { text: null, images: [] };
+	if (typeof m.content === "string") return { text: m.content.trim() || null, images: [] };
+	const images: Array<{ data: string; mimeType: string }> = [];
+	const texts: string[] = [];
+	for (const b of m.content) {
+		if (b.type === "text") texts.push(b.text);
+		else if (b.type === "image") images.push({ data: b.data, mimeType: b.mimeType });
+	}
+	return { text: texts.join("\n").trim() || null, images };
 }
 
-/** Image blocks of the latest user message (pi-ai ImageContent: base64 data
- *  + mimeType). On the ACP engine they ride session/prompt as native
- *  content blocks; on stream-json they are staged to temp files and the
- *  prompt names the paths (see prompt-images.ts). */
-function extractImages(context: TranscriptContext): Array<{ data: string; mimeType: string }> {
-	const last = context.messages[context.messages.length - 1];
-	if (!last || last.role !== "user" || typeof last.content === "string") return [];
-	return last.content
-		.filter((b): b is { type: "image"; data: string; mimeType: string } => b.type === "image")
-		.map((b) => ({ data: b.data, mimeType: b.mimeType }));
+/** pi-side history shapes that can sit inside a trailing user run; a run
+ *  member matching one truncates the run to the messages after it. */
+function isBacklogUserShape(text: string): boolean {
+	return text.includes(COMPACTION_MARKER) || text.startsWith(BRANCH_SUMMARY_PREFIX) || text.startsWith(BASH_RUN_PREFIX);
+}
+
+/** The trailing run of role:"user" messages is the active turn: pi stacks
+ *  the prompt, queued nextTurn messages, and before_agent_start notes as
+ *  consecutive user messages, so reading only the LAST one dropped every
+ *  earlier prompt text and image (issue #24). The run is left-bounded by
+ *  the validated watermark: messages at or before it belong to turns agy
+ *  already saw (a failed pass never advances the watermark, so joining them
+ *  could re-execute a half-run task; they stay digest/continuity context).
+ *  A mismatched boundary fingerprint makes the count untrustworthy, so the
+ *  run collapses to the last message - the pre-#24 behavior - instead of
+ *  guessing. `texts` feeds the stream-json per-member truncation guard. */
+function extractTrailingUserRun(
+	messages: Message[],
+	watermark: number,
+	boundaryTrusted: boolean,
+): { prompt: string | null; images: Array<{ data: string; mimeType: string }>; runStart: number; texts: string[] } {
+	const last = messages.length - 1;
+	const empty = { prompt: null, images: [], runStart: messages.length, texts: [] };
+	if (last < 0 || messages[last].role !== "user") return empty;
+	if (!boundaryTrusted) {
+		const only = lastMessageParts(messages[last]);
+		return { prompt: only.text, images: only.images, runStart: last, texts: only.text ? [only.text] : [] };
+	}
+	let start = last;
+	while (start > 0 && messages[start - 1].role === "user") start--;
+	for (let i = start; i < messages.length; i++) {
+		if (isBacklogUserShape(blocksToText(messages[i].content))) start = i + 1;
+	}
+	if (watermark > start) start = watermark;
+	if (start > last) {
+		// The stored count reaches past the run (a transcript that shrank
+		// under a matching or stale boundary - pi's retry re-emits look
+		// exactly like this): the pre-#24 read is the only safe one.
+		const only = lastMessageParts(messages[last]);
+		return { prompt: only.text, images: only.images, runStart: last, texts: only.text ? [only.text] : [] };
+	}
+	const texts: string[] = [];
+	const images: Array<{ data: string; mimeType: string }> = [];
+	for (let i = start; i <= last; i++) {
+		const m = messages[i];
+		if (typeof m.content === "string") {
+			if (m.content.trim()) texts.push(m.content);
+			continue;
+		}
+		for (const b of m.content) {
+			if (b.type === "text") {
+				if (b.text.trim()) texts.push(b.text);
+			} else if (b.type === "image") {
+				images.push({ data: b.data, mimeType: b.mimeType });
+			}
+		}
+	}
+	const prompt = texts.join("\n\n").trim() || null;
+	return { prompt, images, runStart: start, texts };
 }
 
 // --- G1: pi-side context digest --------------------------------------------------
@@ -139,6 +186,14 @@ function extractImages(context: TranscriptContext): Array<{ data: string; mimeTy
 // No pi patch, no new MCP tool. See docs/PI-BRIDGE-GAPS.md (G1).
 
 const COMPACTION_MARKER = "compacted into the following summary";
+
+/** pi's convertToLlm maps branch summaries and bash runs to role:"user", so
+ *  a watermark-0 transcript can hold them as backlog inside a trailing user
+ *  run. Neither contains COMPACTION_MARKER, so the run scan (issue #24)
+ *  needs their shapes too (core/messages.js BRANCH_SUMMARY_PREFIX /
+ *  bashExecutionToText). */
+const BRANCH_SUMMARY_PREFIX = "The following is a summary of a branch";
+const BASH_RUN_PREFIX = "Ran `";
 
 /** Synthetic prompt for a resume turn (issue #8): pi's retry dropped the
  *  failed attempt from the projected context (_omitRecoveryAttempt), leaving
@@ -253,8 +308,14 @@ export interface DigestOptions {
 	/** Include the trailing message in the delta window instead of reserving
 	 *  it as the current user prompt. Used when resuming into a fresh
 	 *  post-compaction conversation whose transcript ends in a toolResult or
-	 *  assistant message. Default false. */
+	 *  assistant message. Default false. Ignored when `end` is set. */
 	includeLast?: boolean;
+	/** Exclusive window end. The trailing user run (issue #24) joins the
+	 *  prompt, so its members must not reappear as digest continuity
+	 *  context; the provider passes the run's start index here. Default:
+	 *  length-1 (reserve the last message as the prompt), or length when
+	 *  includeLast is set. */
+	end?: number;
 }
 
 /** Soft cap on the digest body when no tighter budget applies. */
@@ -367,7 +428,12 @@ export function buildContextDigest(
 	} else if (watermark > messages.length) {
 		start = 0;
 	}
-	const end = opts.includeLast ? messages.length : Math.max(0, messages.length - 1);
+	const end =
+		opts.end !== undefined
+			? opts.end
+			: opts.includeLast
+				? messages.length
+				: Math.max(0, messages.length - 1);
 	for (let i = start; i < end; i++) {
 		const m = messages[i];
 		if (m.role === "assistant") {
@@ -1622,8 +1688,24 @@ async function runTurnDriver(
 			return;
 		}
 		// Fresh pass, or a stranded escalated result being re-delivered.
-		const userPrompt = extractUserPrompt(context);
-		const images = extractImages(context);
+		// Watermark first: the trailing user run is left-bounded by it, so
+		// failed-turn backlog never joins the prompt (issue #24 / issue #1).
+		const rawWatermark = existing?.lastMessageCount ?? 0;
+		// Boundary fingerprint check (see boundaryFingerprint): a transcript
+		// mutated under the stored count (/tree, /fork, context-hook rewrites)
+		// resets the delta to the full digest instead of a silently wrong one.
+		// Records written before the fingerprint existed (digestBoundary unset)
+		// trust the count: the old code advanced it the same way, so reseting
+		// would dump a one-time full delta of history agy already holds.
+		const storedBoundary = existing?.digestBoundary;
+		const boundaryTrusted =
+			rawWatermark === 0 ||
+			storedBoundary === undefined ||
+			storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]);
+		const watermark = rawWatermark > 0 && boundaryTrusted ? rawWatermark : 0;
+		const run = extractTrailingUserRun(context.messages, watermark, boundaryTrusted);
+		const userPrompt = run.prompt;
+		const images = run.images;
 		// Resume pass (issue #8): pi's retry dropped the failed attempt from the
 		// projected context, so the transcript ends in a toolResult or assistant
 		// message and there is no user prompt, no pending park, and nothing
@@ -1666,20 +1748,6 @@ async function runTurnDriver(
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
-		const rawWatermark = existing?.lastMessageCount ?? 0;
-		// Boundary fingerprint check (see boundaryFingerprint): a transcript
-		// mutated under the stored count (/tree, /fork, context-hook rewrites)
-		// resets the delta to the full digest instead of a silently wrong one.
-		// Records written before the fingerprint existed (digestBoundary unset)
-		// trust the count: the old code advanced it the same way, so reseting
-		// would dump a one-time full delta of history agy already holds.
-		const storedBoundary = existing?.digestBoundary;
-		const watermark =
-			rawWatermark > 0 &&
-			(storedBoundary === undefined ||
-				storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]))
-				? rawWatermark
-				: 0;
 		// Late and resume turns re-open the conversation with a synthetic
 		// prompt; the digest would re-send context agy already holds (against a
 		// stale watermark: a failed pass never advances it), so skip it.
@@ -1687,15 +1755,48 @@ async function runTurnDriver(
 		// once even if config.digest is false, because the old agy conversation
 		// was rotated and the fresh conversation has no prior history.
 		const engine = deps.engine ?? config.engine;
-		const promptBytes = Buffer.byteLength(prompt ?? "", "utf8");
+		// A joined run can outgrow the stream-json silent-drop cap on its own
+		// (issue #24): the digest budget used to absorb these bytes. Truncate
+		// oldest-first, keeping the newest run members; synthetic resume
+		// prompts have no run behind them and keep their existing behavior.
+		let deliveredPrompt = prompt ?? "";
+		let runTruncated = false;
+		if (engine !== "acp" && run.texts.length > 0) {
+			const budget = STREAM_JSON_PROMPT_CAP - STREAM_JSON_PROMPT_MARGIN;
+			if (Buffer.byteLength(deliveredPrompt, "utf8") > budget) {
+				const kept: string[] = [];
+				let used = 0;
+				for (let i = run.texts.length - 1; i >= 0; i--) {
+					const cost = Buffer.byteLength(run.texts[i], "utf8") + 2;
+					if (used + cost > budget - 16) break;
+					kept.unshift(run.texts[i]);
+					used += cost;
+				}
+				runTruncated = true;
+				if (kept.length > 0) {
+					deliveredPrompt = `[truncated]\n${kept.join("\n\n")}`;
+				} else {
+					// A single member bigger than the whole budget: hard-slice it
+					// (visible truncation) rather than ship a silently dropped
+					// turn (issue #2) or an empty prompt.
+					const head = Buffer.from(run.texts[run.texts.length - 1], "utf8").subarray(0, Math.max(0, budget - 32));
+					deliveredPrompt = `[truncated]\n${head.toString("utf8")}`;
+				}
+			}
+		}
+		const promptBytes = Buffer.byteLength(deliveredPrompt, "utf8");
+		// A truncated run ships alone: the digest budget is spent, and a
+		// marker-only digest beside a sliced prompt is noise that also breaks
+		// agy's server-side prompt cache.
+		const wantDigest = (config.digest || compactionHandoff || compactionResume) && !runTruncated;
 		const maxChars = digestMaxCharsForEngine(engine, promptBytes);
-		const wantDigest = config.digest || compactionHandoff || compactionResume;
 		const digest =
 			wantDigest && maxChars !== null && late.length === 0 && !resume
 				? buildContextDigest(context.messages, watermark, {
 						bound: Boolean(existing?.conversationId),
 						seenSummaryId: existing?.digestSummaryId,
 						maxChars,
+						end: run.runStart,
 						includeLast: compactionResume,
 					})
 				: "";
@@ -1768,8 +1869,8 @@ async function runTurnDriver(
 		const runImages = [...images, ...late.flatMap((l) => l.images ?? [])];
 		const fullPrompt =
 			(late.length > 0
-				? buildLateResultPrompt(late, prompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, prompt ?? "")) +
+				? buildLateResultPrompt(late, deliveredPrompt || undefined)
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt)) +
 			stageImageNote(runImages);
 		try {
 			handle = await deps.driver.run({

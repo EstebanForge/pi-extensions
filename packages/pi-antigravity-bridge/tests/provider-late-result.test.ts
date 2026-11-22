@@ -163,8 +163,9 @@ test("late delivery: incident repro, tool result after park death runs as a new 
 	assert.match(seen.opts.prompt, /agy disconnected before the tool result arrived/);
 	assert.match(seen.opts.prompt, /pi tool "AskClaude":/);
 	assert.match(seen.opts.prompt, /REVIEW OUTPUT/);
-	// The old user message is NOT re-sent (extractUserPrompt reads the last
-	// message only, and the last message is the toolResult).
+	// The old user message is NOT re-sent: the trailing user run is empty
+	// here (the scan stops at the toolResult tail), so nothing joins the
+	// prompt and the late-delivery framing stays the only payload.
 	assert.equal(seen.opts.prompt.includes("peer review wp-plugin"), false);
 	// Tombstone consumed: no double delivery.
 	assert.deepEqual(rt.deadIds, []);
