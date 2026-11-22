@@ -12,6 +12,30 @@ function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
 }
 
+/** Clear every AGY_* env var loadConfig reads; restores them after. Boolean
+ *  file-path tests must not inherit ambient env overrides (issue #23). */
+function withoutAgyEnvs(run: () => void): void {
+	const keys = [
+		"AGY_ASK_TOOL",
+		"AGY_WEB_TOOLS",
+		"AGY_DIGEST",
+		"AGY_SYSTEM_PROMPT",
+		"AGY_SKIP_PERMISSIONS",
+		"AGY_READONLY",
+		"AGY_ACP_SESSION_RETRY",
+	] as const;
+	const prevs = keys.map((k) => [k, process.env[k]] as const);
+	for (const k of keys) delete process.env[k];
+	try {
+		run();
+	} finally {
+		for (const [k, prev] of prevs) {
+			if (prev === undefined) delete process.env[k];
+			else process.env[k] = prev;
+		}
+	}
+}
+
 /** Pin process.stdout.isTTY for the duration of run(): the TTY-aware turn-cap
  *  default must not depend on ambient stdio (CI, piped vitest, TTY shells). */
 function stubTTY(value: boolean | undefined, run: () => void): void {
@@ -103,6 +127,139 @@ test("config: systemPrompt defaults on and round-trips through load/save", () =>
 		assert.equal(loadConfig(p).systemPrompt, false);
 		saveConfig({ mode: "plan" }, p);
 		assert.equal(loadConfig(p).systemPrompt, false);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+// --- issue #23: config.json boolean keys accept the /agy vocabulary -------
+// The README and /agy speak on/off, so hand editors write "off"/"false" as
+// STRINGS. Any non-empty string is truthy, which silently enabled every
+// option the user tried to disable. Strings now parse; junk falls back to
+// the per-key default and surfaces a parse warning (surfaced by /agy doctor).
+
+test("config: string booleans parse per the /agy vocabulary (issue #23)", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(
+				p,
+				JSON.stringify({
+					askTool: "off",
+					webTools: "on",
+					digest: "false",
+					systemPrompt: "0",
+					skipPermissions: "false",
+					readOnly: "off",
+					acp: { sessionRetryOnTimeout: "on" },
+				}),
+			);
+			const c = loadConfig(p);
+			assert.equal(c.askTool, false);
+			assert.equal(c.webTools, true);
+			assert.equal(c.digest, false);
+			assert.equal(c.systemPrompt, false);
+			assert.equal(c.skipPermissions, false);
+			assert.equal(c.readOnly, false);
+			assert.equal(c.acp.sessionRetryOnTimeout, true);
+			assert.equal(c.parseWarnings, undefined);
+		});
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: boolean junk falls back to the per-key default with a parse warning (issue #23)", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			// Per-key defaults: skipPermissions true, askTool true, webTools false,
+			// digest true, systemPrompt true.
+			const cases: Array<[string, unknown, boolean]> = [
+				["skipPermissions", "maybe", true],
+				["askTool", 7, true],
+				["webTools", "disabled", false],
+				["digest", "", true],
+				["systemPrompt", [], true],
+			];
+			for (const [key, junk, expectedDefault] of cases) {
+				fs.writeFileSync(p, JSON.stringify({ [key]: junk }));
+				const c = loadConfig(p);
+				assert.equal(c[key as "askTool"], expectedDefault, `${key} must fall back to its default`);
+				assert.ok(c.parseWarnings?.some((w) => w.includes(key)), `${key} junk must warn`);
+			}
+			// null is absent-like: falls back silently, no warning.
+			fs.writeFileSync(p, JSON.stringify({ askTool: null }));
+			const c = loadConfig(p);
+			assert.equal(c.askTool, true);
+			assert.equal(c.parseWarnings, undefined);
+		});
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: acp.sessionRetryOnTimeout accepts string booleans (issue #23)", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "on" } }));
+			assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "1" } }));
+			assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "false" } }));
+			assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, false);
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "junk" } }));
+			const c = loadConfig(p);
+			assert.equal(c.acp.sessionRetryOnTimeout, false);
+			assert.ok(c.parseWarnings?.some((w) => w.includes("acp.sessionRetryOnTimeout")));
+		});
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: parse warnings stay in memory and user values stay untouched on disk (issue #23)", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ askTool: "junk" }));
+			const c = loadConfig(p);
+			assert.equal(c.parseWarnings?.length, 1);
+			// An unrelated toggle must not rewrite the user's hand-edited value
+			// and must never persist the in-memory warnings field.
+			saveConfig({ mode: "plan" }, p);
+			const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+			assert.equal(onDisk.askTool, "junk");
+			assert.equal("parseWarnings" in onDisk, false);
+		});
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: non-string enum values fall back instead of throwing (issue #23 review)", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(
+				p,
+				JSON.stringify({
+					defaultThinking: 5,
+					bridgeTools: true,
+					approvals: { gateMode: 1, mode: 2 },
+					agent: 3,
+					engine: 7,
+				}),
+			);
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "medium");
+			assert.equal(c.bridgeTools, "all");
+			assert.equal(c.approvals.gateMode, "auto");
+			assert.equal(c.approvals.mode, "ask");
+			assert.equal(c.agent, undefined);
+			assert.equal(c.engine, "acp");
+		});
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}

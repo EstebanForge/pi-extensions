@@ -1280,6 +1280,8 @@ function settingsRows(ctx: AgyCommandCtx): string[] {
 		row("bridge tools:", config.bridgeTools),
 		row("digest:", config.digest ? "on" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
+		// issue #23: unparseable hand-edited values must not fail silently.
+		...(config.parseWarnings ?? []).map((w, i) => row(i === 0 ? "config warnings:" : "", w)),
 	];
 }
 

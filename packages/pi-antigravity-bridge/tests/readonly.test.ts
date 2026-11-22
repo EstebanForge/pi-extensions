@@ -94,6 +94,53 @@ test("config: AGY_READONLY env wins over file; file key parses; default false", 
 	}
 });
 
+// --- 1b. readOnly config.json file path fails closed (issue #23) ------------
+
+// The AGY_READONLY env grammar, mirrored on the file path: empty string and
+// spelled-out falsities are OFF, every other present value is ON so a typo
+// can never silently disable the safety knob. Values outside the grammar
+// (unrecognized strings, non-strings) warn via parseWarnings; /agy doctor
+// surfaces them.
+test("config: readOnly file key fails closed on junk (issue #23)", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ro-config-"));
+	const cfgPath = path.join(dir, "config.json");
+	try {
+		// Documented grammar: recognized spellings.
+		const off: unknown[] = [false, "off", "false", "0", " OFF ", "False", ""];
+		const on: unknown[] = [true, "on", "true", "1", " ON ", "  ", "yes-please"];
+		for (const v of [...off, ...on]) {
+			fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: v }));
+			const expected = off.includes(v) ? false : true;
+			assert.equal(
+				withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath)).readOnly,
+				expected,
+				`readOnly ${JSON.stringify(v)} must read as ${expected}`,
+			);
+		}
+		// Absent or null: the false default, silently.
+		fs.writeFileSync(cfgPath, JSON.stringify({}));
+		let c = withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath));
+		assert.equal(c.readOnly, false);
+		assert.equal(c.parseWarnings, undefined);
+		fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: null }));
+		c = withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath));
+		assert.equal(c.readOnly, false);
+		assert.equal(c.parseWarnings, undefined);
+		// Values outside the grammar: fail closed ON with a warning.
+		for (const v of [1, { a: 1 }]) {
+			fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: v }));
+			c = withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath));
+			assert.equal(c.readOnly, true, `readOnly junk ${JSON.stringify(v)} must fail closed`);
+			assert.ok(c.parseWarnings?.some((w) => w.includes("readOnly")));
+		}
+		// Env still wins over a string file value.
+		fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: "on" }));
+		assert.equal(withEnvsSync({ AGY_READONLY: "off" }, () => loadConfig(cfgPath)).readOnly, false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 // --- 2. Provider fail-closed refusals ---------------------------------------
 
 const model: Model<Api> = {

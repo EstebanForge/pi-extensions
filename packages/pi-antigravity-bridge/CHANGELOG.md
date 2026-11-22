@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **String booleans in config.json no longer silently enable a disabled option (issue #23).** The boolean keys (`readOnly`, `skipPermissions`, `askTool`, `webTools`, `digest`, `systemPrompt`, `acp.sessionRetryOnTimeout`) passed raw file values through `??`, so a hand-edited `"off"`, `"false"`, or `"0"` - the exact vocabulary the README and `/agy` display - was a truthy string and switched the option ON. The file path now parses the `/agy` vocabulary (`true`/`false`/`on`/`off`/`1`/`0`, case and whitespace tolerated); env parsing is unchanged. Present-but-unparseable values fall back to the key's default and surface a `config warnings:` row in `/agy doctor` instead of failing silently; `readOnly` fails closed (ON) on junk, mirroring `AGY_READONLY`; and `saveConfig` neither rewrites a hand-edited value on an unrelated toggle nor persists the computed warnings field. The same pass closes a crash in the class the reporter's table exposed: a non-string `defaultThinking`, `bridgeTools`, `approvals.gateMode`, `approvals.mode`, or `agent` threw on every bridge call (`.toLowerCase()`/`.trim()` on a non-string) and now falls back to the default like every other junk value.
+
 ## [1.13.1] - 2026-11-21
 
 ### Fixed
