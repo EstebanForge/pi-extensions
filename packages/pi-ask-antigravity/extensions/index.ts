@@ -161,6 +161,19 @@ function configPathsFor() {
 	});
 }
 
+/** Hand-edited booleans may use the /agy on/off vocabulary (issue #23);
+ *  only the exact boolean false was honored before, so "off" stayed
+ *  auto-approved. Unparseable values keep the safe default. */
+function parseBoolish(raw: unknown, fallback: boolean): boolean {
+	if (typeof raw === "boolean") return raw;
+	if (typeof raw === "string") {
+		const v = raw.trim().toLowerCase();
+		if (v === "1" || v === "true" || v === "on") return true;
+		if (v === "0" || v === "false" || v === "off") return false;
+	}
+	return fallback;
+}
+
 function loadConfig(): Config {
 	const { merged } = loadLayeredRaw(configPathsFor());
 
@@ -172,7 +185,7 @@ function loadConfig(): Config {
 	const skipPermissions =
 		envPerm !== undefined
 			? envPerm === "1" || envPerm.toLowerCase() === "true"
-			: merged.skipPermissions === false ? false : DEFAULT_SKIP_PERMISSIONS;
+			: parseBoolish(merged.skipPermissions, DEFAULT_SKIP_PERMISSIONS);
 
 	return {
 		defaultModel: String(merged.defaultModel ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL,

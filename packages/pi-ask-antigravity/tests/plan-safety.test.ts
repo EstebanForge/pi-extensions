@@ -53,7 +53,7 @@ const FAKE_CONVERSATION_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 
 async function argvFor(
 	mode: string,
-	opts: { extraArgs?: string; conversationId?: string } = {},
+	opts: { extraArgs?: string; conversationId?: string; globalConfig?: Record<string, unknown> } = {},
 ): Promise<string[]> {
 	const argvDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-plan-argv-"));
 	tempDirs.push(argvDir);
@@ -68,11 +68,21 @@ async function argvFor(
 		HOME: process.env.HOME,
 		AGY_BIN: process.env.AGY_BIN,
 		AGY_EXTRA_ARGS: process.env.AGY_EXTRA_ARGS,
+		AGY_SKIP_PERMISSIONS: process.env.AGY_SKIP_PERMISSIONS,
 	};
 	process.env.HOME = emptyHome;
 	process.env.AGY_BIN = makeArgvCapturingAgyBin(argvFile);
 	if (opts.extraArgs === undefined) delete process.env.AGY_EXTRA_ARGS;
 	else process.env.AGY_EXTRA_ARGS = opts.extraArgs;
+	// env wins over the config file; the file path under test owns the decision
+	delete process.env.AGY_SKIP_PERMISSIONS;
+	if (opts.globalConfig !== undefined) {
+		fs.mkdirSync(path.join(emptyHome, ".pi", "agent"), { recursive: true });
+		fs.writeFileSync(
+			path.join(emptyHome, ".pi", "agent", "ask-antigravity.json"),
+			JSON.stringify(opts.globalConfig),
+		);
+	}
 
 	const restoreEnv = () => {
 		for (const [key, value] of Object.entries(saved)) {
@@ -139,6 +149,35 @@ test("AGY_EXTRA_ARGS loses the skip flag on plan runs and keeps benign args", as
 	);
 	assert.ok(argv.includes("--sandbox"), "benign extra args survive the filter");
 });
+
+// issue #23 class: the config file documents on/off, so hand editors write
+// strings; only the exact boolean false was honored before, leaving "off"
+// auto-approved on accept-edits runs. Each case asserts the real spawned argv.
+test("file skipPermissions accepts the on/off vocabulary (issue #23)", async () => {
+	const cases: Array<[unknown, boolean]> = [
+		["off", false],
+		["OFF", false],
+		[" off ", false],
+		["false", false],
+		["0", false],
+		[false, false],
+		["on", true],
+		["true", true],
+		["1", true],
+		[true, true],
+		// junk keeps the safe default (auto-approve, so -p runs do not hang)
+		["banana", true],
+		["", true],
+	];
+	for (const [raw, expectFlag] of cases) {
+		const argv = await argvFor("accept-edits", { globalConfig: { skipPermissions: raw } });
+		assert.equal(
+			argv.includes("--dangerously-skip-permissions"),
+			expectFlag,
+			`skipPermissions ${JSON.stringify(raw)} must ${expectFlag ? "keep" : "drop"} the flag`,
+		);
+	}
+}, 30000);
 
 test("accept-edits run keeps the flag (default skipPermissions on)", async () => {
 	const argv = await argvFor("accept-edits");

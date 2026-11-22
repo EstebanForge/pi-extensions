@@ -98,6 +98,7 @@ Set `digest: true` to prefix the prompt with `(Use compact digests, not full fil
 | --- | --- | --- |
 | `defaultModel` | `gemini-4-hydrogen` | Alias or exact id used when the tool call omits `model`. A bare base id picks its tier from `defaultThinking`. |
 | `defaultThinking` | `medium` | Tier used when an alias doesn't name one. Applies only if the family offers it; otherwise the family default (Pro → High). |
+| `skipPermissions` | `true` | Pass `--dangerously-skip-permissions` on accept-edits runs so commands don't hang on the unanswerable y/n prompt in `-p` mode; DANGEROUS: agy executes commands without per-action review. `false` prompts instead (hangs any `run_command` in `-p` mode). Accepts JSON booleans plus the string aliases `on`/`off`/`1`/`0` (issue #23); the `AGY_SKIP_PERMISSIONS` env var wins over the file and only `1`/`true` enable there. |
 
 ### `/agy` command
 
