@@ -343,9 +343,7 @@ export function removeLegacyAcpBin(configFile: string = configPath()): boolean {
 	const acp = file.acp as Record<string, unknown>;
 	if (!("bin" in acp)) return false;
 	delete acp.bin;
-	// Rename would replace a dotfiles-managed symlink with a regular file;
-	// write through the resolved target so the link survives.
-	writeConfigJson(fs.realpathSync(configFile), file);
+	writeConfigJson(configFile, file);
 	return true;
 }
 
@@ -522,12 +520,22 @@ function narrowEngine(raw: string): Engine {
 
 /** Atomic JSON write (temp + rename, 0600) shared by every config writer. */
 function writeConfigJson(configPath: string, value: unknown): void {
-	const dir = path.dirname(configPath);
+	// Rename over the raw path would replace a dotfiles-managed symlink with
+	// a regular file; write through the resolved target so the link survives.
+	// realpath throws on a missing file (fresh install): the raw path is
+	// correct there, nothing to dereference.
+	let target = configPath;
+	try {
+		target = fs.realpathSync(configPath);
+	} catch {
+		/* missing file - nothing to dereference */
+	}
+	const dir = path.dirname(target);
 	fs.mkdirSync(dir, { recursive: true });
-	const tmp = `${configPath}.${process.pid}.tmp`;
+	const tmp = `${target}.${process.pid}.tmp`;
 	try {
 		fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-		fs.renameSync(tmp, configPath);
+		fs.renameSync(tmp, target);
 	} catch (err) {
 		try {
 			fs.unlinkSync(tmp);

@@ -482,3 +482,18 @@ test("config: saveConfig never persists the turnTimeoutMin placeholder", () => {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
+
+test("config: saveConfig writes through a symlinked config instead of replacing it", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-link-"));
+	const real = path.join(dir, "real.json");
+	const link = path.join(dir, "config.json");
+	try {
+		fs.writeFileSync(real, JSON.stringify({ digest: true }));
+		fs.symlinkSync(real, link);
+		withoutAgyEnvs(() => saveConfig({ mode: "plan" }, link));
+		assert.equal(fs.lstatSync(link).isSymbolicLink(), true, "the symlink itself must survive the save");
+		assert.equal((JSON.parse(fs.readFileSync(real, "utf8")) as Record<string, unknown>).mode, "plan", "the write landed in the link target");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
