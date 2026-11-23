@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extensionsDataDir } from "./config.js";
+import { writeJsonAtomic } from "./atomic-write.js";
 
 /** Name convention for the bridge's per-pid server entries. */
 export function bridgeServerName(pid: number): string {
@@ -70,10 +71,7 @@ function writeConfig(file: string, config: McpConfig): void {
 	// 0700/0600: the file carries the bridge's shared-secret token in its
 	// headers, and it lives in the USER'S global agy config (audit 2026-09-07:
 	// it previously landed at the umask default, typically world-readable).
-	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-	const tmp = `${file}.${process.pid}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
-	fs.renameSync(tmp, file);
+	writeJsonAtomic(file, config, { dirMode: 0o700 });
 }
 
 /** The canonical mcp_config.json entry shape for a bridge server. Single
@@ -205,10 +203,7 @@ function readSuppressionMarker(file: string): SuppressionMarker {
 }
 
 function writeSuppressionMarker(file: string, marker: SuppressionMarker): void {
-	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-	const tmp = `${file}.${process.pid}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify(marker, null, 2) + "\n", { mode: 0o600 });
-	fs.renameSync(tmp, file);
+	writeJsonAtomic(file, marker, { dirMode: 0o700 });
 }
 
 function delegatorLive(pid: string, entry: { since?: number } | undefined, isAlive: (pid: number) => boolean, now: number): boolean {

@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { normalizeAgyAgentName } from "./agents.js";
+import { writeJsonAtomic } from "./atomic-write.js";
 
 /** pi's agent dir (env override PI_CODING_AGENT_DIR, else ~/.pi/agent); every
  *  bridge-owned path derives from it so isolated or rebranded pi homes keep
@@ -343,7 +344,7 @@ export function removeLegacyAcpBin(configFile: string = configPath()): boolean {
 	const acp = file.acp as Record<string, unknown>;
 	if (!("bin" in acp)) return false;
 	delete acp.bin;
-	writeConfigJson(configFile, file);
+	writeJsonAtomic(configFile, file);
 	return true;
 }
 
@@ -518,41 +519,6 @@ function narrowEngine(raw: string): Engine {
 	return raw === "acp" || raw === "stream-json" ? raw : DEFAULT_ENGINE;
 }
 
-/** Atomic JSON write (temp + rename, 0600) shared by every config writer. */
-function writeConfigJson(configPath: string, value: unknown): void {
-	// Rename over the raw path would replace a dotfiles-managed symlink with
-	// a regular file; write through the resolved target so the link survives.
-	// realpath throws on a missing file (fresh install): the raw path is
-	// correct there, nothing to dereference.
-	let target = configPath;
-	try {
-		target = fs.realpathSync(configPath);
-	} catch (err) {
-		// Only ENOENT falls back (fresh install, raw path). EACCES, a link
-		// loop, and friends must fail visibly: renaming over the raw path
-		// would replace a symlink with a regular file.
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		// Dangling symlink: resolve the link hop so the write goes through
-		// the link to its not-yet-existing dotfiles target.
-		const st = fs.lstatSync(configPath, { throwIfNoEntry: false });
-		if (st?.isSymbolicLink()) target = path.resolve(path.dirname(configPath), fs.readlinkSync(configPath));
-	}
-	const dir = path.dirname(target);
-	fs.mkdirSync(dir, { recursive: true });
-	const tmp = `${target}.${process.pid}.tmp`;
-	try {
-		fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-		fs.renameSync(tmp, target);
-	} catch (err) {
-		try {
-			fs.unlinkSync(tmp);
-		} catch {
-			/* nothing to clean */
-		}
-		throw err;
-	}
-}
-
 /** Atomically persist a config patch (temp + rename). Merges onto the RAW
  *  FILE values, never loadConfig(): env overrides must not be baked into the
  *  file (AGY_READONLY=1 in the env would otherwise persist readOnly: true to
@@ -608,6 +574,6 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 		// Computed per load; a raw file spread must never persist it.
 		parseWarnings: undefined,
 	};
-	writeConfigJson(configFile, next);
+	writeJsonAtomic(configFile, next);
 	return next as AgyConfig;
 }

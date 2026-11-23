@@ -74,6 +74,61 @@ test("the shared config file lands 0600 (it carries the bridge token)", () => {
 	fs.rmSync(home, { recursive: true, force: true });
 });
 
+test("a symlinked config file stays a symlink: every write lands in its target", () => {
+	const home = tmpHome();
+	const file = cfgFile(home);
+	const real = path.join(home, "real-mcp_config.json");
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(real, JSON.stringify({ mcpServers: { foreign: { serverUrl: "http://x" } } }));
+	fs.symlinkSync(real, file);
+	const isLink = () => fs.lstatSync(file).isSymbolicLink();
+	const read = () =>
+		(JSON.parse(fs.readFileSync(real, "utf8")) as { mcpServers: Record<string, { disabled?: boolean }> })
+			.mcpServers;
+
+	reg(home, ENTRY);
+	assert.equal(isLink(), true, "register must not replace the link with a regular file");
+	assert.ok(read()["pi-bridge-4242"], "the entry landed in the link target");
+	assert.ok(read().foreign, "foreign servers survive the linked write");
+
+	acquireBridgeSuppression({ configPath: file, markerPath: markerFile(home), pid: 1111 })();
+	assert.equal(isLink(), true, "the suppress and restore flips must not replace the link");
+	assert.equal(read()["pi-bridge-4242"].disabled, false, "release restored the entry through the link");
+
+	unregisterBridgeServer(ENTRY.pid, file);
+	assert.equal(isLink(), true, "unregister must not replace the link");
+	assert.equal(read()["pi-bridge-4242"], undefined, "the entry was removed through the link");
+	assert.equal(fs.statSync(file).mode & 0o777, 0o600, "the linked target still lands 0600");
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("a dangling config symlink is written through, never replaced", () => {
+	const home = tmpHome();
+	const file = cfgFile(home);
+	const target = path.join(home, "dotfiles-mcp_config.json");
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.symlinkSync(target, file);
+	reg(home, ENTRY);
+	assert.equal(fs.lstatSync(file).isSymbolicLink(), true, "the dangling link must survive");
+	assert.equal(fs.lstatSync(target).isFile(), true, "the missing target was created through the link");
+	assert.ok(JSON.parse(fs.readFileSync(target, "utf8")).mcpServers["pi-bridge-4242"]);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("a symlinked suppression marker stays a symlink across acquire and release", () => {
+	const home = tmpHome();
+	const marker = markerFile(home);
+	const real = path.join(home, "real-suppression.json");
+	fs.symlinkSync(real, marker);
+	const release = acquireBridgeSuppression({ configPath: cfgFile(home), markerPath: marker, pid: 1111 });
+	assert.equal(fs.lstatSync(marker).isSymbolicLink(), true, "acquire must not replace the marker link");
+	assert.ok(JSON.parse(fs.readFileSync(real, "utf8")).delegators["1111"], "the delegator landed in the link target");
+	release();
+	assert.equal(fs.lstatSync(marker).isSymbolicLink(), true, "release must not replace the marker link");
+	assert.equal(JSON.parse(fs.readFileSync(real, "utf8")).delegators["1111"], undefined);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
 test("register preserves foreign servers and refreshes our entry", () => {
 	const home = tmpHome();
 	const file = cfgFile(home);
