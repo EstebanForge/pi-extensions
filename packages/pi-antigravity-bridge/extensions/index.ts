@@ -123,15 +123,14 @@ import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
 
-// Last UI seen (session_start / /agy commands). Module scope: both the
-// default export and registerAgyCommand assign it.
-let activeUi: ExtensionUIContext | null = null;
-
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
+	// Per-factory UI reference so child session_shutdown never clears the
+	// parent's UI context.
+	let activeUi: ExtensionUIContext | null = null;
 	ensureQueuedMessagesDefaults({ onlyIfDirExists: true });
 
 	// Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
@@ -221,7 +220,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
 	let mcpHandle: BridgeEndpoint | null = null;
-	let currentSessionId: string | undefined;
+	let currentSessionManager: unknown;
 	let lastConversationId: string | undefined;
 	let realmSession: RealmSession | null = null;
 	// Session-only visibility overrides; never change either application's MCP config.
@@ -692,12 +691,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	const joinRealm = () =>
 		realm.join({
-			sessionId: () => currentSessionId,
+			sessionId: () => liveSessionId(currentSessionManager),
 			streamSimple,
 			hasActiveTurn: () => (engine === "acp" ? acpDriver.activeHandle !== null : streamDriver.activeHandle !== null),
-			conversationId: () => lastConversationId,
+			conversationId: () =>
+				(engine === "acp" ? acpDriver.snapshot().conversationId : streamDriver.snapshot().conversationId)
+				?? lastConversationId,
 		});
-	realmSession = joinRealm();
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -736,6 +736,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		roster,
 		pendingCompactionHandoff,
 		checkAgySetup,
+		setActiveUi: (ui) => {
+			activeUi = ui;
+		},
 	});
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
@@ -822,7 +825,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	pi.on("session_start", async (event, ctx) => {
-		currentSessionId = liveSessionId(ctx.sessionManager);
+		currentSessionManager = ctx.sessionManager;
 		realmSession ??= joinRealm();
 		if (ctx.hasUI) activeUi = ctx.ui;
 		// First-run engine picker: ask once, on the first interactive start,
@@ -1146,36 +1149,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					if (sweptLegacy > 0) fileLog.log("approval-workspace-swept", { swept: sweptLegacy }, "info");
 				}
 				if (mode === "off") {
-					if (r.first) {
-						// Gate off: drop this session's private hooks file.
-						const unstaged = removeGateHooks();
-						if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
-					}
+					// Gate off: drop this session's private hooks file.
+					const unstaged = removeGateHooks();
+					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
 				} else {
-					if (r.first) {
-						// Script: per-realm file; 0600 because the realm token is
-						// embedded (peer review 2026-09-07).
-						const scriptPath = approvalHookScriptPath();
-						fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
-						fs.writeFileSync(
-							scriptPath,
-							hookScriptSource({
-								port: r.handle.port,
-								token: r.handle.realmToken,
-								deadlineMs: APPROVAL_PARK_MS,
-							}),
-							{ mode: 0o600 },
-						);
-						// Private per-realm staging (issue #5 isolation): the gate group goes
-						// into the bridge add-dir that ONLY this process's agy receives.
-						const staged = stageGateHooks(bridgeMcpConfigDir(), {
+					// Script: per-realm file; 0600 because the realm token is
+					// embedded (peer review 2026-09-07). Re-stage idempotently so
+					// a partial failure on an earlier session never leaves the
+					// gate un-staged while gateActive is true.
+					const scriptPath = approvalHookScriptPath();
+					fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
+					fs.writeFileSync(
+						scriptPath,
+						hookScriptSource({
 							port: r.handle.port,
 							token: r.handle.realmToken,
-							scriptPath,
-							parkBudgetMs: APPROVAL_PARK_MS,
-						});
-						fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
-					}
+							deadlineMs: APPROVAL_PARK_MS,
+						}),
+						{ mode: 0o600 },
+					);
+					// Private per-realm staging (issue #5 isolation): the gate group goes
+					// into the bridge add-dir that ONLY this process's agy receives.
+					const staged = stageGateHooks(bridgeMcpConfigDir(), {
+						port: r.handle.port,
+						token: r.handle.realmToken,
+						scriptPath,
+						parkBudgetMs: APPROVAL_PARK_MS,
+					});
+					fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
 
 					// Shadow bases: factory twins of pi's own builtins (public API).
 					// pi.getAllTools() is unusable here: it returns ToolInfo, which
@@ -1237,23 +1238,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		activeUi = null;
 		const h = mcpHandle;
 		mcpHandle = null;
-		// "recycle", NOT "shutdown": pi fires session_shutdown on /new, /resume
-		// and /fork (docs/extensions.md session lifecycle), not only on process
-		// exit. The drivers are process-lifetime singletons; closing them with
-		// "shutdown" latched them permanently and every later turn failed with
-		// "ACP driver is shut down." (regression 2026-09-07). Recycle kills the
-		// connection now; the next turn respawns it. event.reason is
-		// deliberately ignored: recycle is correct even on real process exit
-		// ("quit") - the connection kill is identical and nothing runs after.
-		await streamDriver.close("recycle", "session shutdown");
-		await acpDriver.close("recycle", "session shutdown");
-		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
-		await h?.close();
-		hiddenBridgeTools.clear();
-		// Leaving the realm revokes this session's route; only the last session
-		// to leave tears down the shared listener and per-realm artifacts.
-		await realmSession?.leave();
-		realmSession = null;
+		try {
+			// "recycle", NOT "shutdown": pi fires session_shutdown on /new, /resume
+			// and /fork (docs/extensions.md session lifecycle), not only on process
+			// exit. The drivers are process-lifetime singletons; closing them with
+			// "shutdown" latched them permanently and every later turn failed with
+			// "ACP driver is shut down." (regression 2026-09-07). Recycle kills the
+			// connection now; the next turn respawns it. event.reason is
+			// deliberately ignored: recycle is correct even on real process exit
+			// ("quit") - the connection kill is identical and nothing runs after.
+			await streamDriver.close("recycle", "session shutdown");
+			await acpDriver.close("recycle", "session shutdown");
+			roundTrips.failAll(FAIL_REASON_SHUTDOWN);
+			await h?.close();
+			hiddenBridgeTools.clear();
+		} finally {
+			// Leaving the realm revokes this session's route; only the last session
+			// to leave tears down the shared listener and per-realm artifacts.
+			await realmSession?.leave();
+			realmSession = null;
+		}
 	});
 }
 
@@ -1279,6 +1283,7 @@ interface AgyCommandCtx {
 	roster: SubagentRoster;
 	pendingCompactionHandoff: Set<string>;
 	checkAgySetup: (ctx: { ui: ExtensionUIContext; mode: string }, engine: Engine, explicit?: boolean) => Promise<void>;
+	setActiveUi: (ui: ExtensionUIContext) => void;
 }
 
 interface PendingConfig {
@@ -1345,7 +1350,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
-			if (ui) activeUi = ui;
+			if (ui) ctx.setActiveUi(ui);
 			const mode = cmdCtx.mode;
 			const sub = (args ?? "").trim().split(/\s+/)[0]?.toLowerCase();
 			const val = (args ?? "").trim().split(/\s+/)[1]?.toLowerCase();

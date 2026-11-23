@@ -32,6 +32,7 @@ import { startMcpServer, type McpBridgeDeps, type McpServerHandle, type McpStart
 import { SessionStore } from "./sessions.js";
 
 const REALM_KEY = Symbol.for("pi-antigravity-bridge.runtime");
+const REALM_BRAND = Symbol.for("pi-antigravity-bridge.realm.brand");
 
 /** The approval hook script of this realm (one per process, realmToken embedded). */
 export function approvalHookScriptPath(): string {
@@ -68,9 +69,9 @@ export interface SessionPort {
 
 /** A session's view of the bridge listener. `token` is the session's own
  *  route; `realmToken` is the listener token carried by per-realm artifacts. */
-export interface BridgeEndpoint extends McpServerHandle {
+export type BridgeEndpoint = Omit<McpServerHandle, "addRoute"> & {
 	realmToken: string;
-}
+};
 
 export interface BridgeAttachResult {
 	ok: boolean;
@@ -87,7 +88,6 @@ export interface RealmSession {
 export interface BridgeRealm {
 	readonly store: SessionStore;
 	readonly streamSimple: BridgeStreamSimple;
-	readonly liveSessions: number;
 	join(port: SessionPort): RealmSession;
 }
 
@@ -103,20 +103,16 @@ const SEVERAL_TURNS =
 	"several antigravity sessions are streaming in this process and this request carries no session token";
 
 class Realm implements BridgeRealm {
+	readonly [REALM_BRAND] = true;
 	#store: SessionStore | undefined;
 	readonly #members = new Set<Member>();
 	#starting: Promise<McpStartResult> | null = null;
 	#server: McpServerHandle | null = null;
 	#closing: Promise<void> = Promise.resolve();
-	#lastLog: ((event: string, data?: unknown) => void) | undefined;
 
 	get store(): SessionStore {
 		this.#store ??= new SessionStore();
 		return this.#store;
-	}
-
-	get liveSessions(): number {
-		return this.#members.size;
 	}
 
 	readonly streamSimple: BridgeStreamSimple = (model, context, options) => {
@@ -149,15 +145,16 @@ class Realm implements BridgeRealm {
 	#memberFor(sessionId: string | undefined): Member | undefined {
 		const members = [...this.#members];
 		if (sessionId) {
-			const exact = members.find((m) => m.port.sessionId() === sessionId);
-			if (exact) return exact;
-			const owner = members.find((m) => {
-				const id = m.port.sessionId();
-				return id !== undefined && sessionId.startsWith(`${id}:`);
-			});
-			if (owner) return owner;
+			// Prefer newest member when a reload temporarily overlaps two sessions with the same id.
+			for (let i = members.length - 1; i >= 0; i--) {
+				if (members[i].port.sessionId() === sessionId) return members[i];
+			}
+			for (let i = members.length - 1; i >= 0; i--) {
+				const id = members[i].port.sessionId();
+				if (id !== undefined && sessionId.startsWith(`${id}:`)) return members[i];
+			}
 		}
-		return members[0];
+		return members.length === 1 ? members[0] : undefined;
 	}
 
 	async #attach(
@@ -171,7 +168,13 @@ class Realm implements BridgeRealm {
 		const starting = (this.#starting ??= this.#closing.then(() =>
 			startMcpServer(this.#router, { log: (event, data) => this.#log(event, data), addDirConfig: false }),
 		));
-		const started = await starting;
+		let started: McpStartResult;
+		try {
+			started = await starting;
+		} catch (err) {
+			if (this.#starting === starting) this.#starting = null;
+			throw err;
+		}
 		if (!started.ok || !started.handle) {
 			if (this.#starting === starting) this.#starting = null;
 			return { ok: false, reason: started.reason, first };
@@ -192,7 +195,6 @@ class Realm implements BridgeRealm {
 				token: route.token,
 				realmToken: server.token,
 				approvals: server.approvals,
-				addRoute: server.addRoute,
 				close: async () => route.remove(),
 			},
 		};
@@ -252,10 +254,13 @@ class Realm implements BridgeRealm {
 	}
 
 	#log(event: string, data?: unknown): void {
-		const members = [...this.#members];
-		const sink = members.find((m) => m.log)?.log ?? this.#lastLog;
-		this.#lastLog = sink;
-		sink?.(event, data);
+		const sink = [...this.#members].find((m) => m.log)?.log;
+		if (!sink) return;
+		try {
+			sink(event, data);
+		} catch {
+			/* a dead session UI must never break the shared listener */
+		}
 	}
 }
 
@@ -284,10 +289,14 @@ function refusedStream(model: Model<Api>, message: string): AssistantMessageEven
 	return stream;
 }
 
+function isRealm(value: unknown): value is Realm {
+	return typeof value === "object" && value !== null && Reflect.get(value, REALM_BRAND) === true;
+}
+
 /** This realm's bridge runtime, created on first use. */
 export function bridgeRealm(): BridgeRealm {
 	const existing: unknown = Reflect.get(globalThis, REALM_KEY);
-	if (existing instanceof Realm) return existing;
+	if (isRealm(existing)) return existing;
 	const realm = new Realm();
 	Reflect.set(globalThis, REALM_KEY, realm);
 	return realm;
@@ -297,5 +306,5 @@ export function bridgeRealm(): BridgeRealm {
 export async function __resetRealmForTests(): Promise<void> {
 	const existing: unknown = Reflect.get(globalThis, REALM_KEY);
 	Reflect.deleteProperty(globalThis, REALM_KEY);
-	if (existing instanceof Realm) await existing.dispose();
+	if (isRealm(existing)) await existing.dispose();
 }

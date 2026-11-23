@@ -8,8 +8,8 @@
 // Hardening:
 //   - The whole request handler is wrapped so a client error (ECONNRESET on a
 //     killed-mid-call agy) can never crash the pi process.
-//   - Per-process config dir (agy-mcp-<pid>): concurrent pi sessions each own
-//     their file; no shared-file race, no cross-session routing.
+//   - Per-process config dir (agy-mcp-<pid>) and one realm-shared HTTP listener
+//     with per-session route tokens: concurrent sessions stay isolated.
 //   - Shared-secret header: agy sends it from the config; a browser cannot set a
 //     custom header on a simple cross-origin POST, so this blocks CSRF against
 //     the loopback server. Combined with 127.0.0.1 binding.
@@ -457,6 +457,7 @@ export async function startMcpServer(
 				settlePark(ticket, { allow: false, reason: `approval gate timed out after ${Math.round(approvalTimeoutMs / 1000)}s` });
 				log("approval-timeout", { ticket, name: payload.toolCall.name });
 			}, approvalTimeoutMs);
+			timer.unref();
 			parks.set(ticket, { name: payload.toolCall.name, since: Date.now(), timer });
 			log("approval-parked", { ticket, name: payload.toolCall.name });
 			try {
@@ -633,7 +634,9 @@ export async function startMcpServer(
 							settlePark(ticket, { allow: false, reason: "approval gate bridge shut down" });
 						}
 						routes.clear();
-						await new Promise<void>((r) => httpServer.close(() => r()));
+						const closed = new Promise<void>((r) => httpServer.close(() => r()));
+						httpServer.closeAllConnections?.();
+						await closed;
 						removeBridgeMcpConfig();
 						disposeExitCleanup();
 						log("bridge-config-removed", { port });
