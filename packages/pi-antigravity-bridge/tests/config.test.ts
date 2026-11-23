@@ -497,3 +497,49 @@ test("config: saveConfig writes through a symlinked config instead of replacing 
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("config: a dangling config symlink is written through, never replaced", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-dangle-"));
+	const link = path.join(dir, "config.json");
+	const target = path.join(dir, "target.json");
+	try {
+		// Fresh dotfiles checkout order: the link exists, its target not yet.
+		fs.symlinkSync(target, link);
+		withoutAgyEnvs(() => saveConfig({ mode: "plan" }, link));
+		assert.equal(fs.lstatSync(link).isSymbolicLink(), true, "the dangling symlink must survive the save");
+		assert.equal(fs.lstatSync(target).isFile(), true, "the write created the missing link target");
+		assert.equal((JSON.parse(fs.readFileSync(target, "utf8")) as Record<string, unknown>).mode, "plan");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("config: a symlink loop fails the write visibly instead of replacing the link", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-loop-"));
+	const a = path.join(dir, "config.json");
+	const b = path.join(dir, "other.json");
+	try {
+		fs.symlinkSync(b, a);
+		fs.symlinkSync(a, b);
+		assert.throws(() => withoutAgyEnvs(() => saveConfig({ mode: "plan" }, a)), /ELOOP/);
+		assert.equal(fs.lstatSync(a).isSymbolicLink(), true, "the loop link must survive the failed save");
+		assert.equal(fs.lstatSync(b).isSymbolicLink(), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("config: a fresh install under a symlinked parent dir stays linked", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-parent-"));
+	const realDir = path.join(dir, "real");
+	fs.mkdirSync(realDir);
+	const parent = path.join(dir, "linked");
+	fs.symlinkSync(realDir, parent);
+	try {
+		withoutAgyEnvs(() => saveConfig({ digest: true }, path.join(parent, "config.json")));
+		assert.equal(fs.lstatSync(parent).isSymbolicLink(), true, "the parent link must survive the first save");
+		assert.equal(fs.lstatSync(path.join(realDir, "config.json")).isFile(), true, "the file landed inside the real dir");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

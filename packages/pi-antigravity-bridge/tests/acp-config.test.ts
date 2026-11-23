@@ -244,13 +244,15 @@ test("saveConfig normalizes junk acp.sessionRetryOnTimeout to the default", () =
 	const p = tmpConfig();
 	try {
 		withoutSessionRetryEnv(() => {
-			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "maybe" } }));
-			saveConfig({ digest: true }, p);
-			const c = loadConfig(p);
-			assert.equal(c.acp.sessionRetryOnTimeout, false);
-			const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
-			assert.equal(acpRaw.sessionRetryOnTimeout, false);
-			assert.equal(c.parseWarnings, undefined, "the rewritten file is clean; nothing left to warn about");
+			for (const v of ["maybe", 2, { a: 1 }] as unknown[]) {
+				fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: v } }));
+				saveConfig({ digest: true }, p);
+				const c = loadConfig(p);
+				assert.equal(c.acp.sessionRetryOnTimeout, false, `${JSON.stringify(v)} must normalize to the default`);
+				const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
+				assert.equal(acpRaw.sessionRetryOnTimeout, false, `${JSON.stringify(v)} must persist as a real boolean`);
+				assert.equal(c.parseWarnings, undefined, "the rewritten file is clean; nothing left to warn about");
+			}
 		});
 	} finally {
 		rm(p);

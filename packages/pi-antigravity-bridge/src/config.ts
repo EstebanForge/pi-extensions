@@ -527,8 +527,15 @@ function writeConfigJson(configPath: string, value: unknown): void {
 	let target = configPath;
 	try {
 		target = fs.realpathSync(configPath);
-	} catch {
-		/* missing file - nothing to dereference */
+	} catch (err) {
+		// Only ENOENT falls back (fresh install, raw path). EACCES, a link
+		// loop, and friends must fail visibly: renaming over the raw path
+		// would replace a symlink with a regular file.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		// Dangling symlink: resolve the link hop so the write goes through
+		// the link to its not-yet-existing dotfiles target.
+		const st = fs.lstatSync(configPath, { throwIfNoEntry: false });
+		if (st?.isSymbolicLink()) target = path.resolve(path.dirname(configPath), fs.readlinkSync(configPath));
 	}
 	const dir = path.dirname(target);
 	fs.mkdirSync(dir, { recursive: true });
