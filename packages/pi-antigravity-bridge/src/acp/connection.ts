@@ -102,6 +102,18 @@ export interface AcpPermissionRequest {
 
 export type AcpPermissionHandler = (req: AcpPermissionRequest) => Promise<string | null | undefined>;
 
+/** Tool identity of a permission request for the log: kind, redacted title,
+ *  toolCallId and field names only (no raw input, so no file contents). */
+function permissionToolIdentity(params: AcpPermissionRequest | undefined): Record<string, string | string[]> {
+	const tc = params?.toolCall;
+	const out: Record<string, string | string[]> = {};
+	if (tc && typeof tc === "object") out.fields = Object.keys(tc);
+	if (typeof tc?.kind === "string") out.kind = tc.kind;
+	if (typeof tc?.title === "string") out.title = redactText(tc.title).slice(0, 200);
+	if (typeof tc?.toolCallId === "string") out.toolCallId = tc.toolCallId;
+	return out;
+}
+
 
 export class AcpConnection {
 	#opts: AcpConnectionOptions;
@@ -421,12 +433,12 @@ export class AcpConnection {
 		const policy = this.#opts.permissions?.() ?? "deny";
 		if (policy === "auto") {
 			const chosen = (allow ?? options[0])?.optionId;
-			this.#opts.log("permission", { optionId: chosen, policy });
+			this.#opts.log("permission", { optionId: chosen, policy, tool: permissionToolIdentity(params) });
 			return Promise.resolve({ outcome: { outcome: "selected", optionId: chosen } });
 		}
 		const handler = this.#opts.onPermissionRequest;
 		if (!handler) {
-			this.#opts.log("permission", { optionId: denyId, policy });
+			this.#opts.log("permission", { optionId: denyId, policy, tool: permissionToolIdentity(params) });
 			return Promise.resolve(
 				denyId !== undefined
 					? { outcome: { outcome: "selected", optionId: denyId } }
@@ -438,7 +450,7 @@ export class AcpConnection {
 		const memKey = params?.toolCall?.title ? `${params.toolCall.kind ?? ""}|${params.toolCall.title}` : undefined;
 		const remembered = memKey !== undefined ? this.#permissionMemory.get(memKey) : undefined;
 		if (remembered !== undefined && options.some((o) => o.optionId === remembered)) {
-			this.#opts.log("permission", { optionId: remembered, policy: "memory" });
+			this.#opts.log("permission", { optionId: remembered, policy: "memory", tool: permissionToolIdentity(params) });
 			return Promise.resolve({ outcome: { outcome: "selected", optionId: remembered } });
 		}
 		const parkMs = this.#opts.permissionParkMs ?? PERMISSION_PARK_MS;
@@ -452,7 +464,7 @@ export class AcpConnection {
 				settled = true;
 				if (timer) clearTimeout(timer);
 				this.#permissionPending.delete(settleCancel);
-				this.#opts.log("permission", { optionId, policy: why });
+				this.#opts.log("permission", { optionId, policy: why, tool: permissionToolIdentity(params) });
 				// undefined optionId (no reject option on the table) cancels
 				// instead of selecting nothing.
 				resolve(

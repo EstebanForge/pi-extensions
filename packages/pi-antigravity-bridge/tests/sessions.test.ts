@@ -143,3 +143,18 @@ test("SessionStore: a removed key stops being deleted once its persist lands (mu
 		assert.equal(disk.b?.conversationId, "conv-b");
 	});
 });
+
+test("flush resolves only after queued sets and deletes reach disk", async () => {
+	const p = tmpStorePath();
+
+	const store = new SessionStore(p);
+	store.set("sid:a", { conversationId: "conv-a", lastStepIdx: -1, lastMessageCount: 1 });
+	store.set("sid:b", { conversationId: "conv-b", lastStepIdx: 2, lastMessageCount: 4 });
+	store.delete("sid:a");
+
+	await store.flush();
+
+	const disk = JSON.parse(fs.readFileSync(p, "utf8"));
+	assert.equal(disk["sid:a"], undefined);
+	assert.equal(disk["sid:b"]?.conversationId, "conv-b");
+});

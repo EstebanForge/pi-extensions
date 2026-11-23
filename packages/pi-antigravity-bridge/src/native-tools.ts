@@ -57,6 +57,8 @@ export function mapAgyToolToNative(
 	args: Record<string, unknown>,
 ): NativeToolCall | undefined {
 	switch (tool) {
+		// agy 1.5.14 renamed view_file to read_file (same Path/StartLine/EndLine args).
+		case "read_file":
 		case "view_file": {
 			if (!onlyKeys(args, [...VIEW_PATH_KEYS, ...START_LINE_KEYS, ...END_LINE_KEYS])) {
 				return undefined;

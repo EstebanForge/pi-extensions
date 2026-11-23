@@ -220,6 +220,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Approval-gate hook script (per-pid, token embedded). Written at session
 	// start when the gate is active; removed at session_shutdown.
 	let gateScriptPath: string | null = null;
+	// Staged gate hooks do not stop agy's own request_permission path, so when
+	// true the ACP driver stops letting skipPermissions auto-allow it.
+	let gateActive = false;
 	let managedAcpCleanupRan = false;
 	let legacyConfigCleanupRan = false;
 	let legacyConfigCleanupFailed = false;
@@ -338,11 +341,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		usageEstimate: () => loadConfig().acp.usageEstimate,
 		sessionOpTimeoutMs: () => loadConfig().acp.sessionTimeoutMs,
 		sessionRetryOnTimeout: () => loadConfig().acp.sessionRetryOnTimeout,
-		// ACP request_permission parity with the approval gate: skipPermissions
-		// turns auto-allow in the driver; approvals.mode allow short-circuits
-		// to the same synchronous allow; everything else opens a dialog (esc
-		// and headless deny fail-closed) under the shared dialog lock.
+		// ACP request_permission parity with the approval gate: with the gate
+		// off, skipPermissions turns auto-allow in the driver. With the gate
+		// staged (gateActive) skipPermissions never applies, because the hook
+		// does not stop agy's own permission path: approvals.mode allow
+		// answers allow, deny answers deny, everything else opens a dialog
+		// (esc and headless deny fail-closed) under the shared dialog lock.
 		permissionPolicy: () => (loadConfig().approvals.mode === "allow" ? "auto" : "deny"),
+		gateActive: () => gateActive,
 		onPermissionRequest: async (req) => {
 			const ui = activeUi;
 			if (loadConfig().approvals.mode === "deny" || !ui) return undefined;
@@ -604,6 +610,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			fileLog.log("background-watch-sweep-error", { error: err instanceof Error ? err.message : String(err) }, "warn");
 		}
 	});
+	// Bindings must reach disk before the host exits (headless/print modes
+	// exit right after session_shutdown).
+	pi.on("session_shutdown", () => store.flush());
 	// Session keys whose bound agy conversation was rotated on session_compact
 	// so the next turn starts a fresh backend conversation and ships the
 	// compaction summary once (even when config.digest is disabled).
@@ -1085,6 +1094,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			{
 				const cfg = loadConfig();
 				const mode = resolveGateMode(cfg.approvals.gateMode, detectPermissionGateExtensions());
+				gateActive = mode !== "off";
 				if (mode !== "off" && engine === "acp") {
 					// Staged-home hook delivery is probe-verified on agy 1.5.12
 					// only (issue #18); older ACP builds may not honor it. Warn

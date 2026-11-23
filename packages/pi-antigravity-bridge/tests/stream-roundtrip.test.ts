@@ -69,6 +69,15 @@ test("native mapping: grep/list/find shapes", () => {
 	});
 });
 
+test("native mapping: agy 1.5.14 read_file re-executes like view_file", () => {
+	assert.deepEqual(mapAgyToolToNative("read_file", { Path: "/x", StartLine: 3, EndLine: 9 }), {
+		tool: "read",
+		args: { path: "/x", offset: 3, limit: 7 },
+	});
+	assert.deepEqual(mapAgyToolToNative("read_file", { Path: "/x" }), { tool: "read", args: { path: "/x" } });
+	assert.equal(mapAgyToolToNative("read_file", { Path: "/x", Encoding: "utf8" }), undefined);
+});
+
 test("round-trips: parks, injects bridge_call into the active driver handle, resolves by toolCallId", async () => {
 	const driver = new StreamDriver();
 	const rt = new ToolRoundTrips(driver);

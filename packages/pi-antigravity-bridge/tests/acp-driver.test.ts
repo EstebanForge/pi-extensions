@@ -39,6 +39,8 @@ async function runDriver(
 		timeoutMin?: number;
 		skipPermissions?: boolean;
 		usageEstimate?: "estimate" | "direct" | "off";
+		permissionPolicy?: () => "auto" | "deny";
+		gateActive?: () => boolean;
 		onPermissionRequest?: AcpPermissionHandler;
 		permissionParkMs?: number;
 		signal?: AbortSignal;
@@ -56,6 +58,8 @@ async function runDriver(
 		binArgs: [FAKE_SERVER],
 		extraEnv: { ACP_FAKE_SCENARIO: scenario, ACP_FAKE_LOG: logPath },
 		usageEstimate: opts.usageEstimate,
+		permissionPolicy: opts.permissionPolicy,
+		gateActive: opts.gateActive,
 		onPermissionRequest: opts.onPermissionRequest,
 		permissionParkMs: opts.permissionParkMs,
 		log: opts.log ?? (() => {}),
@@ -403,6 +407,59 @@ describe("acp/driver permission parking", () => {
 			(r) => r._permissionAnswer !== undefined,
 		);
 		assert.equal(answer?._permissionAnswer, "allow");
+	});
+
+	test("gateActive overrides skipPermissions: standing policy and handler decide, and logs carry tool identity", async () => {
+		const logs: Array<{ msg: string; data?: unknown }> = [];
+		// Gate active + skipPermissions + no handler + default deny policy -> fail-closed deny.
+		const denied = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			log: (msg, data) => logs.push({ msg, data }),
+		});
+		assert.equal((await denied.handle.outcome).status, "OK");
+		const deniedAnswer = (sentRequests(denied._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		);
+		assert.equal(deniedAnswer?._permissionAnswer, "deny");
+		const permLog = logs.find((l) => l.msg === "permission")?.data as
+			| { optionId?: string; policy?: string; tool?: { fields?: string[]; kind?: string; title?: string; toolCallId?: string } }
+			| undefined;
+		assert.equal(permLog?.policy, "deny");
+		assert.equal(permLog?.tool?.kind, "edit");
+		assert.equal(permLog?.tool?.title, "Run create_file?");
+		assert.equal(permLog?.tool?.toolCallId, "t1");
+		assert.deepEqual(permLog?.tool?.fields, ["toolCallId", "kind", "status", "title"]);
+
+		// Gate active + skipPermissions + wired handler -> handler is called.
+		let calls = 0;
+		const handled = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			onPermissionRequest: async () => {
+				calls += 1;
+				return "allow";
+			},
+		});
+		assert.equal((await handled.handle.outcome).status, "OK");
+		assert.equal(calls, 1);
+
+		// Gate active + permissionPolicy "auto" -> synchronous allow without calling handler.
+		let autoCalls = 0;
+		const autoAllowed = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			permissionPolicy: () => "auto",
+			onPermissionRequest: async () => {
+				autoCalls += 1;
+				return "deny";
+			},
+		});
+		assert.equal((await autoAllowed.handle.outcome).status, "OK");
+		assert.equal(autoCalls, 0);
 	});
 
 	test("a slow dialog pauses the turn budget instead of eating it", async () => {

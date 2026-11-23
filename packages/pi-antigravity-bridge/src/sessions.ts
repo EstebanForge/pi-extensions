@@ -190,6 +190,17 @@ export class SessionStore {
 			});
 	}
 
+	/** Resolve once every queued write (set, delete, clear) has reached disk,
+	 *  including writes queued while waiting. Never rejects: failed writes are
+	 *  already swallowed by the chain. */
+	async flush(): Promise<void> {
+		let pending: Promise<void>;
+		do {
+			pending = this.writeChain;
+			await pending;
+		} while (pending !== this.writeChain);
+	}
+
 	/** Count persisted session bindings (for status display). */
 	get size(): number {
 		return Object.keys(this.cache).length;
