@@ -446,23 +446,37 @@ test("config: the startup warning message names the problem and the escape hatch
 
 test("config: saveConfig never persists the turnTimeoutMin placeholder", () => {
 	const p = tmpConfig();
+	const asRecord = (v: unknown) => v as Record<string, unknown>;
 	try {
 		withoutAgyEnvs(() => {
-			// Absent stays absent: the DEFAULTS 0 is a load-time placeholder
-			// and would flip "resolved per-load default" into "cap disabled"
-			// on the next load (parseCapMinutes treats 0 as disable).
+			// A fresh install (no file at all) stays key-less through a save:
+			// the DEFAULTS 0 is a load-time placeholder and would flip absence
+			// into "cap disabled" (parseCapMinutes reads 0 as off) on the next
+			// load. The return object omits the key at runtime too.
+			let next = asRecord(saveConfig({ digest: true }, p));
+			let raw = asRecord(JSON.parse(fs.readFileSync(p, "utf8")));
+			assert.ok(!("turnTimeoutMin" in raw), `fresh-install save must not invent turnTimeoutMin, got ${JSON.stringify(raw.turnTimeoutMin)}`);
+			assert.ok(!("turnTimeoutMin" in next), "the in-memory return omits the key for an unspecified cap");
+			stubTTY(false, () => assert.equal(loadConfig(p).turnTimeoutMin, 20, "the headless default still resolves on load"));
+			// Absent stays absent on unrelated saves of an existing file.
 			fs.writeFileSync(p, JSON.stringify({ digest: true }));
 			saveConfig({ mode: "plan" }, p);
-			const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+			raw = asRecord(JSON.parse(fs.readFileSync(p, "utf8")));
 			assert.ok(!("turnTimeoutMin" in raw), `unrelated save must not invent turnTimeoutMin, got ${JSON.stringify(raw.turnTimeoutMin)}`);
-			stubTTY(false, () => assert.equal(loadConfig(p).turnTimeoutMin, 20, "the headless default still resolves on load"));
-			// An explicit file value survives unrelated saves.
+			// An explicit 0 is deliberate ("cap off") and must survive: the
+			// counter-test against over-stripping, from file and patch alike.
+			fs.writeFileSync(p, JSON.stringify({ turnTimeoutMin: 0 }));
+			saveConfig({ digest: true }, p);
+			assert.equal(asRecord(JSON.parse(fs.readFileSync(p, "utf8"))).turnTimeoutMin, 0);
+			fs.writeFileSync(p, JSON.stringify({ digest: true }));
+			saveConfig({ turnTimeoutMin: 0 }, p);
+			assert.equal(asRecord(JSON.parse(fs.readFileSync(p, "utf8"))).turnTimeoutMin, 0);
+			// An explicit file value survives unrelated saves; a patch persists.
 			fs.writeFileSync(p, JSON.stringify({ turnTimeoutMin: 30 }));
 			saveConfig({ digest: true }, p);
-			assert.equal((JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>).turnTimeoutMin, 30);
-			// An explicit patch persists.
-			saveConfig({ turnTimeoutMin: 45 }, p);
-			assert.equal((JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>).turnTimeoutMin, 45);
+			assert.equal(asRecord(JSON.parse(fs.readFileSync(p, "utf8"))).turnTimeoutMin, 30);
+			next = asRecord(saveConfig({ turnTimeoutMin: 45 }, p));
+			assert.equal(asRecord(JSON.parse(fs.readFileSync(p, "utf8"))).turnTimeoutMin, 45);
 		});
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });

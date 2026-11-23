@@ -578,7 +578,10 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 	// per TTY state); persisting it would flip absence into "cap disabled"
 	// (parseCapMinutes reads 0 as off) on the next load.
 	const { turnTimeoutMin: _placeholder, ...defaultsOnDisk } = DEFAULTS;
-	const next: AgyConfig = {
+	// On-disk shape, not AgyConfig: turnTimeoutMin is written only when the
+	// file or the patch carries it, and a blanket cast would drop checking
+	// for every other key in the literal.
+	const next: Omit<AgyConfig, "turnTimeoutMin"> & Partial<Pick<AgyConfig, "turnTimeoutMin">> = {
 		...defaultsOnDisk,
 		...file,
 		...(file.approvals !== undefined
@@ -589,7 +592,7 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 		// Computed per load; a raw file spread must never persist it.
 		parseWarnings: undefined,
-	} as AgyConfig;
+	};
 	writeConfigJson(configFile, next);
-	return next;
+	return next as AgyConfig;
 }

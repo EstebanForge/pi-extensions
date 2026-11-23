@@ -16,6 +16,18 @@ function rm(p: string): void {
 	fs.rmSync(path.dirname(p), { recursive: true, force: true });
 }
 
+/** Clear AGY_ACP_SESSION_RETRY for the duration: loadConfig reads the env
+ *  before the file, so an ambient export would break every file-path assert. */
+function withoutSessionRetryEnv(run: () => void): void {
+	const prev = process.env.AGY_ACP_SESSION_RETRY;
+	delete process.env.AGY_ACP_SESSION_RETRY;
+	try {
+		run();
+	} finally {
+		if (prev !== undefined) process.env.AGY_ACP_SESSION_RETRY = prev;
+	}
+}
+
 test("engine defaults to acp (stream-json is the fallback)", () => {
 	const p = tmpConfig();
 	try {
@@ -210,17 +222,19 @@ test("usageEstimate defaults to estimate; unknown values fall back", () => {
 test("saveConfig preserves hand-edited boolish acp.sessionRetryOnTimeout on unrelated saves", () => {
 	const p = tmpConfig();
 	try {
-		const truthy: unknown[] = ["on", "true", "1", 1, " ON "];
-		const falsy: unknown[] = ["off", "false", "0", 0, " OFF "];
-		for (const [values, expected] of [[truthy, true], [falsy, false]] as const) {
-			for (const v of values) {
-				fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: v } }));
-				saveConfig({ digest: true }, p); // unrelated save
-				assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, expected, `${JSON.stringify(v)} must survive an unrelated save`);
-				const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
-				assert.equal(acpRaw.sessionRetryOnTimeout, expected, `${JSON.stringify(v)} must persist as a real boolean`);
+		withoutSessionRetryEnv(() => {
+			const truthy: unknown[] = ["on", "true", "1", 1, " ON "];
+			const falsy: unknown[] = ["off", "false", "0", 0, " OFF "];
+			for (const [values, expected] of [[truthy, true], [falsy, false]] as const) {
+				for (const v of values) {
+					fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: v } }));
+					saveConfig({ digest: true }, p); // unrelated save
+					assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, expected, `${JSON.stringify(v)} must survive an unrelated save`);
+					const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
+					assert.equal(acpRaw.sessionRetryOnTimeout, expected, `${JSON.stringify(v)} must persist as a real boolean`);
+				}
 			}
-		}
+		});
 	} finally {
 		rm(p);
 	}
@@ -229,13 +243,15 @@ test("saveConfig preserves hand-edited boolish acp.sessionRetryOnTimeout on unre
 test("saveConfig normalizes junk acp.sessionRetryOnTimeout to the default", () => {
 	const p = tmpConfig();
 	try {
-		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "maybe" } }));
-		saveConfig({ digest: true }, p);
-		const c = loadConfig(p);
-		assert.equal(c.acp.sessionRetryOnTimeout, false);
-		const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
-		assert.equal(acpRaw.sessionRetryOnTimeout, false);
-		assert.equal(c.parseWarnings, undefined, "the rewritten file is clean; nothing left to warn about");
+		withoutSessionRetryEnv(() => {
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "maybe" } }));
+			saveConfig({ digest: true }, p);
+			const c = loadConfig(p);
+			assert.equal(c.acp.sessionRetryOnTimeout, false);
+			const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
+			assert.equal(acpRaw.sessionRetryOnTimeout, false);
+			assert.equal(c.parseWarnings, undefined, "the rewritten file is clean; nothing left to warn about");
+		});
 	} finally {
 		rm(p);
 	}
@@ -244,12 +260,14 @@ test("saveConfig normalizes junk acp.sessionRetryOnTimeout to the default", () =
 test("an explicit acp.sessionRetryOnTimeout patch overrides the file value", () => {
 	const p = tmpConfig();
 	try {
-		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "on" } }));
-		saveConfig({ acp: { sessionRetryOnTimeout: false } }, p);
-		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, false);
-		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "off" } }));
-		saveConfig({ acp: { sessionRetryOnTimeout: true } }, p);
-		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+		withoutSessionRetryEnv(() => {
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "on" } }));
+			saveConfig({ acp: { sessionRetryOnTimeout: false } }, p);
+			assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, false);
+			fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "off" } }));
+			saveConfig({ acp: { sessionRetryOnTimeout: true } }, p);
+			assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+		});
 	} finally {
 		rm(p);
 	}
