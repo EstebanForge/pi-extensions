@@ -96,26 +96,26 @@ test("config: AGY_READONLY env wins over file; file key parses; default false", 
 
 // --- 1b. readOnly config.json file path fails closed (issue #23) ------------
 
-// The AGY_READONLY env grammar, mirrored on the file path: empty string and
-// spelled-out falsities are OFF, every other present value is ON so a typo
-// can never silently disable the safety knob. Values outside the grammar
-// (unrecognized strings, non-strings) warn via parseWarnings; /agy doctor
-// surfaces them.
-test("config: readOnly file key fails closed on junk (issue #23)", () => {
+// The AGY_READONLY env grammar, mirrored on the file path: empty string,
+// spelled-out falsities, and the JSON number 0 are OFF, every other present
+// value is ON so a typo can never silently disable the safety knob. Values
+// outside the grammar warn via parseWarnings; /agy doctor surfaces them.
+test("config: readOnly file key parses the documented grammar, fails closed on junk (issue #23)", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ro-config-"));
 	const cfgPath = path.join(dir, "config.json");
 	try {
-		// Documented grammar: recognized spellings.
-		const off: unknown[] = [false, "off", "false", "0", " OFF ", "False", ""];
-		const on: unknown[] = [true, "on", "true", "1", " ON ", "  ", "yes-please"];
+		// Recognized grammar: JSON booleans, the JSON numbers 0/1, the /agy
+		// vocabulary (case/whitespace tolerated), and the explicit blank.
+		// Recognized values must parse warning-free: a spurious warning
+		// destroys the /agy doctor signal for genuinely unparseable values.
+		const off: unknown[] = [false, 0, "off", "false", "0", " OFF ", "False", ""];
+		const on: unknown[] = [true, 1, "on", "true", "1", " ON "];
 		for (const v of [...off, ...on]) {
 			fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: v }));
 			const expected = off.includes(v) ? false : true;
-			assert.equal(
-				withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath)).readOnly,
-				expected,
-				`readOnly ${JSON.stringify(v)} must read as ${expected}`,
-			);
+			const c = withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath));
+			assert.equal(c.readOnly, expected, `readOnly ${JSON.stringify(v)} must read as ${expected}`);
+			assert.equal(c.parseWarnings, undefined, `readOnly ${JSON.stringify(v)} must parse without warnings`);
 		}
 		// Absent or null: the false default, silently.
 		fs.writeFileSync(cfgPath, JSON.stringify({}));
@@ -127,7 +127,7 @@ test("config: readOnly file key fails closed on junk (issue #23)", () => {
 		assert.equal(c.readOnly, false);
 		assert.equal(c.parseWarnings, undefined);
 		// Values outside the grammar: fail closed ON with a warning.
-		for (const v of [1, { a: 1 }]) {
+		for (const v of ["  ", "yes-please", 2, -1, 0.5, { a: 1 }]) {
 			fs.writeFileSync(cfgPath, JSON.stringify({ readOnly: v }));
 			c = withEnvsSync({ AGY_READONLY: undefined }, () => loadConfig(cfgPath));
 			assert.equal(c.readOnly, true, `readOnly junk ${JSON.stringify(v)} must fail closed`);

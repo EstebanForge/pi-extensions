@@ -207,6 +207,71 @@ test("usageEstimate defaults to estimate; unknown values fall back", () => {
 	}
 });
 
+test("saveConfig preserves hand-edited boolish acp.sessionRetryOnTimeout on unrelated saves", () => {
+	const p = tmpConfig();
+	try {
+		const truthy: unknown[] = ["on", "true", "1", 1, " ON "];
+		const falsy: unknown[] = ["off", "false", "0", 0, " OFF "];
+		for (const [values, expected] of [[truthy, true], [falsy, false]] as const) {
+			for (const v of values) {
+				fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: v } }));
+				saveConfig({ digest: true }, p); // unrelated save
+				assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, expected, `${JSON.stringify(v)} must survive an unrelated save`);
+				const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
+				assert.equal(acpRaw.sessionRetryOnTimeout, expected, `${JSON.stringify(v)} must persist as a real boolean`);
+			}
+		}
+	} finally {
+		rm(p);
+	}
+});
+
+test("saveConfig normalizes junk acp.sessionRetryOnTimeout to the default", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "maybe" } }));
+		saveConfig({ digest: true }, p);
+		const c = loadConfig(p);
+		assert.equal(c.acp.sessionRetryOnTimeout, false);
+		const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
+		assert.equal(acpRaw.sessionRetryOnTimeout, false);
+		assert.equal(c.parseWarnings, undefined, "the rewritten file is clean; nothing left to warn about");
+	} finally {
+		rm(p);
+	}
+});
+
+test("an explicit acp.sessionRetryOnTimeout patch overrides the file value", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "on" } }));
+		saveConfig({ acp: { sessionRetryOnTimeout: false } }, p);
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, false);
+		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "off" } }));
+		saveConfig({ acp: { sessionRetryOnTimeout: true } }, p);
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true);
+	} finally {
+		rm(p);
+	}
+});
+
+test("AGY_ACP_SESSION_RETRY never bakes into the file on save", () => {
+	const p = tmpConfig();
+	const prev = process.env.AGY_ACP_SESSION_RETRY;
+	process.env.AGY_ACP_SESSION_RETRY = "1";
+	try {
+		fs.writeFileSync(p, JSON.stringify({ acp: { sessionRetryOnTimeout: "off" } }));
+		saveConfig({ digest: true }, p);
+		const acpRaw = (JSON.parse(fs.readFileSync(p, "utf8")) as { acp: Record<string, unknown> }).acp;
+		assert.equal(acpRaw.sessionRetryOnTimeout, false, "the env override must stay out of the file");
+		assert.equal(loadConfig(p).acp.sessionRetryOnTimeout, true, "the env still wins on load");
+	} finally {
+		if (prev === undefined) delete process.env.AGY_ACP_SESSION_RETRY;
+		else process.env.AGY_ACP_SESSION_RETRY = prev;
+		rm(p);
+	}
+});
+
 test("AGY_USAGE_ESTIMATE env overrides acp.usageEstimate", () => {
 	const p = tmpConfig();
 	const prev = process.env.AGY_USAGE_ESTIMATE;

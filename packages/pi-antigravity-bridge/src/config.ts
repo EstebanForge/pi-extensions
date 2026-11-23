@@ -270,11 +270,11 @@ export function parseCapMinutes(raw: string | number | undefined, fallback: numb
 const BOOLISH_TRUE = new Set(["1", "true", "on"]);
 const BOOLISH_FALSE = new Set(["0", "false", "off"]);
 
-/** Parse a config.json boolean that a hand editor may have written as a
- *  string ("off", "false", "0" - the README and /agy vocabulary) or as the
- *  JSON numbers 0/1. Present but unparseable values fall back to the given
- *  default and warn; the silence is what made issue #23 invisible. */
-function parseBoolish(raw: unknown, label: string, fallback: boolean, warnings: string[]): boolean {
+/** The literal boolean grammar shared by parseBoolish, parseReadOnlyValue,
+ *  and saveConfig's pass-through: JSON booleans, the /agy vocabulary as
+ *  strings (case/whitespace tolerated), and the JSON numbers 0/1. Returns
+ *  undefined for anything outside the grammar. */
+function parseBoolishLiteral(raw: unknown): boolean | undefined {
 	if (typeof raw === "boolean") return raw;
 	if (raw === 0 || raw === 1) return raw === 1;
 	if (typeof raw === "string") {
@@ -282,27 +282,32 @@ function parseBoolish(raw: unknown, label: string, fallback: boolean, warnings: 
 		if (BOOLISH_TRUE.has(v)) return true;
 		if (BOOLISH_FALSE.has(v)) return false;
 	}
+	return undefined;
+}
+
+/** Parse a config.json boolean that a hand editor may have written as a
+ *  string ("off", "false", "0" - the README and /agy vocabulary) or as the
+ *  JSON numbers 0/1. Present but unparseable values fall back to the given
+ *  default and warn; the silence is what made issue #23 invisible. */
+function parseBoolish(raw: unknown, label: string, fallback: boolean, warnings: string[]): boolean {
+	const v = parseBoolishLiteral(raw);
+	if (v !== undefined) return v;
 	if (raw === undefined || raw === null) return fallback;
 	warnings.push(`${label}: ${JSON.stringify(raw)} is not a recognized boolean (true/false, on/off, 1/0); using default ${fallback}`);
 	return fallback;
 }
 
 /** File-path readOnly parse: the AGY_READONLY env grammar mirrored (issue
- *  #23). Explicit blank and spelled-out falsities are OFF, every other
+ *  #23). Explicit blanks and spelled-out falsities are OFF, every other
  *  present value counts as ON so a typo can never disable the safety knob. */
 function parseReadOnlyValue(raw: unknown, warnings: string[]): boolean {
 	const failClosed = (rawValue: unknown): boolean => {
 		warnings.push(`readOnly: ${JSON.stringify(rawValue)} is not a recognized boolean (true/false, on/off, 1/0); failing closed to true`);
 		return true;
 	};
-	if (typeof raw === "boolean") return raw;
-	if (typeof raw === "string") {
-		if (raw === "") return false;
-		const v = raw.trim().toLowerCase();
-		if (BOOLISH_FALSE.has(v)) return false;
-		if (BOOLISH_TRUE.has(v)) return true;
-		return failClosed(raw);
-	}
+	const v = parseBoolishLiteral(raw);
+	if (v !== undefined) return v;
+	if (typeof raw === "string" && raw === "") return false;
 	if (raw === undefined || raw === null) return DEFAULTS.readOnly;
 	return failClosed(raw);
 }
@@ -562,10 +567,19 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 			patchAcp?.sessionTimeoutMs ?? fileAcp.sessionTimeoutMs,
 			DEFAULTS.acp.sessionTimeoutMs,
 		),
-		sessionRetryOnTimeout: patchAcp?.sessionRetryOnTimeout ?? (fileAcp.sessionRetryOnTimeout === true),
+		// Silent literal-grammar pass-through (saveConfig has no warning
+		// channel; loadConfig already reports junk at startup / /agy doctor).
+		sessionRetryOnTimeout:
+			patchAcp?.sessionRetryOnTimeout
+				?? parseBoolishLiteral(fileAcp.sessionRetryOnTimeout)
+				?? DEFAULTS.acp.sessionRetryOnTimeout,
 	};
+	// The DEFAULTS 0 is a load-time placeholder (defaultTurnTimeoutMin resolves
+	// per TTY state); persisting it would flip absence into "cap disabled"
+	// (parseCapMinutes reads 0 as off) on the next load.
+	const { turnTimeoutMin: _placeholder, ...defaultsOnDisk } = DEFAULTS;
 	const next: AgyConfig = {
-		...DEFAULTS,
+		...defaultsOnDisk,
 		...file,
 		...(file.approvals !== undefined
 			? { approvals: { gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode, mode: fileApprovals.mode ?? DEFAULTS.approvals.mode } }
@@ -575,7 +589,7 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 		// Computed per load; a raw file spread must never persist it.
 		parseWarnings: undefined,
-	};
+	} as AgyConfig;
 	writeConfigJson(configFile, next);
 	return next;
 }

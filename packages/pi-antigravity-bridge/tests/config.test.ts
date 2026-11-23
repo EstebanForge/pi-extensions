@@ -23,6 +23,8 @@ function withoutAgyEnvs(run: () => void): void {
 		"AGY_SKIP_PERMISSIONS",
 		"AGY_READONLY",
 		"AGY_ACP_SESSION_RETRY",
+		"AGY_TURN_TIMEOUT_MIN",
+		"AGY_INACTIVITY_TIMEOUT_MIN",
 	] as const;
 	const prevs = keys.map((k) => [k, process.env[k]] as const);
 	for (const k of keys) delete process.env[k];
@@ -440,4 +442,29 @@ test("config: the startup warning message names the problem and the escape hatch
 	assert.match(msg, /\/agy doctor/);
 	assert.match(configWarningsMessage(["a", "b"]), /2 unparseable values/);
 	assert.match(configWarningsMessage(["a"]), /1 unparseable value(?!s)/);
+});
+
+test("config: saveConfig never persists the turnTimeoutMin placeholder", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			// Absent stays absent: the DEFAULTS 0 is a load-time placeholder
+			// and would flip "resolved per-load default" into "cap disabled"
+			// on the next load (parseCapMinutes treats 0 as disable).
+			fs.writeFileSync(p, JSON.stringify({ digest: true }));
+			saveConfig({ mode: "plan" }, p);
+			const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+			assert.ok(!("turnTimeoutMin" in raw), `unrelated save must not invent turnTimeoutMin, got ${JSON.stringify(raw.turnTimeoutMin)}`);
+			stubTTY(false, () => assert.equal(loadConfig(p).turnTimeoutMin, 20, "the headless default still resolves on load"));
+			// An explicit file value survives unrelated saves.
+			fs.writeFileSync(p, JSON.stringify({ turnTimeoutMin: 30 }));
+			saveConfig({ digest: true }, p);
+			assert.equal((JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>).turnTimeoutMin, 30);
+			// An explicit patch persists.
+			saveConfig({ turnTimeoutMin: 45 }, p);
+			assert.equal((JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>).turnTimeoutMin, 45);
+		});
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
 });
