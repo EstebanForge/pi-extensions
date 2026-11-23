@@ -82,6 +82,10 @@ export interface McpServerHandle {
 	token: string;
 	/** Approval-gate park controls (docs/TODO.md 2.5). */
 	approvals: ApprovalParkApi;
+	/** Serve another bridge surface on this listener behind its own token.
+	 *  Requests carrying that token reach `deps`; requests carrying `token`
+	 *  keep reaching the deps passed to startMcpServer. remove() revokes it. */
+	addRoute: (deps: McpBridgeDeps) => { token: string; remove: () => void };
 	close: () => Promise<void>;
 }
 
@@ -286,18 +290,26 @@ export async function startMcpServer(
 		log?: (s: string, d?: unknown) => void;
 		/** Test override for the per-park timeout (deny, fail closed). */
 		approvalTimeoutMs?: number;
+		/** Write the add-dir `.agents/mcp_config.json` carrying `token` (default
+		 *  true). The shared realm listener sets this false so each session
+		 *  reaches it on its own route token. */
+		addDirConfig?: boolean;
 	} = {},
 ): Promise<McpStartResult> {
 	const log = opts.log ?? (() => {});
 	const approvalTimeoutMs = opts.approvalTimeoutMs ?? APPROVAL_PARK_TIMEOUT_MS;
 
-	const listHandler = async () => {
-		const tools = deps.listTools();
+	const listHandler = async (surface: McpBridgeDeps) => {
+		const tools = surface.listTools();
 		log("list-tools", { count: tools.length });
 		return { tools };
 	};
 
-	const callHandler = async (request: { params: { name: string; arguments?: unknown } }, signal?: AbortSignal) => {
+	const callHandler = async (
+		surface: McpBridgeDeps,
+		request: { params: { name: string; arguments?: unknown } },
+		signal?: AbortSignal,
+	) => {
 		const { name, arguments: args } = request.params;
 		// Progress probe: agy's MCP client killed long bridge calls at exactly
 		// ~180s (see ACP-PROTOCOL-REFERENCE). If its requests ever carry a
@@ -310,7 +322,7 @@ export async function startMcpServer(
 		const callId = crypto.randomUUID();
 		log("call-tool", { name, callId });
 		try {
-			const r = await deps.onToolCall(
+			const r = await surface.onToolCall(
 				callId,
 				name,
 				(args && typeof args === "object" ? args : {}) as Record<string, unknown>,
@@ -327,13 +339,13 @@ export async function startMcpServer(
 		}
 	};
 
-	const makeServer = (signal: AbortSignal) => {
+	const makeServer = (surface: McpBridgeDeps, signal: AbortSignal) => {
 		const s = new Server(
 			{ name: "pi-antigravity-bridge", version: "1.1.0" },
 			{ capabilities: { tools: {} } },
 		);
-		s.setRequestHandler(ListToolsRequestSchema, listHandler);
-		s.setRequestHandler(CallToolRequestSchema, (request) => callHandler(request, signal));
+		s.setRequestHandler(ListToolsRequestSchema, () => listHandler(surface));
+		s.setRequestHandler(CallToolRequestSchema, (request) => callHandler(surface, request, signal));
 		return s;
 	};
 
@@ -371,13 +383,19 @@ export async function startMcpServer(
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(decisionBody({ allow: false, reason }));
 	};
-	const tokenOk = (req: http.IncomingMessage): boolean => {
+	// Extra surfaces (addRoute): token -> deps. The handle token keeps serving
+	// the deps passed in, so a single-surface caller sees no change.
+	const routes = new Map<string, McpBridgeDeps>();
+	const sameToken = (received: string, expected: string): boolean =>
+		received.length === expected.length && crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+	const surfaceFor = (req: http.IncomingMessage): McpBridgeDeps | null => {
 		const received = req.headers[TOKEN_HEADER];
-		return (
-			typeof received === "string" &&
-			received.length === token.length &&
-			crypto.timingSafeEqual(Buffer.from(received), Buffer.from(token))
-		);
+		if (typeof received !== "string") return null;
+		if (sameToken(received, token)) return deps;
+		for (const [routeToken, routeDeps] of routes) {
+			if (sameToken(received, routeToken)) return routeDeps;
+		}
+		return null;
 	};
 	const readBody = async (req: http.IncomingMessage): Promise<string | null> => {
 		let body = "";
@@ -394,7 +412,8 @@ export async function startMcpServer(
 		res: http.ServerResponse,
 		route: string,
 	): Promise<void> => {
-		if (!tokenOk(req)) {
+		const surface = surfaceFor(req);
+		if (!surface) {
 			log("unauthorized", { url: req.url });
 			res.writeHead(403, { "content-type": "application/json" }).end('{"error":"forbidden"}');
 			return;
@@ -425,7 +444,7 @@ export async function startMcpServer(
 				denyDirect(res, `tool ${payload.toolCall.name} is not in the approval matcher set`);
 				return;
 			}
-			if (typeof deps.onApproval !== "function") {
+			if (typeof surface.onApproval !== "function") {
 				log("approval-unwired", { name: payload.toolCall.name });
 				denyDirect(res, "approval gate is not wired; denying");
 				return;
@@ -441,7 +460,7 @@ export async function startMcpServer(
 			parks.set(ticket, { name: payload.toolCall.name, since: Date.now(), timer });
 			log("approval-parked", { ticket, name: payload.toolCall.name });
 			try {
-				deps.onApproval(ticket, payload);
+				surface.onApproval(ticket, payload);
 			} catch (e) {
 				// A throwing provider must never hang the hook: settle deny now.
 				log("approval-onapproval-fail", { ticket, msg: e instanceof Error ? e.message : String(e) });
@@ -501,7 +520,8 @@ export async function startMcpServer(
 				}
 				// #3: require the shared-secret header. Constant-time compare so a
 				// timing oracle can't recover the token byte-by-byte.
-				if (!tokenOk(req)) {
+				const surface = surfaceFor(req);
+				if (!surface) {
 					log("unauthorized", { url: req.url });
 					res.writeHead(403, { "content-type": "application/json" }).end('{"error":"forbidden"}');
 					return;
@@ -551,7 +571,7 @@ export async function startMcpServer(
 					// Stateless: a fresh transport+server per request.
 					const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 					transport.onerror = (e: Error) => log("transport-error", e.message);
-					const server = makeServer(ac.signal);
+					const server = makeServer(surface, ac.signal);
 					await server.connect(transport);
 					await transport.handleRequest(req, res, parsed as object);
 				} catch (e) {
@@ -582,8 +602,10 @@ export async function startMcpServer(
 				return;
 			}
 			try {
-				writeBridgeMcpConfig(port, token);
-				log("bridge-config-written", { port, path: bridgeMcpConfigPath() });
+				if (opts.addDirConfig !== false) {
+					writeBridgeMcpConfig(port, token);
+					log("bridge-config-written", { port, path: bridgeMcpConfigPath() });
+				}
 			} catch (e) {
 				log("bridge-config-write-failed", e instanceof Error ? e.message : String(e));
 			}
@@ -598,6 +620,11 @@ export async function startMcpServer(
 					port,
 					token,
 					approvals: approvalsApi,
+					addRoute: (routeDeps) => {
+						const routeToken = crypto.randomBytes(24).toString("hex");
+						routes.set(routeToken, routeDeps);
+						return { token: routeToken, remove: () => void routes.delete(routeToken) };
+					},
 					close: async () => {
 						// Pending approvals fail closed on shutdown: the hook gets a
 						// terminal deny instead of a 404 on its next poll.
@@ -605,6 +632,7 @@ export async function startMcpServer(
 							if (p.terminal) continue;
 							settlePark(ticket, { allow: false, reason: "approval gate bridge shut down" });
 						}
+						routes.clear();
 						await new Promise<void>((r) => httpServer.close(() => r()));
 						removeBridgeMcpConfig();
 						disposeExitCleanup();

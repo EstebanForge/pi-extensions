@@ -36,7 +36,7 @@ import {
 	toPiModel,
 	type AgyModelEntry,
 } from "../src/models.js";
-import { SessionStore } from "../src/sessions.js";
+import type { SessionStore } from "../src/sessions.js";
 import {
 	APPROVAL_PARK_MS,
 	POLL_TOOL_NAME,
@@ -85,13 +85,19 @@ import { redactText } from "../src/redact.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
-import { bridgeMcpConfigDir, startMcpServer, sweepStaleBridgeDirs, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
+import { bridgeMcpConfigDir, sweepStaleBridgeDirs, TOKEN_HEADER } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
 	healBridgeSuppression,
 	sweepStaleBridgeServers,
-	unregisterBridgeServer,
 } from "../src/mcp-registration.js";
+import {
+	approvalHookScriptPath,
+	bridgeRealm,
+	liveSessionId,
+	type BridgeEndpoint,
+	type RealmSession,
+} from "../src/runtime.js";
 import {
 	ACTIVATE_SKILL_TOOL_NAME,
 	activateSkillSchema,
@@ -210,16 +216,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		"info",
 	);
 
-	const store = new SessionStore();
+	const realm = bridgeRealm();
+	const store = realm.store;
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
-	let mcpHandle: McpServerHandle | null = null;
+	let mcpHandle: BridgeEndpoint | null = null;
+	let currentSessionId: string | undefined;
+	let lastConversationId: string | undefined;
+	let realmSession: RealmSession | null = null;
 	// Session-only visibility overrides; never change either application's MCP config.
 	const hiddenBridgeTools = new Set<string>();
 	const getBridgeTools = () => bridgedPiTools(pi.getAllTools(), pi.getActiveTools(), loadConfig().bridgeTools, hiddenBridgeTools);
-	// Approval-gate hook script (per-pid, token embedded). Written at session
-	// start when the gate is active; removed at session_shutdown.
-	let gateScriptPath: string | null = null;
 	// Staged gate hooks do not stop agy's own request_permission path, so when
 	// true the ACP driver stops letting skipPermissions auto-allow it.
 	let gateActive = false;
@@ -301,7 +308,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				// path; restore the global registration so the bridge stays
 				// reachable when the staged home is unusable.
 				if (mcpHandle) {
-					registerBridgeServer({ pid: process.pid, port: mcpHandle.port, token: mcpHandle.token, tokenHeader: TOKEN_HEADER });
+					registerBridgeServer({ pid: process.pid, port: mcpHandle.port, token: mcpHandle.realmToken, tokenHeader: TOKEN_HEADER });
 				}
 				return undefined;
 			}
@@ -512,7 +519,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Stamp live escalations with the ended turn's conversation: the park
 		// pass returns before the provider's store.set, so a first-turn park
 		// has no other record of where its result must be re-delivered.
-		if (outcome.conversationId) roundTrips.stampConversation(outcome.conversationId);
+		if (outcome.conversationId) {
+			lastConversationId = outcome.conversationId;
+			roundTrips.stampConversation(outcome.conversationId);
+		}
 	};
 	streamDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
@@ -680,6 +690,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		log: fileLog.log.bind(fileLog),
 	});
 
+	const joinRealm = () =>
+		realm.join({
+			sessionId: () => currentSessionId,
+			streamSimple,
+			hasActiveTurn: () => (engine === "acp" ? acpDriver.activeHandle !== null : streamDriver.activeHandle !== null),
+			conversationId: () => lastConversationId,
+		});
+	realmSession = joinRealm();
+
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
 		baseUrl: "agy-bridge://antigravity",
@@ -696,7 +715,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			contextWindow: m.contextWindow,
 			maxTokens: m.maxTokens,
 		})),
-		streamSimple,
+		// pi-ai's provider registry is process-global and every session's factory
+		// call registers again: register the realm's stable dispatcher so each
+		// call routes to its own session's streamSimple.
+		streamSimple: realm.streamSimple,
 	});
 
 	registerAgyCommand(pi, {
@@ -800,6 +822,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	pi.on("session_start", async (event, ctx) => {
+		currentSessionId = liveSessionId(ctx.sessionManager);
+		realmSession ??= joinRealm();
 		if (ctx.hasUI) activeUi = ctx.ui;
 		// First-run engine picker: ask once, on the first interactive start,
 		// which turn engine to use. Skipped headless (ctx.mode !== "tui"),
@@ -1041,13 +1065,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				isError: !skill,
 			});
 		};
-		const r = await startMcpServer(
+		const r = await realmSession.attachBridge(
 			{
 				listTools,
 				onToolCall: bridgeOnToolCall,
 				onApproval: (ticket, payload) => roundTrips.onApproval(ticket, payload),
 			},
-			{ log: mcpLog },
+			mcpLog,
 		);
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
@@ -1058,18 +1082,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// Global-config hygiene runs on BOTH engines: a crashed stream-json
 			// session must not leave dead-pid entries or stuck suppression flags
 			// for the next one.
-			healBridgeSuppression();
+			if (r.first) healBridgeSuppression();
 			// ACP supplies the bridge per-session (session/new | session/load).
 			// stream-json skips the global file entirely when the isolated home
 			// is active (issue #14): this session's bridge rides the staged
 			// config instead, so no other agy on the machine can see or call it.
 			if (engine === "stream-json" && !streamHome.isolated) {
-				registerBridgeServer({
-					pid: process.pid,
-					port: r.handle.port,
-					token: r.handle.token,
-					tokenHeader: TOKEN_HEADER,
-				});
+				if (r.first) {
+					registerBridgeServer({
+						pid: process.pid,
+						port: r.handle.port,
+						token: r.handle.realmToken,
+						tokenHeader: TOKEN_HEADER,
+					});
+				}
 			} else if (streamHome.path) {
 				// Bridge enabled after the home was staged without one: refresh
 				// the staged copy directly. agy reads the home once at spawn;
@@ -1115,38 +1141,41 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				// Staging now lives in the session-private add-dir; sweep groups left
 				// behind by dead sessions from the old scheme. Live sessions' and
 				// foreign groups are never touched.
-				const sweptLegacy = sweepWorkspaceGateGroups(process.cwd());
-				if (sweptLegacy > 0) fileLog.log("approval-workspace-swept", { swept: sweptLegacy }, "info");
+				if (r.first) {
+					const sweptLegacy = sweepWorkspaceGateGroups(process.cwd());
+					if (sweptLegacy > 0) fileLog.log("approval-workspace-swept", { swept: sweptLegacy }, "info");
+				}
 				if (mode === "off") {
-					// Gate off: drop this session's private hooks file. Other sessions
-					// own their own per-pid files; nothing shared to preserve.
-					const unstaged = removeGateHooks();
-					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+					if (r.first) {
+						// Gate off: drop this session's private hooks file.
+						const unstaged = removeGateHooks();
+						if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+					}
 				} else {
-					// Script: per-pid file; 0600 because the bridge token is
-					// embedded (peer review 2026-09-07).
-					const scriptPath = path.join(logsDir(), `approval-hook-${process.pid}.js`);
-					fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
-					fs.writeFileSync(
-						scriptPath,
-						hookScriptSource({
+					if (r.first) {
+						// Script: per-realm file; 0600 because the realm token is
+						// embedded (peer review 2026-09-07).
+						const scriptPath = approvalHookScriptPath();
+						fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
+						fs.writeFileSync(
+							scriptPath,
+							hookScriptSource({
+								port: r.handle.port,
+								token: r.handle.realmToken,
+								deadlineMs: APPROVAL_PARK_MS,
+							}),
+							{ mode: 0o600 },
+						);
+						// Private per-realm staging (issue #5 isolation): the gate group goes
+						// into the bridge add-dir that ONLY this process's agy receives.
+						const staged = stageGateHooks(bridgeMcpConfigDir(), {
 							port: r.handle.port,
-							token: r.handle.token,
-							deadlineMs: APPROVAL_PARK_MS,
-						}),
-						{ mode: 0o600 },
-					);
-					gateScriptPath = scriptPath;
-					// Private per-pid staging (issue #5 isolation): the gate group goes
-					// into the bridge add-dir that ONLY this session's agy receives.
-					// Standalone sessions in the workspace never load it.
-					const staged = stageGateHooks(bridgeMcpConfigDir(), {
-						port: r.handle.port,
-						token: r.handle.token,
-						scriptPath,
-						parkBudgetMs: APPROVAL_PARK_MS,
-					});
-					fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
+							token: r.handle.realmToken,
+							scriptPath,
+							parkBudgetMs: APPROVAL_PARK_MS,
+						});
+						fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
+					}
 
 					// Shadow bases: factory twins of pi's own builtins (public API).
 					// pi.getAllTools() is unusable here: it returns ToolInfo, which
@@ -1220,20 +1249,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		await acpDriver.close("recycle", "session shutdown");
 		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
 		await h?.close();
-		if (engine === "stream-json") unregisterBridgeServer(process.pid);
 		hiddenBridgeTools.clear();
-		// Approval gate: unstage hooks and remove the per-pid script. Pending
-		// approvals already failed closed via handle close (bridge shutdown deny).
-		const unstaged = removeGateHooks();
-		if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
-		if (gateScriptPath) {
-			try {
-				fs.rmSync(gateScriptPath, { force: true });
-			} catch {
-				/* best effort */
-			}
-			gateScriptPath = null;
-		}
+		// Leaving the realm revokes this session's route; only the last session
+		// to leave tears down the shared listener and per-realm artifacts.
+		await realmSession?.leave();
+		realmSession = null;
 	});
 }
 

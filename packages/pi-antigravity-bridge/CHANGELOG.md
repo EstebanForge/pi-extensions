@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Multiple sessions in one process now share one bridge runtime instead of clobbering each other's provider and `process.pid` artifacts.** Subagent or multi-session spawns in the same JS realm previously overwrote the global provider registration and deleted `agy-mcp-<pid>`, `approval-hook-<pid>.js`, and global `mcp_config.json` entries on child shutdown while the parent was still running. A shared realm runtime (`src/runtime.ts`) now owns one `SessionStore`, routes `streamSimple` by `options.sessionId`, serves one MCP listener with per-session route tokens (`addRoute`), and tears down per-realm artifacts only when the last session leaves.
+
 - **The approval gate no longer lets `skipPermissions` auto-allow `session/request_permission` on ACP turns.** Staged gate hooks do not stop `agy`'s own permission path, so a gate-active turn with `skipPermissions` previously bypassed the gate; when the gate is active, `approvals.mode` and the permission dialog now decide (`allow` answers allow, `deny`/headless denies, otherwise the dialog prompts). Permission log events also include the tool kind, redacted title, `toolCallId`, and field names.
 - **`SessionStore.flush()` now drains queued session-binding writes on `session_shutdown`.** Headless/print runs exiting right after the final bind can no longer drop the last `sessions.json` update before the process exits.
 - **`read_file` steps on stream-json now re-execute as native `read` calls.** Matches `agy` 1.5.14's rename of `view_file` (same `Path`/`StartLine`/`EndLine` shape; unknown keys still fall back to the wrapper).
