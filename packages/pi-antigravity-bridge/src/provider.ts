@@ -253,7 +253,7 @@ export const TOOL_PRIORITY_NOTE =
  *  note's "use the Pi Bridge tools" instruction must be redirected into
  *  scripts. */
 export const CODEMODE_NOTE =
-	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, execute) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.write, tools.bash. Long or multi-step file work belongs in one script, not many tool calls.";
+	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, write, bash) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.write, tools.bash. Long or multi-step file work belongs in one script, not many tool calls.";
 
 export function buildFullPrompt(
 	systemPrompt: string | undefined,
@@ -1772,7 +1772,17 @@ async function runTurnDriver(
 	// the tool: pi registers codemode inactive by default, and the note
 	// would otherwise point at scripts the engine cannot call. No probe
 	// dep (tests) reads as "the configured mode is authoritative".
-	const codemodeNote = config.bridgeTools === "codemode" && (deps.hasActiveTool?.("codemode") ?? true);
+	let codemodeNote = false;
+	if (config.bridgeTools === "codemode") {
+		// A stale pi handle throws on getActiveTools after /reload or a
+		// session replacement; fall back to the configured value rather
+		// than killing the turn from the prompt-builder path.
+		try {
+			codemodeNote = deps.hasActiveTool?.("codemode") ?? true;
+		} catch {
+			codemodeNote = true;
+		}
+	}
 	// The sync orchestrator for THIS pass when the sync gate dispatched; the
 	// settle (and the park persist) sit outside the fresh-pass block, so the
 	// binding is function-level (the round-1 settle scope trap).

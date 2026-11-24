@@ -11,7 +11,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Native xhigh thinking tier: the catalog splits `gemini-4-{hydrogen,neon}-xhigh` slugs into base + tier, pi's `xhigh` thinking level passes through to the engine when the base lists it (clamps to `high` otherwise, `max` unchanged), the model toggle shows the xhigh stop only for bases that ship it, and `/agy thinking` plus the AskAntigravity `thinking` param and the config default (`defaultThinking` / `AGY_DEFAULT_THINKING`) accept `xhigh` end to end (probe: `scripts/probe-xhigh.mjs`, agy 1.5.16 accepted the qualified xhigh slug). Requires `@estebanforge/pi-ask-shared` `^0.1.7` (floor bump: the resolver vocabulary widens first; publish shared before this package).
+- The provider tool-priority note's bridge-tool enumeration names the real pi tools (`write`, `bash`) instead of the nonexistent `execute`: fresh conversations get the corrected text, and each stream-json staged agent re-stages under a new content hash (harmless one-time cache bust per conversation).
+- Native xhigh thinking tier: the catalog splits `gemini-4-{hydrogen,neon}-xhigh` slugs into base + tier, pi's `xhigh` thinking level passes through to the engine when the base lists it (clamps to the nearest tier below otherwise; pi's own clamp now resolves `max` to xhigh on bases that ship it, so provider turns get the top tier - the direct `max`→`high` clamp remains only in `toAgyEffort` for direct callers), the model toggle shows the xhigh stop only for bases that ship it, and `/agy thinking` plus the AskAntigravity `thinking` param and the config default (`defaultThinking` / `AGY_DEFAULT_THINKING`) accept `xhigh` end to end (probe: `scripts/probe-xhigh.mjs`, agy 1.5.16 accepted the qualified xhigh slug). Requires `@estebanforge/pi-ask-shared` `^0.1.7` (floor bump: the resolver vocabulary widens first; publish shared before this package).
 
 ## [1.14.0] - 2026-11-24
 

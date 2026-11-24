@@ -89,13 +89,13 @@ try {
 	check("session model is the bridge provider", session.model?.provider === "antigravity", session.model?.provider);
 
 	let reply = "";
-	const toolcallEvents = [];
+	const toolCallNames = [];
 	const unsubscribe = session.subscribe((event) => {
 		if (event.type === "message_update") {
 			const a = event.assistantMessageEvent;
 			if (a.type === "text_delta") reply += a.delta;
 			else if (a.type === "text_end" && a.content) reply = a.content;
-			else if (typeof a.type === "string" && a.type.startsWith("toolcall")) toolcallEvents.push(JSON.stringify(a));
+			else if (a.type === "toolcall_end" && a.toolCall?.name) toolCallNames.push(a.toolCall.name);
 		}
 	});
 
@@ -120,7 +120,7 @@ try {
 	}
 	check("copy exists with the secret (pi-side write ran inside the sandbox)", copy.includes(SECRET), copy.trim());
 	check("reply carries the secret (read -> script return -> agy -> pi)", reply.includes(SECRET), reply.trim().slice(0, 120));
-	check("agy called the codemode tool (pi-side event)", toolcallEvents.some((e) => e.includes("codemode")), `${toolcallEvents.length} toolcall event(s)`);
+	check("agy called the codemode tool (pi-side event)", toolCallNames.includes("codemode"), `calls: ${toolCallNames.join(", ") || "none"}`);
 } finally {
 	session.dispose();
 }
