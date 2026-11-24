@@ -32,7 +32,7 @@ import {
 	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
-import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
+import { ToolRoundTrips, createStreamSimple, SYSTEM_PROMPT_PREAMBLE } from "../src/provider.js";
 import { SessionStore } from "../src/sessions.js";
 import type { StreamDriver, DriverTurnRequest } from "../src/driver.js";
 import type { DriverActivity, TurnHandle, TurnOutcome } from "../src/driver-types.js";
@@ -309,6 +309,48 @@ test("empty delta still advances the watermark (nothing owed)", async () => {
 				const rec = await readRecord(h);
 				assert.equal(rec.lastMessageCount, 2, `empty-delta: ${JSON.stringify(rec)}`);
 			});
+		} finally {
+			fs.rmSync(h.dir, { recursive: true, force: true });
+		}
+	});
+});
+
+test("fallback honors the digest and system-prompt opt-outs", async () => {
+	await withEnv({ AGY_DIGEST: "0", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const h = harness(["conv-a", "conv-a"]);
+		try {
+			await runTurn(h, [user("first task", 1)]);
+			await runTurn(h, [user("first task", 1), ownTurn("own turn words", 2), user("second", 3)]);
+			const req = h.requests[1]!;
+			assert.equal(req.conversationId, "conv-a");
+			// With both features off, the plain prompt already carries everything
+			// a fresh conversation would get: no fallback variant may exist,
+			// otherwise a load failure ships features the user turned off.
+			assert.equal(req.fallback, undefined, `opt-outs must suppress the fallback: ${JSON.stringify(req.fallback)}`);
+		} finally {
+			fs.rmSync(h.dir, { recursive: true, force: true });
+		}
+	});
+});
+
+test("fallback keeps the digest but drops the system prompt when only the digest is on", async () => {
+	await withEnv({ AGY_DIGEST: "1", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const h = harness(["conv-a", "conv-a"]);
+		try {
+			await runTurn(h, [user("first task", 1)]);
+			await runTurn(h, [user("first task", 1), ownTurn("own turn words", 2), user("second", 3)]);
+			const req = h.requests[1]!;
+			const fb = req.fallback;
+			assert.ok(fb, "the digest opt-in alone still prebuilds the fresh variant");
+			assert.ok(
+				fb.contextBlock?.text.includes("own turn words"),
+				"the fallback digest still ships when the digest is on",
+			);
+			assert.ok(
+				!fb.prompt.includes(SYSTEM_PROMPT_PREAMBLE),
+				"the fallback must not carry the system prompt the user turned off",
+			);
+			assert.ok(fb.prompt.includes("second"), "the fallback still carries the user prompt");
 		} finally {
 			fs.rmSync(h.dir, { recursive: true, force: true });
 		}

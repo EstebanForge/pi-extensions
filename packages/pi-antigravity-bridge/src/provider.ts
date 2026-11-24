@@ -1988,17 +1988,22 @@ async function runTurnDriver(
 		const acpFallback =
 			deps.engine === "acp" && requestConversation && !resume && late.length === 0
 				? (() => {
-						const freshDigest = buildContextDigestResult(context.messages, 0, {
-							bound: false,
-							maxChars: ACP_DIGEST_MAX_CHARS,
-							end: run.runStart,
-							includeLast: compactionResume,
-						});
+						const fbSys = config.systemPrompt
+							? getCurrentSystemPrompt(context.messages) || undefined
+							: undefined;
+						const freshDigest = wantDigest
+							? buildContextDigestResult(context.messages, 0, {
+									bound: false,
+									maxChars: ACP_DIGEST_MAX_CHARS,
+									end: run.runStart,
+									includeLast: compactionResume,
+								})
+							: null;
+						// Both features off: the variant would equal the plain prompt.
+						if (!fbSys && !freshDigest?.text) return undefined;
 						return {
-							prompt:
-								buildFullPrompt(getCurrentSystemPrompt(context.messages) || undefined, "", deliveredPrompt) +
-								stageImageNote(runImages),
-							contextBlock: freshDigest.text
+							prompt: buildFullPrompt(fbSys, "", deliveredPrompt) + stageImageNote(runImages),
+							contextBlock: freshDigest?.text
 								? {
 										uri: `urn:pi-bridge:context-digest/fresh/${messageCount}`,
 										text: `${DIGEST_PREAMBLE}\n\n${freshDigest.text}`,
