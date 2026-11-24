@@ -8,7 +8,6 @@
 // persist contract shape.
 // Run: npm test
 
-import { MAX_FRAME_BYTES } from "../frame-guard.js";
 import { projectHistory, type HistoryProjection } from "../history-projection.js";
 import { SessionSyncCoordinator, type HistorySyncPlan, type SessionSyncState, type SyncOptions } from "../history-sync.js";
 import type { AgySession } from "../sessions.js";
@@ -36,6 +35,11 @@ export type SyncFinishResult = { settled: "terminal" } | { settled: "invalidated
 
 const HISTORY_URI = "urn:pi-bridge:history:v1";
 const FRAME_MARGIN_BYTES = 2048;
+// The engine ACCEPTS outbound frames past ~3.8MiB but silently truncates
+// the resource there (probe-acp-frame 2026-11-24: "truncated at 4002908
+// bytes" on a 4MiB block), so the lossless budget sits safely below the
+// truncation point - well under frame-guard's 32MiB inbound cap.
+const OUTBOUND_FRAME_BUDGET_BYTES = 3 * 1024 * 1024;
 
 export class AcpHistorySync {
 	#coordinator: SessionSyncCoordinator;
@@ -146,7 +150,7 @@ export class AcpHistorySync {
 			input.contextBlock = { uri: HISTORY_URI, text: this.#plan.embeddedContext };
 		}
 		const bytes = Buffer.byteLength(JSON.stringify(input)) + FRAME_MARGIN_BYTES;
-		if (bytes > MAX_FRAME_BYTES) {
+		if (bytes > OUTBOUND_FRAME_BUDGET_BYTES) {
 			throw new Error(`history-sync input exceeds the outbound frame budget (${bytes} bytes); compact the session and retry`);
 		}
 		return input;

@@ -8,6 +8,10 @@
 //   2. Model switch keeps the warm session: a second turn on a different
 //      model slug reuses the same conversation and stays recallable.
 //   3. Cancel then recovery: an aborted turn leaves the binding usable.
+//   4. Sync handoff (AGY_HANDOFF=sync): the checkpoint/plan owns
+//      continuity - turn 1 rebuilds with the whole transcript as framed
+//      history, turn 2 continues warm and ships only the foreign delta,
+//      and the record persists the zeroed contract with sync state.
 //
 //   AGY_ACP_LIVE=1 npx tsx scripts/smoke-handoff.mjs
 //
@@ -82,9 +86,9 @@ const streamSimple = createStreamSimple({
 });
 
 let clock = Date.now();
-async function turn(m, messages, signal) {
+async function turn(m, messages, signal, sessionId = "s-1") {
 	const ctx = normalizeContext({ messages });
-	const stream = streamSimple(m, ctx, { cwd: dir, sessionId: "s-1", signal });
+	const stream = streamSimple(m, ctx, { cwd: dir, sessionId, signal });
 	const text = [];
 	let status = "UNKNOWN";
 	let conversationId;
@@ -171,7 +175,60 @@ const t4 = await turn(modelHydro, [
 ]);
 check("turn4 recovered after the cancel", t4.status === "OK" && t4.text.includes("recovered"), `status=${t4.status}`);
 
+// --- Scenario 4: sync handoff (checkpoint/plan owns continuity) -------------
+process.env.AGY_HANDOFF = "sync";
+const SDELTA = "DELTA-5-5-5";
+// Turn 1 over session "s-sync" (no stored record): the plan is a rebuild,
+// the whole backlog ships as framed history, and the needle planted BEFORE
+// the first bridge turn must be recallable from the fresh conversation.
+const s1 = await turn(
+	model,
+	[
+		user(`Session prep: the access code for later is ${CODE}. Confirm by replying with just: staged`, clock + 20),
+		ownTurn("staged", clock + 21),
+		user("Use the access code from the session prep above. Reply with ONLY the code now.", clock + 22),
+	],
+	undefined,
+	"s-sync",
+);
+check("sync turn1 (rebuild) completed with backlog recall", s1.status === "OK" && s1.text.includes(CODE), `status=${s1.status} reply=${JSON.stringify(s1.text.slice(0, 60))}`);
+const syncPlan1 = logs.filter((l) => l.event === "sync-plan" && l.data?.kind === "rebuild");
+check("sync turn1 planned a rebuild", syncPlan1.length >= 1);
+
+// Turn 2: the transcript grew FOREIGN-provider turns (another model ran in
+// between) plus a new user question. The plan must be a warm continue that
+// ships ONLY the delta - the needle lives exclusively in the delta, so
+// recall proves the framed history reached the warm conversation.
+const s2 = await turn(
+	model,
+	[
+		user(`Session prep: the access code for later is ${CODE}. Confirm by replying with just: staged`, clock + 23),
+		ownTurn("staged", clock + 24),
+		user("Use the access code from the session prep above. Reply with ONLY the code now.", clock + 25),
+		ownTurn(s1.text.trim() || CODE, clock + 26),
+		user(`Another model ran meanwhile. Memorize the word ${SDELTA}, then answer its filler question: reply teal.`, clock + 27),
+		ownTurn("teal", clock + 28),
+		user("What was the memorized word from the color step? Reply with ONLY the word.", clock + 29),
+	],
+	undefined,
+	"s-sync",
+);
+check("sync turn2 (warm continue) recalled the delta needle", s2.status === "OK" && s2.text.includes(SDELTA), `status=${s2.status} reply=${JSON.stringify(s2.text.slice(0, 60))}`);
+check("sync turn2 kept the warm conversation", !!s1.conversationId && s2.conversationId === s1.conversationId, `conv=${s2.conversationId}`);
+const syncPlan2 = logs.filter((l) => l.event === "sync-plan" && l.data?.kind === "continue");
+check("sync turn2 planned a continue", syncPlan2.length >= 1);
+const syncSettles = logs.filter((l) => l.event === "sync-settle" && l.data?.settled === "terminal");
+check("sync settles checkpointed", syncSettles.length >= 2, JSON.stringify(syncSettles.map((l) => l.data?.reason ?? "terminal")));
+const syncRaw = JSON.parse(fs.readFileSync(path.join(dir, "sessions.json"), "utf8"));
+const syncRec = Object.entries(syncRaw).find(([k]) => k.startsWith("sid:s-sync"))?.[1];
+check(
+	"sync record holds the zeroed contract with sync state",
+	!!syncRec && syncRec.lastMessageCount === 0 && !!syncRec.sync?.checkpoint && !!syncRec.conversationId,
+	`count=${syncRec?.lastMessageCount} checkpoint=${!!syncRec?.sync?.checkpoint} conv=${syncRec?.conversationId}`,
+);
+
 console.log(`\n[smoke] ${results.filter((r) => r.pass).length}/${results.length} checks passed`);
+console.log("[smoke] sync events:", JSON.stringify(logs.filter((l) => l.event.startsWith("sync")), null, 1));
 await driver.close("shutdown");
 fs.rmSync(dir, { recursive: true, force: true });
 fs.rmSync(fakeAgentRoot, { recursive: true, force: true });

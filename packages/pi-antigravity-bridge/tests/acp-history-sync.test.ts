@@ -116,9 +116,15 @@ describe("AcpHistorySync inputFor", () => {
 		]);
 	});
 
-	it("hard-fails when the assembled input exceeds the frame budget", () => {
+	it("hard-fails past the engine-side truncation band", () => {
+		// The engine accepts outbound frames past ~3.8MiB but SILENTLY
+		// truncates the resource there (probe-acp-frame 2026-11-24: a 4MiB
+		// block reported "truncated at 4002908 bytes"), so anything in the
+		// 3MiB..32MiB band would checkpoint content agy never read.
+		const under = new AcpHistorySync([user("hello", 1)], undefined);
+		expect(under.inputFor({ prompt: "x".repeat(2 * 1024 * 1024) }).prompt).toBeDefined();
 		const sync = new AcpHistorySync([user("hello", 1)], undefined);
-		const huge = "x".repeat(33 * 1024 * 1024);
+		const huge = "x".repeat(4 * 1024 * 1024);
 		expect(() => sync.inputFor({ prompt: huge })).toThrow(/compact/i);
 	});
 });
