@@ -123,6 +123,12 @@ export class AcpHistorySync {
 		this.#coordinator.invalidate(reason);
 	}
 
+	/** Churn-gate latch: the session goes back to the digest flow after this
+	 *  turn's record persists. */
+	markDigestFallback(): void {
+		this.#coordinator.markDigestFallback();
+	}
+
 	/** Assemble the driver turn input: prompt, request + deduped history
 	 *  images, and the framed history resource block when history is owed.
 	 *  Hard-fails over the frame budget — history is never truncated. */

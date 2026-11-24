@@ -39,6 +39,7 @@ import { SubagentRoster } from "./subagent-roster.js";
 import { clampOverflowUsage, toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
+import { AcpHistorySync } from "./acp/history-sync.js";
 import { SessionStore } from "./sessions.js";
 import { detectQuotaNotice, quotaErrorMessage } from "./quota-notice.js";
 import { redactText } from "./redact.js";
@@ -672,6 +673,14 @@ export interface StreamSimpleDeps {
 	/** Session keys rotated on `session_compact` awaiting a one-shot
 	 *  compaction handoff into a fresh agy conversation. */
 	pendingCompactionHandoff?: Set<string>;
+	/** Per-provider handoff runtime: the mode each session key's last
+	 *  dispatched turn used (continuations must settle under the same
+	 *  contract as the parked turn) and consecutive warm-session rebuild
+	 *  counts for the churn gate. Created by createStreamSimple. */
+	handoffRuntime?: {
+		mode: Map<string, "digest" | "sync">;
+		rebuildStreak: Map<string, number>;
+	};
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -1377,6 +1386,11 @@ export interface DriverDeps {
 	pendingCompactionHandoff?: Set<string>;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
+	/** Per-provider handoff runtime (see StreamSimpleDeps). */
+	handoffRuntime?: {
+		mode: Map<string, "digest" | "sync">;
+		rebuildStreak: Map<string, number>;
+	};
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 }
@@ -1734,6 +1748,15 @@ async function runTurnDriver(
 	const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 
 	let handle: TurnHandle | undefined;
+	// True when THIS pass dispatched a fresh driver.run on the digest flow
+	// (the sync dispatch and live re-attaches leave it false): it keys the
+	// settle contract below so a digest redelivery over a sync-latched
+	// session settles digest-shaped.
+	let digestDispatched = false;
+	// The sync orchestrator for THIS pass when the sync gate dispatched; the
+	// settle (and the park persist) sit outside the fresh-pass block, so the
+	// binding is function-level (the round-1 settle scope trap).
+	let syncTurn: AcpHistorySync | undefined;
 	// Name of the carrier agent staged for THIS turn's fresh conversation, if
 	// any. Recorded into stagedAgentByConversation once the outcome binds the
 	// conversation id, so later gate-closed turns pass the same agent.
@@ -1865,6 +1888,96 @@ async function runTurnDriver(
 				}
 			}
 		}
+		// --- sync handoff mode (opt-in via AGY_HANDOFF=sync, ACP-only) ---
+		// The checkpoint/plan owns continuity instead of the digest: history
+		// ships as a framed resource block, the record persists the zeroed
+		// contract, and the settle bypasses the digest store writes. Legacy
+		// paths (late/strand redelivery, retry-dropped resume, post-compaction
+		// resume) and the churn latch stay on the digest flow.
+		const handoffRuntime = deps.handoffRuntime;
+		const syncTurnRequested = config.handoff === "sync" && engine === "acp";
+		if (
+			syncTurnRequested &&
+			!ephemeral &&
+			!isContinuation &&
+			late.length === 0 &&
+			!resume &&
+			!compactionResume &&
+			!redeliveryConversation &&
+			!existing?.sync?.digestFallback
+		) {
+			const turn = new AcpHistorySync(context.messages, existing, { isBacklogShape: isBacklogUserShape });
+			syncTurn = turn;
+			deps.log?.(
+				"sync-plan",
+				{ key, kind: turn.plan.kind, reason: turn.plan.reason, fresh: turn.freshConversation, history: turn.plan.history.length },
+				"info",
+			);
+			if (existing && turn.plan.kind === "rebuild") {
+				// A warm session that keeps failing to match its checkpoint means
+				// something rewrites the transcript every turn (context hooks):
+				// full rebuilds each turn are quadratic billing. Three in a row
+				// latches the session back onto the digest flow.
+				const streak = (handoffRuntime?.rebuildStreak.get(key) ?? 0) + 1;
+				handoffRuntime?.rebuildStreak.set(key, streak);
+				if (streak >= 3 && !existing.sync?.digestFallback) {
+					turn.markDigestFallback();
+					deps.log?.("sync-churn-fallback", { key, streak }, "warn");
+				}
+			} else if (turn.plan.kind !== "rebuild") {
+				handoffRuntime?.rebuildStreak.delete(key);
+			}
+			const gateOpen = Boolean(config.systemPrompt) && turn.freshConversation;
+			const sys = gateOpen ? getCurrentSystemPrompt(context.messages) || undefined : undefined;
+			const syncImages = [...images, ...late.flatMap((l) => l.images ?? [])];
+			const input = turn.inputFor({
+				prompt: buildFullPrompt(sys, "", userPrompt ?? "") + stageImageNote(syncImages),
+				images: syncImages,
+			});
+			turn.bound(key);
+			turn.dispatching();
+			handoffRuntime?.mode.set(key, "sync");
+			try {
+				handle = await deps.driver.run({
+					cwd,
+					model: agyModel,
+					effort,
+					mode: config.mode,
+					skipPermissions: config.skipPermissions,
+					timeoutMin: config.turnTimeoutMin,
+					inactivityMin: config.inactivityTimeoutMin,
+					conversationId: turn.boundConversationId,
+					prompt: input.prompt,
+					images: input.images,
+					agent: config.agent,
+					contextBlock: input.contextBlock,
+					onSessionBound: ({ sessionId }) => {
+						turn.adoptBinding(sessionId);
+						if (!rotationGuardArmed()) {
+							const rec = turn.record();
+							if (rec.conversationId) store.set(key, { ...rec, conversationId: rec.conversationId });
+						}
+					},
+					onSessionLoadFailed: () => {
+						// session/load died: re-plan as a rebuild and ship the whole
+						// history to a fresh conversation; the gate re-opens there.
+						const fresh = turn.loadFailed({
+							prompt:
+								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "") +
+								stageImageNote(syncImages),
+							images: syncImages,
+						});
+						return { prompt: fresh.prompt, contextBlock: fresh.contextBlock, images: fresh.images };
+					},
+					signal: options?.signal,
+				});
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
+				finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
+				return;
+			}
+		}
 		const promptBytes = Buffer.byteLength(deliveredPrompt, "utf8");
 		// A truncated run ships alone: the digest budget is spent, and a
 		// marker-only digest beside a sliced prompt is noise that also breaks
@@ -1872,6 +1985,7 @@ async function runTurnDriver(
 		const wantDigest = (config.digest || compactionHandoff || compactionResume) && !runTruncated;
 		const maxChars = digestMaxCharsForEngine(engine, promptBytes);
 		const digestRes =
+			!syncTurn &&
 			wantDigest && maxChars !== null && late.length === 0 && !resume
 				? buildContextDigestResult(context.messages, watermark, {
 						bound: Boolean(existing?.conversationId),
@@ -1906,20 +2020,21 @@ async function runTurnDriver(
 			nextCount = existing?.lastMessageCount ?? watermark;
 			nextBoundary = existing?.digestBoundary;
 		}
-		deps.log?.(
-			"digest",
-			{
-				engine,
-				bound: Boolean(existing?.conversationId),
-				maxChars,
-				bytes: digestFinal ? Buffer.byteLength(digestFinal, "utf8") : 0,
-				windowStart: digestRes?.windowStart,
-				windowEnd: digestRes?.windowEnd,
-				deliveredFrom: digestRes?.deliveredFrom,
-				shipped: Boolean(digestFinal),
-			},
-			digestDropped ? "warn" : "info",
-		);
+		if (!syncTurn)
+			deps.log?.(
+				"digest",
+				{
+					engine,
+					bound: Boolean(existing?.conversationId),
+					maxChars,
+					bytes: digestFinal ? Buffer.byteLength(digestFinal, "utf8") : 0,
+					windowStart: digestRes?.windowStart,
+					windowEnd: digestRes?.windowEnd,
+					deliveredFrom: digestRes?.deliveredFrom,
+					shipped: Boolean(digestFinal),
+				},
+				digestDropped ? "warn" : "info",
+			);
 		// The delivered summary id persists only when a digest actually shipped:
 		// late/resume/budget-skipped turns carry the previous id forward so the
 		// summary is not lost to a turn that never delivered it.
@@ -1986,7 +2101,7 @@ async function runTurnDriver(
 		// is ACP-only.
 		const requestConversation = redeliveryConversation ?? existing?.conversationId ?? null;
 		const acpFallback =
-			deps.engine === "acp" && requestConversation && !resume && late.length === 0
+			!syncTurn && deps.engine === "acp" && requestConversation && !resume && late.length === 0
 				? (() => {
 						const fbSys = config.systemPrompt
 							? getCurrentSystemPrompt(context.messages) || undefined
@@ -2017,38 +2132,49 @@ async function runTurnDriver(
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
 				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt)) +
 			stageImageNote(runImages);
-		try {
-			handle = await deps.driver.run({
-				cwd,
-				model: agyModel,
-				effort,
-				mode: config.mode,
-				skipPermissions: config.skipPermissions,
-				timeoutMin: config.turnTimeoutMin,
-				inactivityMin: config.inactivityTimeoutMin,
-				conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
-				prompt: fullPrompt,
-				images: runImages.length > 0 ? runImages : undefined,
-				agent,
-				fallback: acpFallback,
-				contextBlock: embeddedDigest
-					? {
-							uri: `urn:pi-bridge:context-digest/${messageCount}`,
-							text: `${DIGEST_PREAMBLE}\n\n${embeddedDigest}`,
-						}
-					: undefined,
-				signal: options?.signal,
-			});
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			// Release stranded claims: the delivery never started, so the next
-			// pass must find them undelivered (tombstone-borne items have no
-			// callId and stay consumed, as before).
-			for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
-			deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
-			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
-			return;
+		if (!syncTurn) {
+			try {
+				handle = await deps.driver.run({
+					cwd,
+					model: agyModel,
+					effort,
+					mode: config.mode,
+					skipPermissions: config.skipPermissions,
+					timeoutMin: config.turnTimeoutMin,
+					inactivityMin: config.inactivityTimeoutMin,
+					conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
+					prompt: fullPrompt,
+					images: runImages.length > 0 ? runImages : undefined,
+					agent,
+					fallback: acpFallback,
+					contextBlock: embeddedDigest
+						? {
+								uri: `urn:pi-bridge:context-digest/${messageCount}`,
+								text: `${DIGEST_PREAMBLE}\n\n${embeddedDigest}`,
+							}
+						: undefined,
+					signal: options?.signal,
+				});
+				handoffRuntime?.mode.set(key, "digest");
+				digestDispatched = true;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				// Release stranded claims: the delivery never started, so the next
+				// pass must find them undelivered (tombstone-borne items have no
+				// callId and stay consumed, as before).
+				for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
+				deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
+				finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
+				return;
+			}
 		}
+	}
+
+	if (!handle) {
+		// Unreachable in practice: every non-finalized path above dispatched a
+		// turn. Fail visibly instead of arguing with the type checker.
+		finalize(stream, blocks, "error", "agy turn was not dispatched");
+		return;
 	}
 
 	ensureStarted(stream, blocks);
@@ -2090,18 +2216,28 @@ async function runTurnDriver(
 		// recreated a conversation, so the snapshot id is the real one, and
 		// the staged agent must move with the binding or a stream-json resume
 		// re-runs without its carrier-agent profile.
-		if (!ephemeral && !existing && !rotationGuardArmed()) {
+		if (!ephemeral && !rotationGuardArmed() && (syncTurn || !existing)) {
 			const parkedConv = deps.driver.snapshot().conversationId;
 			if (parkedConv) {
-				store.set(key, {
-					conversationId: parkedConv,
-					lastStepIdx: -1,
-					lastMessageCount: nextCount,
-					digestBoundary: nextBoundary,
-					digestSummaryId: settleSummaryId,
-				});
-				deps.pendingCompactionHandoff?.delete(key);
-				if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
+				if (syncTurn) {
+					// Sync persists the zeroed contract with the adopted binding;
+					// a rebuild that parked already carried the compaction summary
+					// as history, so the latch has no second consumer.
+					syncTurn.adoptBinding(parkedConv);
+					const rec = syncTurn.record();
+					if (rec.conversationId) store.set(key, { ...rec, conversationId: rec.conversationId });
+					if (syncTurn.freshConversation) deps.pendingCompactionHandoff?.delete(key);
+				} else {
+					store.set(key, {
+						conversationId: parkedConv,
+						lastStepIdx: -1,
+						lastMessageCount: nextCount,
+						digestBoundary: nextBoundary,
+						digestSummaryId: settleSummaryId,
+					});
+					deps.pendingCompactionHandoff?.delete(key);
+					if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
+				}
 			}
 		}
 		return;
@@ -2207,7 +2343,57 @@ async function runTurnDriver(
 			}
 		}
 	}
-	if (!ephemeral && outcome.conversationId) {
+	// Sync settle: the orchestrator owns the record write (zeroed contract),
+	// so the digest settle below is bypassed entirely. A continuation of a
+	// parked sync turn reconstructs the coordinator from the record (the
+	// live re-attach fires no hooks) and marks it dispatched so the two-step
+	// settle can terminal. A digest redelivery over a sync-latched session
+	// (dead handle, deadIds) settles digest-shaped instead.
+	const syncContract =
+		syncTurn !== undefined ||
+		(isContinuation && !digestDispatched && !ephemeral && deps.handoffRuntime?.mode.get(key) === "sync");
+	if (syncContract && !ephemeral) {
+		const settleSync =
+			syncTurn ??
+			(() => {
+				const recon = new AcpHistorySync(context.messages, existing, {
+					continuation: isContinuation,
+					isBacklogShape: isBacklogUserShape,
+				});
+				recon.bound(key);
+				recon.dispatching();
+				return recon;
+			})();
+		const result = settleSync.finish(
+			{
+				ok: outcome.status === "OK",
+				conversationId: outcome.conversationId ?? null,
+				aborted: outcome.aborted,
+				promptAttempted: outcome.promptAttempted,
+				promptTerminal: outcome.promptTerminal,
+			},
+			blocks.partial,
+			context.messages,
+			existing?.conversationId,
+		);
+		deps.log?.(
+			"sync-settle",
+			{
+				key,
+				settled: result.settled,
+				...("reason" in result ? { reason: result.reason } : {}),
+				conversation: outcome.conversationId,
+			},
+			"info",
+		);
+		const record = settleSync.record();
+		if (record.conversationId && !rotationGuardArmed()) {
+			store.set(key, { ...record, conversationId: record.conversationId });
+			// A rebuild shipped the compaction summary as history; the one-shot
+			// latch has no second consumer.
+			if (settleSync.freshConversation) deps.pendingCompactionHandoff?.delete(key);
+		}
+	} else if (!ephemeral && outcome.conversationId) {
 		// A different id than the stored one means the driver recreated the
 		// conversation under us (ACP session-load fallback, stream-json CLI
 		// dropping a stale --conversation). The recreated conversation has seen
@@ -2274,6 +2460,13 @@ export function createStreamSimple(
 	deps: StreamSimpleDeps,
 ): (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => AssistantMessageEventStream {
 	const { entries, store, roundTrips } = deps;
+	// Per-provider handoff runtime: the park-time mode latch (continuations
+	// must settle under the same contract as the parked turn) and the churn
+	// gate's consecutive-rebuild counter, both keyed by session key.
+	const handoffRuntime = {
+		mode: new Map<string, "digest" | "sync">(),
+		rebuildStreak: new Map<string, number>(),
+	};
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
@@ -2352,6 +2545,7 @@ export function createStreamSimple(
 				onNativeBackground: deps.onNativeBackground,
 				roster: deps.roster,
 				pendingCompactionHandoff: deps.pendingCompactionHandoff,
+				handoffRuntime,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream
