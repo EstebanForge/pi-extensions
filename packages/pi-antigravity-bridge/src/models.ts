@@ -35,14 +35,15 @@ const DISCOVERY_TIMEOUT_MS = 8_000;
  *  real output and 1 MiB dwarfs any encoding difference. */
 export const MODELS_OUTPUT_CAP_BYTES = 1024 * 1024;
 
-/** Reasoning-effort tiers agy accepts via --effort. */
-export type AgyEffort = "low" | "medium" | "high";
+/** Reasoning-effort tiers agy accepts via --effort. xhigh exists on the
+ *  Gemini 4 line (agy 1.5.16 catalog); other families walk down to high. */
+export type AgyEffort = "low" | "medium" | "high" | "xhigh";
 
-/** low < medium < high, for sorting/clamping. */
-const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2 };
+/** low < medium < high < xhigh, for sorting/clamping. */
+const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2, xhigh: 3 };
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
-export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high"];
+export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high", "xhigh"];
 
 /** Map pi's thinking level onto one of the tiers `efforts` the base actually
  *  supports, clamping to the nearest available. agy rejects an effort tier a
@@ -63,8 +64,10 @@ export function toAgyEffort(
 		case "medium":
 			candidate = "medium";
 			break;
-		case "high":
 		case "xhigh":
+			candidate = "xhigh";
+			break;
+		case "high":
 		case "max":
 			candidate = "high";
 			break;
@@ -86,7 +89,7 @@ export function toAgyEffort(
  *  -high/-medium/-low suffix - a shape only unverified families should
  *  produce now, and those stay whole. Every Claude slug carries a tier
  *  suffix and collapses to its base. */
-const TIER_RE = /^(.+)-(high|medium|low)$/;
+const TIER_RE = /^(.+)-(xhigh|high|medium|low)$/;
 
 /** agy emits clean slug ids (gemini-3.6-flash-high). Validate col1 of each
  *  line so a banner / auth / "Fetching models…" line can't register as a
@@ -351,7 +354,7 @@ export function slugify(full: string): string {
  *  the toggle then shows exactly agy's slider stops. */
 function thinkingLevelMapFor(efforts: readonly AgyEffort[]): ThinkingLevelMap {
 	const map: Record<string, string | null> = { off: null, minimal: null };
-	for (const level of ["low", "medium", "high"] as const) {
+	for (const level of ["low", "medium", "high", "xhigh"] as const) {
 		if (!efforts.includes(level)) map[level] = null;
 	}
 	return map as ThinkingLevelMap;

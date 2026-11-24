@@ -18,6 +18,7 @@ import {
 	MODELS_OUTPUT_CAP_BYTES,
 	refreshModelsInBackground,
 	spawnAgyModelsRaw,
+	toAgyEffort,
 	toPiModel,
 } from "../src/models.js";
 
@@ -255,6 +256,11 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 		id: "gemini-3-6-flash",
 		efforts: ["low", "medium", "high"],
 	});
+	const hydrogen = toPiModel({
+		full: "gemini-4-hydrogen",
+		id: "gemini-4-hydrogen",
+		efforts: ["low", "medium", "high", "xhigh"],
+	});
 	const pro = toPiModel({
 		full: "gemini-3.1-pro",
 		id: "gemini-3-1-pro",
@@ -268,14 +274,18 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 	const unverified = toPiModel({ full: "futuremodel-x-medium", id: "futuremodel-x-medium" });
 
 	assert.equal(flash.reasoning, true);
+	assert.equal(hydrogen.reasoning, true);
 	assert.equal(pro.reasoning, true);
 	assert.equal(claude.reasoning, true);
 	assert.equal(unverified.reasoning, false);
 
 	// off/minimal always hidden (agy has no no-thinking); Pro also hides medium.
-	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null });
-	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null });
-	assert.deepEqual(claude.thinkingLevelMap, { off: null, minimal: null });
+	// xhigh is hidden unless the base lists it (agy 1.5.16 ships xhigh tiers
+	// for the Gemini 4 line only); visible stops pass through unclamped.
+	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null, xhigh: null });
+	assert.deepEqual(hydrogen.thinkingLevelMap, { off: null, minimal: null });
+	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null, xhigh: null });
+	assert.deepEqual(claude.thinkingLevelMap, { off: null, minimal: null, xhigh: null });
 	assert.equal(unverified.thinkingLevelMap, undefined);
 });
 
@@ -313,4 +323,32 @@ test("spawnAgyModelsRaw keeps output at exactly the cap (strict > boundary)", as
 	const raw = await spawnAgyModelsRaw(bin);
 	assert.equal(raw.length, MODELS_OUTPUT_CAP_BYTES);
 	assert.match(raw, /^x+$/);
+});
+
+// --- native xhigh tier (agy 1.5.16 catalog; engine-served per probe) -------
+
+test("entriesFromRaw: xhigh tiers collapse into the base efforts", () => {
+	const raw = [
+		"gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+		"gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+		"gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
+		"gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+		"gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+		"gemini-4-neon-high\tGemini 4 Neon (High)",
+	].join("\n");
+	const summary = entriesFromRaw(raw).map((e) => (e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id));
+	assert.deepEqual(summary, [
+		"gemini-4-hydrogen[low/medium/high/xhigh]",
+		"gemini-4-neon[high/xhigh]",
+	]);
+});
+
+test("toAgyEffort: xhigh passes through when listed, downgrades when not; max stays high", () => {
+	const withXhigh = ["low", "medium", "high", "xhigh"] as const;
+	const withoutXhigh = ["low", "medium", "high"] as const;
+	assert.equal(toAgyEffort("xhigh", withXhigh), "xhigh");
+	assert.equal(toAgyEffort("xhigh", withoutXhigh), "high");
+	assert.equal(toAgyEffort("max", withXhigh), "high");
+	assert.equal(toAgyEffort("max", withoutXhigh), "high");
+	assert.equal(toAgyEffort(undefined, withXhigh), "low");
 });

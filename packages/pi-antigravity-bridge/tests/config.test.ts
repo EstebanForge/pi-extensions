@@ -25,6 +25,7 @@ function withoutAgyEnvs(run: () => void): void {
 		"AGY_ACP_SESSION_RETRY",
 		"AGY_TURN_TIMEOUT_MIN",
 		"AGY_INACTIVITY_TIMEOUT_MIN",
+		"AGY_DEFAULT_THINKING",
 	] as const;
 	const prevs = keys.map((k) => [k, process.env[k]] as const);
 	for (const k of keys) delete process.env[k];
@@ -611,5 +612,29 @@ test("config: digest absent or true never triggers the migration (issue #25)", (
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 		fs.rmSync(path.dirname(p2), { recursive: true, force: true });
+	}
+});
+
+test("config: defaultThinking accepts the native xhigh tier from env and file", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ defaultThinking: "xhigh" }));
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "xhigh");
+		});
+		withoutAgyEnvs(() => {
+			process.env.AGY_DEFAULT_THINKING = "xhigh";
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "xhigh");
+			delete process.env.AGY_DEFAULT_THINKING;
+		});
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ defaultThinking: "ultra" }));
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "medium");
+		});
+	} finally {
+		fs.rmSync(p, { force: true });
 	}
 });

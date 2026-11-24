@@ -675,7 +675,7 @@ export async function registerAskAntigravityTool(
 			thinking: Type.Optional(
 				Type.String({
 					description:
-						"Thinking level (= agy effort tier). pi vocabulary: minimal|low|medium|high|xhigh|max, clamped to agy's low|medium|high (unknown values fall back to low). Overrides a tier embedded in `model`. Omit for the configured default.",
+						"Thinking level (= agy effort tier). pi vocabulary: minimal|low|medium|high|xhigh|max; passes through when the target model lists the tier (the Gemini 4 line ships xhigh) and clamps to the nearest tier below otherwise. Overrides a tier embedded in `model`. Omit for the configured default.",
 				}),
 			),
 			effort: Type.Optional(

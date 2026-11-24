@@ -49,7 +49,7 @@ export type Engine = "stream-json" | "acp";
  *  fall back here. Startup checks that the required agy CLI is available. */
 export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
-export type ThinkingTier = "low" | "medium" | "high";
+export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
 export type BridgeTools = "none" | "mcp" | "all";
 
 /** How ACP turns report token usage while Gate B stands (agy sends none).
@@ -423,7 +423,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 	const envThink = process.env.AGY_DEFAULT_THINKING;
 	const thinkRaw = String(envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking).toLowerCase();
 	const defaultThinking: ThinkingTier =
-		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
+		thinkRaw === "low" || thinkRaw === "high" || thinkRaw === "xhigh" ? thinkRaw : "medium";
 
 	const askTool = process.env.AGY_ASK_TOOL !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_ASK_TOOL.toLowerCase())
