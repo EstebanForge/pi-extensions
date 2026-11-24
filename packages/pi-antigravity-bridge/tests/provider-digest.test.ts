@@ -234,6 +234,59 @@ test("an oversized compaction summary is clamped to the digest budget", () => {
 	assert.doesNotMatch(digest, /tail gist/);
 });
 
+test("one oversized toolResult keeps earlier turns visible (issue #25)", () => {
+	// The backward truncation loop used to break on the first overflowing
+	// part: a single >8KB read result erased every earlier turn from the
+	// mid-session handoff (issue #25 repro: "Remember ALPHA-42" vanished).
+	const big = toolResult("read", "x".repeat(9_000));
+	const digest = buildContextDigest([user("Remember ALPHA-42"), big, user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /ALPHA-42/, "earlier user turn must survive a huge tool result");
+	assert.match(digest, /chars elided/, "the oversized body must be elided, not shipped whole");
+	assert.ok(!digest.includes("x".repeat(9_000)), "the full oversized body must not ship");
+});
+
+test("oversized toolResult elision keeps head and tail (issue #25)", () => {
+	const body = "HEAD-START-" + "m".repeat(9000) + "-END-GIST";
+	const digest = buildContextDigest([toolResult("bash", body), user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /HEAD-START/, "head slice kept");
+	assert.match(digest, /END-GIST/, "tail slice kept");
+});
+
+test("assistant toolCall blocks render into the digest with capped args (issue #25)", () => {
+	const calls: Message = {
+		role: "assistant",
+		content: [
+			{ type: "text", text: "running the build" } as never,
+			{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "x".repeat(500) } } as never,
+		],
+		api: "anthropic-messages" as never,
+		provider: "openai" as never,
+		model: "m",
+		usage: zeroUsage(),
+		stopReason: "stop",
+		timestamp: 0,
+	};
+	const digest = buildContextDigest([calls, user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /running the build/);
+	assert.match(digest, /\[tool call: bash\(/, "tool call must render with its name");
+	assert.ok(!digest.includes("x".repeat(500)), "args must be capped, not shipped whole");
+});
+
+test("a tool-call-only assistant turn now renders (previously skipped)", () => {
+	const calls: Message = {
+		role: "assistant",
+		content: [{ type: "toolCall", id: "t1", name: "edit_file", arguments: { path: "/a" } } as never],
+		api: "anthropic-messages" as never,
+		provider: "openai" as never,
+		model: "m",
+		usage: zeroUsage(),
+		stopReason: "stop",
+		timestamp: 0,
+	};
+	const digest = buildContextDigest([calls, user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /\[tool call: edit_file\(/, "a call-only turn must still ship");
+});
+
 // Direct contracts for the small exported helpers the gate and the toast
 // handler depend on.
 

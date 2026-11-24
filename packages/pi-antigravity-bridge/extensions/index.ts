@@ -68,7 +68,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, migrateStaleDigestDefault, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, agyUpdateMessage, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -231,6 +231,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let gateActive = false;
 	let managedAcpCleanupRan = false;
 	let legacyConfigCleanupRan = false;
+	let digestMigrationRan = false;
 	let legacyConfigCleanupFailed = false;
 	let legacyEnvAcpWarningShown = false;
 	let legacyFileAcpWarningShown = false;
@@ -866,6 +867,25 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			} catch (err) {
 				legacyConfigCleanupFailed = true;
 				fileLog.log("legacy-acp-config-cleanup", { error: String(err) }, "error");
+			}
+		}
+		// One-time digest-default migration (issue #25): a config saved before
+		// the default flip carries digest:false as a bare default, silently
+		// keeping mid-session context handoffs off. Best-effort like the
+		// cleanup above: a failure must never block session_start.
+		if (!digestMigrationRan) {
+			digestMigrationRan = true;
+			try {
+				const migrated = migrateStaleDigestDefault().migrated;
+				fileLog.log("digest-default-migration", { migrated }, migrated ? "info" : "debug");
+				if (migrated && ctx.hasUI) {
+					ctx.ui.notify(
+						"digest was still off from an older default; enabled it (keeps context visible on model switches). Keep it off with /agy digest off.",
+						"info",
+					);
+				}
+			} catch (err) {
+				fileLog.log("digest-default-migration", { error: String(err) }, "warn");
 			}
 		}
 		if (!legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {

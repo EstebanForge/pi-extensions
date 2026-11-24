@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { configWarningsMessage, loadConfig, saveConfig } from "../src/config.js";
+import { configWarningsMessage, loadConfig, migrateStaleDigestDefault, saveConfig } from "../src/config.js";
 
 function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
@@ -541,5 +541,75 @@ test("config: a fresh install under a symlinked parent dir stays linked", () => 
 		assert.equal(fs.lstatSync(path.join(realDir, "config.json")).isFile(), true, "the file landed inside the real dir");
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("config: stale digest:false migrates once to the ON default (issue #25)", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ digest: false }));
+		let result: { migrated: boolean };
+		withoutAgyEnvs(() => {
+			result = migrateStaleDigestDefault(p);
+		});
+		assert.equal(result!.migrated, true, "the stale default must migrate");
+		const file = JSON.parse(fs.readFileSync(p, "utf8")) as { digest?: boolean; digestMigrated?: boolean };
+		assert.equal(file.digest, true, "digest flips to the shipped default");
+		assert.equal(file.digestMigrated, true, "the marker persists so the flip happens once");
+		assert.equal(loadConfig(p).digest, true);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: the migration marker keeps a deliberate digest off (issue #25)", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ digest: false, digestMigrated: true }));
+		let result: { migrated: boolean };
+		withoutAgyEnvs(() => {
+			result = migrateStaleDigestDefault(p);
+		});
+		assert.equal(result!.migrated, false);
+		const file = JSON.parse(fs.readFileSync(p, "utf8")) as { digest?: boolean };
+		assert.equal(file.digest, false, "an explicit post-migration off must survive");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: AGY_DIGEST env suppresses the migration entirely (issue #25)", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ digest: false }));
+		const prev = process.env.AGY_DIGEST;
+		process.env.AGY_DIGEST = "1";
+		try {
+			assert.equal(migrateStaleDigestDefault(p).migrated, false);
+		} finally {
+			if (prev === undefined) delete process.env.AGY_DIGEST;
+			else process.env.AGY_DIGEST = prev;
+		}
+		const file = JSON.parse(fs.readFileSync(p, "utf8")) as { digest?: boolean };
+		assert.equal(file.digest, false, "env owns the knob; the file stays untouched");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: digest absent or true never triggers the migration (issue #25)", () => {
+	const p = tmpConfig();
+	const p2 = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({}));
+		fs.writeFileSync(p2, JSON.stringify({ digest: true }));
+		withoutAgyEnvs(() => {
+			assert.equal(migrateStaleDigestDefault(p).migrated, false);
+			assert.equal(migrateStaleDigestDefault(p2).migrated, false);
+		});
+		assert.equal(fs.readFileSync(p, "utf8").includes("digestMigrated"), false, "no marker written for clean files");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+		fs.rmSync(path.dirname(p2), { recursive: true, force: true });
 	}
 });

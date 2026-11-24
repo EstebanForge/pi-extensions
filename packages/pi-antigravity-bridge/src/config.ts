@@ -175,6 +175,11 @@ export interface AgyConfig {
 	 *  message, and a conversation opened mid-session starts without prior
 	 *  pi-side context. */
 	digest: boolean;
+	/** Migration marker (issue #25): set once when a stale persisted
+	 *  digest:false from the pre-default-flip era is upgraded to the ON
+	 *  default. Presence keeps later deliberate `/agy digest off` choices
+	 *  from being re-migrated. */
+	digestMigrated?: boolean;
 	/** Prepend pi's composed system prompt (pi tool guidance + the global
 	 *  agent-dir AGENTS.md and ancestor AGENTS.md/CLAUDE.md) to the FIRST
 	 *  prompt of each fresh agy conversation.
@@ -346,6 +351,22 @@ export function removeLegacyAcpBin(configFile: string = configPath()): boolean {
 	delete acp.bin;
 	writeJsonAtomic(configFile, file);
 	return true;
+}
+
+/** One-time handoff for upgraders from the digest-off default era (issue
+ *  #25): pre-flip saves baked digest:false into config.json as a bare
+ *  default, and silently keeping it makes mid-session handoffs lose
+ *  history. Runs at session_start (loadConfig stays side-effect free);
+ *  AGY_DIGEST env wins; the marker key keeps a deliberate post-migration
+ *  `/agy digest off` from being flipped back. Returns whether a stale
+ *  false was rewritten (caller warns once). */
+export function migrateStaleDigestDefault(configFile: string = configPath()): { migrated: boolean } {
+	const file = readConfigFile(configFile);
+	if (process.env.AGY_DIGEST !== undefined) return { migrated: false };
+	if (file.digestMigrated) return { migrated: false };
+	if (file.digest !== false) return { migrated: false };
+	saveConfig({ digest: true, digestMigrated: true }, configFile);
+	return { migrated: true };
 }
 
 /** Load config merged over defaults. Env vars override the file when set. */

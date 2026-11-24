@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- One oversized tool result no longer erases earlier turns from the context digest (#25): tool-result bodies are capped per part (head + tail with an elision marker) before the delta budget is spent, so a single >8KB read/bash result can no longer starve the mid-session handoff.
+- Assistant tool calls now render into the digest (`[tool call: name(args)]`, args capped and redacted) instead of vanishing with their text blocks; a turn carrying only tool calls ships too, where it used to be skipped entirely (#25).
+- A config.json saved before the digest-default flip no longer silently keeps the digest off (#25): `migrateStaleDigestDefault` at session start flips the stale `digest: false` to the shipped ON default once, writes a `digestMigrated` marker so later deliberate `/agy digest off` survives, and respects `AGY_DIGEST`. One-time ambiguity window: an `/agy digest off` chosen between the flip commit and this release migrates to ON once (the toast explains how to keep it off).
+
 ### Changed
 
 - AskAntigravity model param description now names the configured default (gemini-4-hydrogen) and the Gemini 4 lines. Removed the legacy flash/pro examples: callers read them as the house default, hard-coded `model: "flash"`, and skipped the hydrogen default entirely (flash resolves to the deprecated 3.x era).

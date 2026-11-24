@@ -41,6 +41,7 @@ import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { detectQuotaNotice, quotaErrorMessage } from "./quota-notice.js";
+import { redactText } from "./redact.js";
 import { loadConfig } from "./config.js";
 import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-gate.js";
 import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-server.js";
@@ -287,6 +288,39 @@ function stripCompactionWrapping(t: string): string {
 	return t.trim();
 }
 
+/** Per-part body caps so one oversized entry cannot starve the delta budget
+ *  (issue #25: a single >8KB tool result used to erase every earlier turn).
+ *  Head+tail keeps the result's opening and its final summary/error lines. */
+const TOOL_RESULT_HEAD = 800;
+const TOOL_RESULT_TAIL = 300;
+
+function capToolResultBody(t: string): string {
+	if (!t) return "(no text output)";
+	const overflow = t.length - TOOL_RESULT_HEAD - TOOL_RESULT_TAIL;
+	if (overflow <= 0) return t;
+	return `${t.slice(0, TOOL_RESULT_HEAD)}\n[${overflow} chars elided]\n${t.slice(-TOOL_RESULT_TAIL)}`;
+}
+
+const TOOL_CALL_ARGS_CAP = 200;
+
+function renderToolCalls(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	const lines: string[] = [];
+	for (const b of content) {
+		if (typeof b !== "object" || b === null || (b as { type?: string }).type !== "toolCall") continue;
+		const { name, arguments: args } = b as { name?: string; arguments?: unknown };
+		let argsText: string;
+		try {
+			argsText = JSON.stringify(args ?? {});
+		} catch {
+			argsText = "(unserializable args)";
+		}
+		if (argsText.length > TOOL_CALL_ARGS_CAP) argsText = `${argsText.slice(0, TOOL_CALL_ARGS_CAP)}…`;
+		lines.push(`[tool call: ${name ?? "?"}(${redactText(argsText)})]`);
+	}
+	return lines.join("\n");
+}
+
 export interface DigestOptions {
 	/** Provider id whose assistant turns are already in agy's own DB and so
 	 *  must be skipped to avoid double-counting. Default "antigravity". */
@@ -438,7 +472,7 @@ export function buildContextDigest(
 		const m = messages[i];
 		if (m.role === "assistant") {
 			if (opts.bound !== false && m.provider === own) continue; // our own turn: already in agy's DB
-			const t = blocksToText(m.content).trim();
+			const t = [blocksToText(m.content).trim(), renderToolCalls(m.content)].filter(Boolean).join("\n");
 			if (!t) continue;
 			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
 		} else if (m.role === "user") {
@@ -449,7 +483,7 @@ export function buildContextDigest(
 		} else if (m.role === "toolResult") {
 			const t = blocksToText(m.content).trim();
 			deltaParts.push(
-				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${t || "(no text output)"}`,
+				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${capToolResultBody(t)}`,
 			);
 		}
 	}
