@@ -1931,7 +1931,6 @@ async function runTurnDriver(
 			const gateOpen = Boolean(config.systemPrompt) && turn.freshConversation;
 			const sys = gateOpen ? getCurrentSystemPrompt(context.messages) || undefined : undefined;
 			const syncImages = [...images, ...late.flatMap((l) => l.images ?? [])];
-			handoffRuntime?.mode.set(key, "sync");
 			try {
 				// inputFor hard-fails past the outbound frame budget and the
 				// coordinator calls throw on invariants: both must fail the turn
@@ -1981,10 +1980,11 @@ async function runTurnDriver(
 					},
 					signal: options?.signal,
 				});
+				handoffRuntime?.mode.set(key, "sync");
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				deps.log?.("turn-error", { reason: "dispatch-failed", error: msg }, "error");
-				finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
+				finalize(stream, blocks, "error", /outbound frame budget/.test(msg) ? msg : `agy failed to start: ${msg}`);
 				return;
 			}
 		}

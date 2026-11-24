@@ -93,6 +93,10 @@ interface TurnScript {
 	activities?: DriverActivity[];
 	/** When set, the turn resolves as a failed outcome (ERROR, terminal). */
 	failure?: string;
+	/** Fire onSessionBound with the scripted conversation id. */
+	fireBound?: boolean;
+	/** Fire onSessionLoadFailed (ignore its rebuild input) before resolving. */
+	fireLoadFail?: boolean;
 }
 
 function makeFakeDriver(scripts: TurnScript[], requests: DriverTurnRequest[]): StreamDriver {
@@ -108,6 +112,8 @@ function makeFakeDriver(scripts: TurnScript[], requests: DriverTurnRequest[]): S
 			requests.push(opts);
 			const script = scripts[Math.min(idx, scripts.length - 1)]!;
 			idx += 1;
+			if (script.fireBound) opts.onSessionBound?.({ sessionId: script.conversationId, reused: false, fresh: true });
+			if (script.fireLoadFail) opts.onSessionLoadFailed?.({ sessionId: script.conversationId, error: "session/load failed (fake)" });
 			const outcome: TurnOutcome = script.failure
 				? {
 						status: "ERROR",
@@ -383,6 +389,41 @@ test("failure-induced rebuilds never latch the churn gate", async () => {
 			assert.equal(plans.length, 5, "every turn stayed on sync");
 			const lastReq = h.requests[4]!;
 			assert.equal(lastReq.conversationId, null, "the fifth turn still rebuilt fresh over the invalid state");
+		} finally {
+			cleanup(h);
+		}
+	});
+});
+
+test("a load failure re-arms and settles terminal on the fresh conversation", async () => {
+	await withEnv({ AGY_HANDOFF: "sync", AGY_SYSTEM_PROMPT: "on" }, async () => {
+		const h = harness([{ conversationId: "conv-fresh", fireLoadFail: true }]);
+		try {
+			// The hook re-plans as a rebuild; the provider must re-arm the
+			// settle (bound+dispatching) or the settle finds a non-settleable
+			// coordinator and forces a second full rebuild next turn.
+			await runTurn(h, [user("only task", 1)], SYS);
+			const settle = h.logs.find((l) => l.event === "sync-settle");
+			assert.equal((settle?.data as { settled?: string } | undefined)?.settled, "terminal", "the re-armed settle terminalized");
+			const rec = await readRecord(h);
+			assert.equal(rec.conversationId, "conv-fresh", "the fresh conversation was adopted");
+			assert.ok((rec.sync as { checkpoint?: unknown } | undefined)?.checkpoint, "the fresh conversation was checkpointed");
+		} finally {
+			cleanup(h);
+		}
+	});
+});
+
+test("an over-budget history finalizes the turn with a dispatch error", async () => {
+	await withEnv({ AGY_HANDOFF: "sync", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		// A fresh rebuild frames the whole transcript: a single oversized
+		// message must hard-fail the dispatch visibly, not hang the stream.
+		const h = harness([{ conversationId: "conv-x" }]);
+		try {
+			// runTurn resolving (instead of hanging) is the no-hang proof.
+			await runTurn(h, [user("y".repeat(3 * 1024 * 1024 + 4000), 1)], "");
+			assert.ok(h.logs.some((l) => l.event === "turn-error" && (l.data as { reason?: string })?.reason === "dispatch-failed"), "the dispatch failure logged");
+			assert.ok(!h.requests.length, "the oversized frame never reached the driver");
 		} finally {
 			cleanup(h);
 		}
