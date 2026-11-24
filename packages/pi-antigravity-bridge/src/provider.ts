@@ -1913,11 +1913,12 @@ async function runTurnDriver(
 				{ key, kind: turn.plan.kind, reason: turn.plan.reason, fresh: turn.freshConversation, history: turn.plan.history.length },
 				"info",
 			);
-			if (existing && turn.plan.kind === "rebuild") {
-				// A warm session that keeps failing to match its checkpoint means
-				// something rewrites the transcript every turn (context hooks):
-				// full rebuilds each turn are quadratic billing. Three in a row
-				// latches the session back onto the digest flow.
+			if (existing && turn.plan.kind === "rebuild" && turn.plan.reason === "changed-prefix") {
+				// Count ONLY transcript churn (the checkpoint exists but the
+				// prefix moved: per-turn context-hook rewrites). Failure-induced
+				// rebuilds (invalidReason, unsettled submissions, first-enable
+				// missing checkpoints) are transient and must never pin the
+				// session to digest.
 				const streak = (handoffRuntime?.rebuildStreak.get(key) ?? 0) + 1;
 				handoffRuntime?.rebuildStreak.set(key, streak);
 				if (streak >= 3 && !existing.sync?.digestFallback) {
@@ -1930,14 +1931,17 @@ async function runTurnDriver(
 			const gateOpen = Boolean(config.systemPrompt) && turn.freshConversation;
 			const sys = gateOpen ? getCurrentSystemPrompt(context.messages) || undefined : undefined;
 			const syncImages = [...images, ...late.flatMap((l) => l.images ?? [])];
-			const input = turn.inputFor({
-				prompt: buildFullPrompt(sys, "", userPrompt ?? "") + stageImageNote(syncImages),
-				images: syncImages,
-			});
-			turn.bound(key);
-			turn.dispatching();
 			handoffRuntime?.mode.set(key, "sync");
 			try {
+				// inputFor hard-fails past the outbound frame budget and the
+				// coordinator calls throw on invariants: both must fail the turn
+				// visibly, not surface as an unhandled rejection.
+				const input = turn.inputFor({
+					prompt: buildFullPrompt(sys, "", userPrompt ?? "") + stageImageNote(syncImages),
+					images: syncImages,
+				});
+				turn.bound(key);
+				turn.dispatching();
 				handle = await deps.driver.run({
 					cwd,
 					model: agyModel,
@@ -1967,13 +1971,19 @@ async function runTurnDriver(
 								stageImageNote(syncImages),
 							images: syncImages,
 						});
+						// Re-arm the settle: loadFailed invalidated and re-planned
+						// (phase syncing), and the swap prompt below is the turn's
+						// real dispatch — without this the settle finds a
+						// non-settleable coordinator and forces a second rebuild.
+						turn.bound(key);
+						turn.dispatching();
 						return { prompt: fresh.prompt, contextBlock: fresh.contextBlock, images: fresh.images };
 					},
 					signal: options?.signal,
 				});
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
+				deps.log?.("turn-error", { reason: "dispatch-failed", error: msg }, "error");
 				finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
 				return;
 			}
@@ -2155,7 +2165,7 @@ async function runTurnDriver(
 						: undefined,
 					signal: options?.signal,
 				});
-				handoffRuntime?.mode.set(key, "digest");
+				if (!ephemeral) handoffRuntime?.mode.set(key, "digest");
 				digestDispatched = true;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -2353,45 +2363,53 @@ async function runTurnDriver(
 		syncTurn !== undefined ||
 		(isContinuation && !digestDispatched && !ephemeral && deps.handoffRuntime?.mode.get(key) === "sync");
 	if (syncContract && !ephemeral) {
-		const settleSync =
-			syncTurn ??
-			(() => {
-				const recon = new AcpHistorySync(context.messages, existing, {
-					continuation: isContinuation,
-					isBacklogShape: isBacklogUserShape,
-				});
-				recon.bound(key);
-				recon.dispatching();
-				return recon;
-			})();
-		const result = settleSync.finish(
-			{
-				ok: outcome.status === "OK",
-				conversationId: outcome.conversationId ?? null,
-				aborted: outcome.aborted,
-				promptAttempted: outcome.promptAttempted,
-				promptTerminal: outcome.promptTerminal,
-			},
-			blocks.partial,
-			context.messages,
-			existing?.conversationId,
-		);
-		deps.log?.(
-			"sync-settle",
-			{
-				key,
-				settled: result.settled,
-				...("reason" in result ? { reason: result.reason } : {}),
-				conversation: outcome.conversationId,
-			},
-			"info",
-		);
-		const record = settleSync.record();
-		if (record.conversationId && !rotationGuardArmed()) {
-			store.set(key, { ...record, conversationId: record.conversationId });
-			// A rebuild shipped the compaction summary as history; the one-shot
-			// latch has no second consumer.
-			if (settleSync.freshConversation) deps.pendingCompactionHandoff?.delete(key);
+		try {
+			const settleSync =
+				syncTurn ??
+				(() => {
+					const recon = new AcpHistorySync(context.messages, existing, {
+						continuation: isContinuation,
+						isBacklogShape: isBacklogUserShape,
+					});
+					recon.bound(key);
+					recon.dispatching();
+					return recon;
+				})();
+			const result = settleSync.finish(
+				{
+					ok: outcome.status === "OK",
+					conversationId: outcome.conversationId ?? null,
+					aborted: outcome.aborted,
+					promptAttempted: outcome.promptAttempted,
+					promptTerminal: outcome.promptTerminal,
+				},
+				blocks.partial,
+				context.messages,
+				existing?.conversationId,
+			);
+			deps.log?.(
+				"sync-settle",
+				{
+					key,
+					settled: result.settled,
+					...("reason" in result ? { reason: result.reason } : {}),
+					conversation: outcome.conversationId,
+				},
+				"info",
+			);
+			const record = settleSync.record();
+			if (record.conversationId && !rotationGuardArmed()) {
+				store.set(key, { ...record, conversationId: record.conversationId });
+				// A rebuild shipped the compaction summary as history; the one-shot
+				// latch has no second consumer.
+				if (settleSync.freshConversation) deps.pendingCompactionHandoff?.delete(key);
+			}
+		} catch (err) {
+			// A settle invariant failure must not surface as an unhandled
+			// rejection (the caller is void): dropping the record forces a
+			// named rebuild next turn, the safe direction.
+			deps.log?.("sync-settle-failed", { key, error: err instanceof Error ? err.message : String(err) }, "error");
+			store.delete(key);
 		}
 	} else if (!ephemeral && outcome.conversationId) {
 		// A different id than the stored one means the driver recreated the
@@ -2415,6 +2433,10 @@ async function runTurnDriver(
 					lastMessageCount: nextCount,
 					digestBoundary: nextBoundary,
 					digestSummaryId: settleSummaryId,
+					// The churn latch must survive digest turns (store.set
+					// replaces the record), or the gate re-opens next turn and
+					// the session alternates rebuild/digest forever.
+					...(existing?.sync?.digestFallback ? { sync: existing.sync } : {}),
 				});
 				deps.pendingCompactionHandoff?.delete(key);
 				if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);

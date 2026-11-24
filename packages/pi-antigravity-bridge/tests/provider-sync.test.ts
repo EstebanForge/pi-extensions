@@ -91,6 +91,8 @@ interface TurnScript {
 	conversationId: string;
 	response?: string;
 	activities?: DriverActivity[];
+	/** When set, the turn resolves as a failed outcome (ERROR, terminal). */
+	failure?: string;
 }
 
 function makeFakeDriver(scripts: TurnScript[], requests: DriverTurnRequest[]): StreamDriver {
@@ -106,17 +108,30 @@ function makeFakeDriver(scripts: TurnScript[], requests: DriverTurnRequest[]): S
 			requests.push(opts);
 			const script = scripts[Math.min(idx, scripts.length - 1)]!;
 			idx += 1;
-			const outcome: TurnOutcome = {
-				status: "OK",
-				response: script.response ?? "ok",
-				finished: true,
-				aborted: false,
-				conversationId: script.conversationId,
-				modelOutputSeen: true,
-				sawResult: true,
-				promptAttempted: true,
-				promptTerminal: true,
-			};
+			const outcome: TurnOutcome = script.failure
+				? {
+						status: "ERROR",
+						response: "",
+						finished: true,
+						aborted: false,
+						conversationId: script.conversationId,
+						modelOutputSeen: false,
+						sawResult: true,
+						promptAttempted: true,
+						promptTerminal: true,
+						error: script.failure,
+					}
+				: {
+						status: "OK",
+						response: script.response ?? "ok",
+						finished: true,
+						aborted: false,
+						conversationId: script.conversationId,
+						modelOutputSeen: true,
+						sawResult: true,
+						promptAttempted: true,
+						promptTerminal: true,
+					};
 			const activities = [...(script.activities ?? [])];
 			return {
 				id: `fake-turn-${idx}`,
@@ -306,7 +321,7 @@ test("three consecutive warm-session rebuilds latch digestFallback", async () =>
 			{ conversationId: "conv-1" },
 			{ conversationId: "conv-2" },
 			{ conversationId: "conv-3" },
-			{ conversationId: "conv-4" },
+			{ conversationId: "conv-3" },
 		]);
 		try {
 			// Seed a warm record whose checkpoint matches NOTHING (simulating
@@ -330,9 +345,44 @@ test("three consecutive warm-session rebuilds latch digestFallback", async () =>
 			const syncState = latched.sync as { digestFallback?: boolean } | undefined;
 			assert.equal(syncState?.digestFallback, true, "the churn gate latched after three rebuilds");
 			assert.ok(!h.logs.some((l) => l.event === "digest"), "the first three turns stayed on sync");
-			// The next turn falls back to digest.
+			// The next turn falls back to digest, reusing the stored binding
+			// (a mismatched id would hit the binding-diff delete instead).
 			await runTurn(h, [user("rewritten 4", 1), ownTurn("x", 2), user("after", 3)], SYS);
 			assert.ok(h.logs.some((l) => l.event === "digest"), "the fourth turn ran the digest flow");
+			// The latch must survive the digest settle, or the gate re-opens on
+			// the following turn and the session alternates rebuild/digest.
+			const afterDigest = await readRecord(h);
+			const latch = (afterDigest.sync as { digestFallback?: boolean } | undefined)?.digestFallback;
+			assert.equal(latch, true, "the latch survives the digest turn");
+		} finally {
+			cleanup(h);
+		}
+	});
+});
+
+test("failure-induced rebuilds never latch the churn gate", async () => {
+	await withEnv({ AGY_HANDOFF: "sync", AGY_SYSTEM_PROMPT: "on" }, async () => {
+		const h = harness([
+			{ conversationId: "conv-1" },
+			{ conversationId: "conv-e", failure: "boom" },
+			{ conversationId: "conv-e", failure: "boom" },
+			{ conversationId: "conv-e", failure: "boom" },
+			{ conversationId: "conv-5" },
+		]);
+		try {
+			// Turn 1 confirms a checkpoint; turn 2 continues warm but fails
+			// (unconfirmed-turn invalidation); turns 3-4 rebuild over the
+			// invalidReason. Those are failure-induced rebuilds: they must
+			// never count toward the churn latch, or three transient errors
+			// would pin the session to digest for its lifetime.
+			for (let i = 1; i <= 5; i++) {
+				await runTurn(h, [user("stable task", 1)], SYS);
+			}
+			assert.ok(!h.logs.some((l) => l.event === "sync-churn-fallback"), "no churn latch from failures");
+			const plans = h.logs.filter((l) => l.event === "sync-plan");
+			assert.equal(plans.length, 5, "every turn stayed on sync");
+			const lastReq = h.requests[4]!;
+			assert.equal(lastReq.conversationId, null, "the fifth turn still rebuilt fresh over the invalid state");
 		} finally {
 			cleanup(h);
 		}

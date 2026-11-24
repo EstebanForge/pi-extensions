@@ -295,3 +295,29 @@ describe("AcpHistorySync finish classification (round-7 R4)", () => {
 		expect(result).toMatchObject({ settled: "invalidated", reason: "unconfirmed-turn" });
 	});
 });
+
+describe("AcpHistorySync load-failure re-arm", () => {
+	it("settleable again after loadFailed re-plans (the provider hook sequence)", () => {
+		// The provider's onSessionLoadFailed must run bound+dispatching after
+		// loadFailed: loadFailed leaves the phase syncing, and a settle
+		// against a non-settleable coordinator forces a second rebuild.
+		const request = [user("a", 1), assistant("r", 2), user("b", 3)];
+		const sync = new AcpHistorySync(request, undefined);
+		sync.bound("t1");
+		sync.dispatching();
+		const fresh = sync.loadFailed({ prompt: "retry" });
+		expect(fresh.prompt).toBe("retry");
+		sync.bound("t1");
+		sync.dispatching();
+		const result = sync.finish(
+			{ ok: true, conversationId: "conv-fresh", promptAttempted: true, promptTerminal: true },
+			assistant("reply", 4),
+			request,
+			"conv-old",
+		);
+		expect(result).toMatchObject({ settled: "terminal" });
+		const snap = sync.record();
+		expect(snap.conversationId).toBe("conv-fresh");
+		expect(snap.sync?.checkpoint).toBeDefined();
+	});
+});
