@@ -65,7 +65,7 @@ Semantic entries: system messages excluded; adjacent text merged; images hashed 
 
 Plan decision order (port verbatim): `invalidReason` → rebuild; continuation + `inFlight` → absorb-fail `changed-inflight-prefix` / new user `new-user-during-turn` / else `resume`; `inFlight` without continuation → `unsettled-submission`; `!checkpoint` → `changed-prefix` | `missing-checkpoint`; else `continue`. Rebuild bumps `epoch`; every invalidation carries its named reason.
 
-Coordinator FSM `idle → syncing → running → idle` with `draining` from syncing/running: `prepare`, `bound` (resume requires same turnId; rebuild bumps epoch), `dispatching`, `park` (target + expectedAssistantHash, submission stays prepared), `terminal` (checkpoint = full projection; sets expectedAssistantHash for the NEXT turn's reconcile), `invalidate(reason)` (keeps `inFlight` — the input boundary must survive invalidation). Two-step settle: a checkpoint absorbs an assistant only when the next projection's hash matches `expectedAssistantHash`.
+Coordinator FSM `idle → syncing → running → idle` with `draining` from syncing/running: `prepare`, `bound` (resume requires same turnId; rebuild bumps epoch), `dispatching`, `park` (target + expectedAssistantHash, submission stays prepared), `terminal` (checkpoint = full projection; sets expectedAssistantHash for the NEXT turn's reconcile), `invalidate(reason)` (keeps `inFlight` — the input boundary must survive invalidation). Two-step settle: a checkpoint absorbs an assistant only when the next projection's hash matches `expectedAssistantHash`; reconcile is lenient for non-assistant boundary entries — a foreign turn at the boundary keeps the base and rides the delta as history (only a prefix mismatch invalidates).
 
 ### acp/history-sync.ts — per-turn orchestrator, minus overlay/recall/profile
 
@@ -110,7 +110,17 @@ Live: extend `scripts/smoke-handoff.mjs` with a sync-mode scenario (needle acros
 - Two coexisting handoff contracts on one record: the persist contract makes both directions fail safe (digest re-offers; sync rebuilds); settle bypass is branch-isolated.
 - Echo protocol subtlety: outcome provenance pinned by driver tests; abort-first ordering explicit.
 - Hook ecosystems may churn rebuilds: churn gate caps it per session.
-- Outbound frame acceptance above 32 MiB unproven: gated probe before ship; hard-fail message tells the user to compact.
+- Outbound frame budget is 3 MiB (lossless): the transport accepts far larger frames, but the engine silently truncates the resource near 3.82 MiB (probe `scripts/probe-acp-frame.mjs`), so frames in that gap would checkpoint content the engine never read. The refusal is a typed error (`OutboundFrameBudgetError`) and names both remedies.
+
+## Implementation deviations from rev 2 (found while wiring)
+
+1. Legacy-path named invalidation dropped: projection matching self-handles every legacy path (late redelivery grows the prefix; retry-dropped resume mismatches into a changed-prefix rebuild; compaction rotation deletes the record). Only mode flips need the park-time handoff latch.
+2. Steering needs no recycle dance: the continuation re-attach via `reentry()` is unconditional, the live engine turn finishes and settles, and the queued steering message ships on the next fresh pass as current input.
+3. `park()` is deliberately unwired in the provider: an abandoned park self-heals (keep-base continue re-ships the delta once); recovery from a dead driver is a fresh-pass rebuild.
+4. The churn gate counts ONLY `changed-prefix` rebuilds: failure-induced rebuilds (invalid reasons, unsettled submissions) and one-time `missing-checkpoint` never latch, so transient errors cannot pin a session to digest.
+5. Quota early-return skips the sync settle: the write-ahead record from `onSessionBound` stays, the next turn's rebuild is uncounted, costing one rebuild per quota retry.
+6. The settle block and the dispatch assembly (`inputFor`/`bound`/`dispatching`) are guarded: a settle invariant failure logs `sync-settle-failed` and drops the record (forces a named rebuild); the void-caller `.catch` remains a known-deferred tail-surface guard.
+7. A session/load failure re-plans as a rebuild AND re-arms the settle (`bound`+`dispatching` after `loadFailed`) — without it every load failure paid a second full rebuild.
 
 ## Non-goals (v1)
 

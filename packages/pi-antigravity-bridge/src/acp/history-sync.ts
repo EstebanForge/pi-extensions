@@ -155,7 +155,9 @@ export class AcpHistorySync {
 		}
 		const bytes = Buffer.byteLength(JSON.stringify(input)) + FRAME_MARGIN_BYTES;
 		if (bytes > OUTBOUND_FRAME_BUDGET_BYTES) {
-			throw new OutboundFrameBudgetError(`history-sync input exceeds the outbound frame budget (${bytes} bytes); compact the session and retry`);
+			throw new OutboundFrameBudgetError(
+				`history-sync input exceeds the outbound frame budget (${bytes} bytes); compact the session to shrink history, or shorten the prompt, then retry`,
+			);
 		}
 		return input;
 	}
