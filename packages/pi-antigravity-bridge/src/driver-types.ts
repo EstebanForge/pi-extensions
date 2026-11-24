@@ -54,14 +54,18 @@ export interface DriverTurnRequest extends DriverProfile {
 	 *  prompt RPC (write-ahead dispatch signal). Both fail the turn when they
 	 *  throw: a silent hook failure would checkpoint state the transport
 	 *  never confirmed. */
-	onSessionBound?: (info: { sessionId: string; reused: boolean; fresh: boolean }) => void;
-	onBeforePrompt?: (info: { sessionId: string }) => void;
+	onSessionBound?: (info: { sessionId: string; reused: boolean; fresh: boolean }) => void | Promise<void>;
+	onBeforePrompt?: (info: { sessionId: string }) => void | Promise<void>;
 	/** Fired when session/load fails, BEFORE the fresh-session creation, so
 	 *  the provider can invalidate and re-prepare without an orphaned
 	 *  session. Returning a rebuild input swaps it in as the fresh
-	 *  conversation's prompt/contextBlock (replacing the fix-3 fallback
-	 *  swap, which digest mode uses instead). */
-	onSessionLoadFailed?: (info: { sessionId: string; error: unknown }) => { prompt: string; contextBlock?: { uri: string; text: string } } | void;
+	 *  conversation's prompt/contextBlock/images (replacing the fix-3
+	 *  fallback swap, which digest mode uses instead); images must carry the
+	 *  full rebuild set, since a fresh conversation holds no history. */
+	onSessionLoadFailed?: (info: {
+		sessionId: string;
+		error: unknown;
+	}) => { prompt: string; contextBlock?: { uri: string; text: string }; images?: Array<{ data: string; mimeType: string }> } | void;
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). 0 disables the cap. */

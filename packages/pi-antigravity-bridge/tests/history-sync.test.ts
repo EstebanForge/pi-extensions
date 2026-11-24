@@ -326,3 +326,24 @@ describe("SessionSyncCoordinator", () => {
 		expect(narrowSessionSync(coordinator.snapshot)?.digestFallback).toBe(true);
 	});
 });
+
+it("keeps the base when the expected assistant never echoes (lenient reconcile pin)", () => {
+	const projection = projectHistory([user("a", 1), assistant("r", 2), user("other", 3), user("retry", 4)]);
+	const cp = historyCheckpoint(projection, 2);
+	const state: SessionSyncState = {
+		version: 1,
+		epoch: 0,
+		checkpoint: cp,
+		expectedAssistantHash: semanticMessageHash(assistant("dropped", 2)),
+	};
+	const plan = planHistorySync(projection, state);
+	// a foreign turn sits at the boundary instead of the echoed assistant:
+	// the checkpoint prefix still matches, so the base holds and the foreign
+	// exchange rides the delta as current input (issue-quota retry shape)
+	expect(plan.kind).toBe("continue");
+	expect(plan.reason).toBe("matching-prefix");
+	// the checkpoint already covers [0,1] (no delta owed); the foreign turn
+	// plus the retry user form the current input
+	expect(plan.history.map((e) => e.sourceIndex)).toEqual([]);
+	expect(plan.currentUser.map((e) => e.sourceIndex)).toEqual([2, 3]);
+});

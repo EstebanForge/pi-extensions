@@ -338,7 +338,7 @@ export class AcpDriver implements TurnDriver {
 				// Sync hook BEFORE the fresh creation: the provider invalidates
 				// and re-prepares without an orphaned session (a hook failure
 				// after newSession would strand the created conversation).
-				let rebuild: { prompt: string; contextBlock?: { uri: string; text: string } } | undefined;
+				let rebuild: { prompt: string; contextBlock?: { uri: string; text: string }; images?: Array<{ data: string; mimeType: string }> } | undefined;
 				try {
 					rebuild = request.onSessionLoadFailed?.({ sessionId: request.conversationId, error: err }) || undefined;
 				} catch (hookErr) {
@@ -353,13 +353,24 @@ export class AcpDriver implements TurnDriver {
 					this.#failTurn(turn, `ACP session failed: ${describe(err2)}`);
 					return;
 				}
-				if (rebuild ?? request.fallback) {
-					const variant = (rebuild ?? request.fallback)!;
-					// The recreated conversation holds nothing: swap in the as-if-
-					// fresh variant (digest fallback, or the sync rebuild input)
-					// instead of shipping the bound-mode prompt blind.
-					this.#log("session-load-fallback-applied", { sessionId: request.conversationId, source: rebuild ? "sync-rebuild" : "digest-fallback" });
-					request = { ...request, prompt: variant.prompt, contextBlock: variant.contextBlock };
+				if (rebuild) {
+					// The recreated conversation holds nothing: swap in the sync
+					// rebuild input — a fresh conversation needs the full history
+					// block and the complete image set.
+					this.#log("session-load-fallback-applied", { sessionId: request.conversationId, source: "sync-rebuild" });
+					request = {
+						...request,
+						prompt: rebuild.prompt,
+						contextBlock: rebuild.contextBlock,
+						...(rebuild.images ? { images: rebuild.images } : {}),
+					};
+					turn.request = request;
+				} else if (request.fallback) {
+					// Digest mode: swap in the as-if-fresh variant the provider
+					// prebuilt (system prompt + full bound:false digest) instead
+					// of shipping the bound-mode prompt blind.
+					this.#log("session-load-fallback-applied", { sessionId: request.conversationId, source: "digest-fallback" });
+					request = { ...request, prompt: request.fallback.prompt, contextBlock: request.fallback.contextBlock };
 					turn.request = request;
 				}
 			} else {
@@ -371,9 +382,11 @@ export class AcpDriver implements TurnDriver {
 
 		// Binding hook before config apply: the provider persists the binding
 		// before model config/prompt, so a later failure cannot leave state
-		// that claims a session the transport never confirmed.
+		// that claims a session the transport never confirmed. fresh compares
+		// ids, not request.conversationId: a load-failure fresh session must
+		// report fresh despite the stale request id.
 		try {
-			request.onSessionBound?.({ sessionId: turn.sessionId, reused, fresh: !request.conversationId });
+			await request.onSessionBound?.({ sessionId: turn.sessionId, reused, fresh: turn.sessionId !== request.conversationId });
 		} catch (err) {
 			this.#failTurn(turn, `ACP session-bound hook failed: ${describe(err)}`);
 			return;
@@ -400,13 +413,15 @@ export class AcpDriver implements TurnDriver {
 		// Prompt. Updates stream through the connection's onUpdate callback.
 		try {
 			// Nothing to cancel before the prompt RPC exists; see promptStarted.
-			turn.promptStarted = true;
+			// attempted stamps only after the write-ahead hook passed: a hook
+			// failure means the prompt never went out (unconfirmed, not unknown).
 			try {
-				request.onBeforePrompt?.({ sessionId: turn.sessionId });
+				await request.onBeforePrompt?.({ sessionId: turn.sessionId });
 			} catch (err) {
 				this.#failTurn(turn, `ACP before-prompt hook failed: ${describe(err)}`);
 				return;
 			}
+			turn.promptStarted = true;
 			const result = await this.#sessionStep(
 				conn,
 				turn,

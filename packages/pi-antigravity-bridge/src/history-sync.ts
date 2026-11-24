@@ -275,6 +275,13 @@ export class SessionSyncCoordinator {
 		this.#phase = "idle";
 	}
 
+	/** True while a turn is bound and unsettled: the only phase terminal()
+	 *  accepts. Callers outside the driver flow (orchestrator finish) must
+	 *  check this before settling, or the throw becomes a provider crash. */
+	get settleable(): boolean {
+		return this.#phase === "running";
+	}
+
 	draining(): void {
 		if (this.#phase !== "running" && this.#phase !== "syncing") throw new Error("No active turn to cancel");
 		this.#phase = "draining";

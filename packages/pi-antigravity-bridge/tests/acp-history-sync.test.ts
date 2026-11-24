@@ -2,7 +2,9 @@
 //
 // Pins the plan preparation over a real session record, the input assembly
 // (image dedupe, framing, byte guard) and the finish() outcome ordering:
-// abort wins over terminal, delivery-unknown over unconfirmed-turn, binding
+// rebuild-over-record adopts the fresh conversation id, abort wins over
+// terminal, a confirmed-but-unbound settle invalidates as unsettled-terminal,
+// delivery-unknown over unconfirmed-turn, and a warm-session binding
 // mismatch invalidates with a named reason.
 // Run: npm test
 
@@ -176,10 +178,23 @@ describe("AcpHistorySync finish ordering", () => {
 		expect(outcome).toMatchObject({ settled: "invalidated", reason: "unconfirmed-turn" });
 	});
 
-	it("invalidates unexpected-session-change on a binding mismatch", () => {
-		const sync = new AcpHistorySync(request, undefined);
+	it("invalidates unexpected-session-change on a binding mismatch over a warm session", () => {
+		const messages = [user("a", 1), assistant("r", 2), user("b", 3)];
+		const projection = projectHistory(messages);
+		const existing: AgySession = {
+			conversationId: "conv-1",
+			lastStepIdx: -1,
+			lastMessageCount: 0,
+			sync: { version: 1, epoch: 0, checkpoint: historyCheckpoint(projection, 2) },
+		};
+		const sync = new AcpHistorySync(messages, existing);
 		sync.bound("t1");
-		const outcome = sync.finish({ ok: true, conversationId: "conv-other", promptAttempted: true, promptTerminal: true, aborted: false }, assistant("r", 2), request, "conv-1");
+		const outcome = sync.finish(
+			{ ok: true, conversationId: "conv-other", promptAttempted: true, promptTerminal: true, aborted: false },
+			assistant("r2", 4),
+			[...messages, assistant("r2", 4)],
+			"conv-1",
+		);
 		expect(outcome).toMatchObject({ settled: "invalidated", reason: "unexpected-session-change" });
 	});
 
@@ -189,5 +204,88 @@ describe("AcpHistorySync finish ordering", () => {
 		const outcome = sync.finish({ ok: true, conversationId: "conv-new", promptAttempted: true, promptTerminal: true, aborted: false }, assistant("r", 2), request);
 		expect(outcome).toMatchObject({ settled: "terminal" });
 		expect(sync.record().conversationId).toBe("conv-new");
+	});
+});
+
+describe("AcpHistorySync rebuild-over-record settling (round-7 B1)", () => {
+	it("adopts the fresh conversation id instead of invalidating", () => {
+		const existing: AgySession = {
+			conversationId: "conv-stale",
+			lastStepIdx: -1,
+			lastMessageCount: 0,
+		};
+		const sync = new AcpHistorySync([user("a", 1), assistant("r", 2), user("again", 3)], existing);
+		expect(sync.plan.kind).toBe("rebuild");
+		expect(sync.boundConversationId).toBeNull();
+		sync.bound("t1");
+		sync.dispatching();
+		const result = sync.finish({ ok: true, promptTerminal: true, conversationId: "conv-new" }, assistant("r2", 4), [
+			user("a", 1),
+			assistant("r", 2),
+			user("again", 3),
+			assistant("r2", 4),
+		]);
+		expect(result).toMatchObject({ settled: "terminal" });
+		expect(sync.record().conversationId).toBe("conv-new");
+	});
+
+	it("write-ahead adoption via adoptBinding lands in the persisted record", () => {
+		const sync = new AcpHistorySync([user("hello", 1)], undefined);
+		sync.adoptBinding("conv-live");
+		expect(sync.record().conversationId).toBe("conv-live");
+	});
+
+	it("loadFailed invalidates, re-plans as rebuild, and returns the complete input", () => {
+		const projection = projectHistory([user("a", 1), assistant("r", 2), user("b", 3)]);
+		const existing: AgySession = {
+			conversationId: "conv-1",
+			lastStepIdx: -1,
+			lastMessageCount: 0,
+			sync: { version: 1, epoch: 0, checkpoint: historyCheckpoint(projection, 2) },
+		};
+		const messages = [user("a", 1), assistant("r", 2), user("b", 3)];
+		const sync = new AcpHistorySync(messages, existing);
+		expect(sync.plan.kind).toBe("continue");
+		const input = sync.loadFailed({ prompt: "PROMPT", images: [{ data: "p1", mimeType: "image/png" }] });
+		expect(input.prompt).toBe("PROMPT");
+		expect(input.images).toEqual([{ data: "p1", mimeType: "image/png" }]);
+		expect(input.contextBlock?.uri).toBe("urn:pi-bridge:history:v1");
+		expect(sync.plan.kind).toBe("rebuild");
+		expect(sync.boundConversationId).toBeNull();
+		// the recreated conversation re-binds and dispatches like any fresh turn
+		sync.bound("t2");
+		sync.dispatching();
+		// the outcome of the recreated conversation is adopted, not a mismatch
+		const result = sync.finish(
+			{ ok: true, promptTerminal: true, conversationId: "conv-fresh" },
+			assistant("r2", 5),
+			[...messages, assistant("r2", 5)],
+		);
+		expect(result).toMatchObject({ settled: "terminal" });
+		expect(sync.record().conversationId).toBe("conv-fresh");
+	});
+});
+
+describe("AcpHistorySync finish classification (round-7 R4)", () => {
+	it("invalidates unsettled-terminal when a confirmed turn settles without a binding", () => {
+		const sync = new AcpHistorySync([user("hello", 1), assistant("r", 2)], undefined);
+		const result = sync.finish(
+			{ ok: true, promptTerminal: true, promptAttempted: true, conversationId: "conv-x" },
+			assistant("r", 2),
+			[user("hello", 1), assistant("r", 2)],
+		);
+		expect(result).toMatchObject({ settled: "invalidated", reason: "unsettled-terminal" });
+	});
+
+	it("classifies a terminal-but-failed outcome as unconfirmed-turn, not delivery-unknown", () => {
+		const sync = new AcpHistorySync([user("hello", 1)], undefined);
+		sync.bound("t1");
+		sync.dispatching();
+		const result = sync.finish(
+			{ ok: false, promptTerminal: true, promptAttempted: true, conversationId: "conv-1" },
+			assistant("r", 2),
+			[user("hello", 1), assistant("r", 2)],
+		);
+		expect(result).toMatchObject({ settled: "invalidated", reason: "unconfirmed-turn" });
 	});
 });

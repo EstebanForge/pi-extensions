@@ -1365,4 +1365,74 @@ describe("history-sync driver surface", () => {
 		const methods = sentRequests(run._logPath).map((r) => r.method);
 		assert.ok(!methods.includes("session/prompt"));
 	});
+
+	test("session-bound reports fresh true after a load failure creates a new session", async () => {
+		const seen: Array<{ sessionId: string; reused: boolean; fresh: boolean }> = [];
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "hi",
+			onSessionBound: (info) => {
+				seen.push(info);
+			},
+		});
+		await run.handle.outcome;
+		assert.deepEqual(seen, [{ sessionId: SESSION_ID, reused: false, fresh: true }]);
+	});
+
+	test("the sync rebuild swap carries its images", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			onSessionLoadFailed: () => ({
+				prompt: "REBUILD-PROMPT",
+				images: [{ data: "PIXEL-A", mimeType: "image/png" }],
+			}),
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const image = blocks.find((b) => b.type === "image") as { data: string } | undefined;
+		assert.equal(image?.data, "PIXEL-A", "the rebuild input replaces the request images");
+	});
+
+	test("a returned rebuild wins over request.fallback", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			fallback: { prompt: "FRESH-PROMPT" },
+			onSessionLoadFailed: () => ({ prompt: "REBUILD-PROMPT" }),
+		});
+		await run.handle.outcome;
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "REBUILD-PROMPT");
+	});
+
+	test("a void-returning load-failed hook keeps the digest fallback path", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			fallback: { prompt: "FRESH-PROMPT" },
+			onSessionLoadFailed: () => {},
+		});
+		await run.handle.outcome;
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "FRESH-PROMPT");
+	});
+
+	test("abort provenance: attempted true, terminal false", async () => {
+		const controller = new AbortController();
+		const started = runDriver("cancel", { prompt: "count", signal: controller.signal });
+		await new Promise((r) => setTimeout(r, 400));
+		controller.abort();
+		const run = await started;
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.aborted, true);
+		assert.equal(outcome.promptAttempted, true);
+		run.cleanup();
+	}, 10_000);
 });

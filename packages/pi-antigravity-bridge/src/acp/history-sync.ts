@@ -46,10 +46,13 @@ export class AcpHistorySync {
 
 	constructor(messages: readonly Message[], existing?: AgySession | null, options: AcpHistorySyncOptions = {}) {
 		this.#messages = [...messages];
-		this.#conversationId = existing?.conversationId ?? null;
 		this.#options = options;
 		this.#coordinator = new SessionSyncCoordinator(existing?.sync);
 		this.#plan = this.#coordinator.prepare(this.#projection(), options);
+		// A rebuild deliberately starts a fresh conversation: the tracked id
+		// must be null so the outcome id is adopted instead of classified as a
+		// binding change, and a mid-turn crash cannot resurrect the stale id.
+		this.#conversationId = this.#plan.kind === "rebuild" ? null : (existing?.conversationId ?? null);
 	}
 
 	#projection(): HistoryProjection {
@@ -82,6 +85,25 @@ export class AcpHistorySync {
 
 	bound(turnId: string): void {
 		this.#coordinator.bound(turnId);
+	}
+
+	/** Write-ahead adoption from the driver's onSessionBound hook: the fresh
+	 *  conversation id is known before the prompt, so a mid-turn crash still
+	 *  persists the right binding. No-op once tracked. */
+	adoptBinding(sessionId: string): void {
+		if (!this.#conversationId) this.#conversationId = sessionId;
+	}
+
+	/** Session/load failed: invalidate, re-plan as a rebuild over the same
+	 *  transcript, unbind, and return the complete fresh-conversation input
+	 *  (system-prompt-bearing prompt plus full history block and images).
+	 *  The recreated conversation is adopted by the next finish, not treated
+	 *  as a binding change. */
+	loadFailed(request: { prompt: string; images?: Array<{ data: string; mimeType: string }> }): SyncInput {
+		this.#coordinator.invalidate("session-load-failed");
+		this.#conversationId = null;
+		this.#plan = this.#coordinator.prepare(this.#projection(), { ...this.#options, continuation: false });
+		return this.inputFor(request);
 	}
 
 	dispatching(): void {
@@ -134,21 +156,33 @@ export class AcpHistorySync {
 		priorConversationId?: string | null,
 	): SyncFinishResult {
 		const id = outcome.conversationId ?? null;
-		const known = priorConversationId ?? this.#conversationId;
+		// A rebuild EXPECTS a new conversation: only compare against a prior
+		// binding when the plan continued a warm session.
+		const known = this.freshConversation ? null : (priorConversationId ?? this.#conversationId);
 		if (id && known && id !== known) {
 			this.#coordinator.invalidate("unexpected-session-change");
 			return { settled: "invalidated", reason: "unexpected-session-change" };
 		}
-		if (id && !known) this.#conversationId = id;
+		if (id && this.#conversationId !== id) this.#conversationId = id;
 		if (outcome.aborted) {
 			this.#coordinator.invalidate("interrupted");
 			return { settled: "invalidated", reason: "interrupted" };
 		}
-		if (outcome.ok && outcome.promptTerminal) {
+		if (outcome.ok && outcome.promptTerminal && this.#coordinator.settleable) {
 			this.#coordinator.terminal(this.#projectionOf(messages), assistant);
 			return { settled: "terminal" };
 		}
-		const reason = outcome.promptAttempted ? "delivery-unknown" : "unconfirmed-turn";
+		if (outcome.ok && outcome.promptTerminal) {
+			// Driver-confirmed delivery, but the turn was never bound (provider
+			// contract violation or an unwired hook): the checkpoint cannot
+			// absorb, so force the named rebuild instead of crashing terminal().
+			this.#coordinator.invalidate("unsettled-terminal");
+			return { settled: "invalidated", reason: "unsettled-terminal" };
+		}
+		// A terminal-but-failed outcome (refusal, engine error with a result
+		// frame) IS confirmed delivery - only an attempted prompt that never
+		// went terminal stays delivery-unknown; everything else never left.
+		const reason = outcome.promptAttempted && !outcome.promptTerminal ? "delivery-unknown" : "unconfirmed-turn";
 		this.#coordinator.invalidate(reason);
 		return { settled: "invalidated", reason };
 	}
