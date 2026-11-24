@@ -277,10 +277,10 @@ test("partial digest render advances but logs the skipped span", async () => {
 	await withEnv({ AGY_DIGEST: "1", AGY_SYSTEM_PROMPT: "off" }, async () => {
 		const h = harness(["conv-a"]);
 		try {
-			// Window [0..2): one 9000-char part plus a small assistant turn
-			// against the 8000 budget. Newest-first keeps the assistant turn,
-			// the 9000-char message is only partially covered (tail slice).
-			await runTurn(h, [user("h".repeat(9000), 1), ownTurn("kept tail", 2), user("s".repeat(20), 3)]);
+			// Window [0..2): one 25000-char part plus a small assistant turn
+			// against the 24000 budget. Newest-first keeps the assistant turn,
+			// the 25000-char message is only partially covered (tail slice).
+			await runTurn(h, [user("h".repeat(25_000), 1), ownTurn("kept tail", 2), user("s".repeat(20), 3)]);
 			const req = h.requests[0]!;
 			assert.ok(req.contextBlock?.text, "the capped digest still ships");
 			await waitFor(async () => {

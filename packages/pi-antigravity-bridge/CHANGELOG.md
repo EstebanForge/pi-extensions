@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- ACP digest cap raised 8k to 24k chars after a live probe (scripts/probe-acp-context.mjs): a 120k-char embeddedContext block shipped and the model recalled needle strings at both block extremities exactly, so 24k is transport-safe and shrinks the newest-first partial-render hole. stream-json keeps its 8k inline clamp under the ~25KB prompt cap.
 - AskAntigravity model param description now names the configured default (gemini-4-hydrogen) and the Gemini 4 lines. Removed the legacy flash/pro examples: callers read them as the house default, hard-coded `model: "flash"`, and skipped the hydrogen default entirely (flash resolves to the deprecated 3.x era).
 
 ## [1.13.3] - 2026-11-23

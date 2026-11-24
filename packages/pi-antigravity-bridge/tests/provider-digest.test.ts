@@ -313,7 +313,10 @@ test("compactionFingerprint is stable per content and separates summaries", () =
 });
 
 test("digestMaxCharsForEngine: acp uncapped by the prompt, stream-json byte-budgeted", () => {
-	assert.equal(digestMaxCharsForEngine("acp", 90_000), 8000);
+	// 24k per the 120k-char embeddedContext probe (scripts/probe-acp-context.mjs,
+	// 2026-11-24): the transport accepted it and the model recalled needles at
+	// both block extremities exactly.
+	assert.equal(digestMaxCharsForEngine("acp", 90_000), 24_000);
 	assert.equal(digestMaxCharsForEngine("stream-json", 0), 8000);
 	// Budget from bytes: 25000 - 5000 - 4096 = 15904 -> capped at 8000.
 	assert.equal(digestMaxCharsForEngine("stream-json", 5000), 8000);

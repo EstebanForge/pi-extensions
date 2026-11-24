@@ -355,6 +355,13 @@ export interface DigestOptions {
 /** Soft cap on the digest body when no tighter budget applies. */
 const DIGEST_MAX_CHARS = 8000;
 
+/** ACP digest cap: the embeddedContext transport carried a 120k-char probe
+ *  block with exact needle recall at both block extremities
+ *  (scripts/probe-acp-context.mjs, 2026-11-24), so 24k is transport-safe
+ *  and shrinks the newest-first partial-render hole. stream-json keeps
+ *  DIGEST_MAX_CHARS: its digest rides inline under the prompt byte cap. */
+const ACP_DIGEST_MAX_CHARS = 24_000;
+
 /** stream-json single-prompt silent-drop cap (issue #2, probed 2026-09-30):
  *  the CLI drops any prompt past ~25KB with SUCCESS and an empty response,
  *  and the dropped turn leaves the conversation permanently unresponsive. */
@@ -363,13 +370,13 @@ const STREAM_JSON_PROMPT_CAP = 25_000;
 const STREAM_JSON_PROMPT_MARGIN = 4_096;
 
 /** Per-engine digest cap. ACP ships the digest as an embeddedContext
-	resource block: no prompt cap applies, so the default cap stands. On
-	stream-json the digest rides inline in the prompt, so it must fit under
+	resource block: no prompt cap applies, so the probe-raised cap stands.
+	On stream-json the digest rides inline in the prompt, so it must fit under
 	the silent-drop budget alongside the user's own prompt bytes. Returns
 	null when the budget is already exhausted (ship nothing rather than a
 	digest that would push the turn over the drop cap). */
 export function digestMaxCharsForEngine(engine: string, promptLength: number): number | null {
-	if (engine === "acp") return DIGEST_MAX_CHARS;
+	if (engine === "acp") return ACP_DIGEST_MAX_CHARS;
 	const budget = STREAM_JSON_PROMPT_CAP - promptLength - STREAM_JSON_PROMPT_MARGIN;
 	return budget > 0 ? Math.min(DIGEST_MAX_CHARS, budget) : null;
 }
@@ -1983,7 +1990,7 @@ async function runTurnDriver(
 				? (() => {
 						const freshDigest = buildContextDigestResult(context.messages, 0, {
 							bound: false,
-							maxChars: DIGEST_MAX_CHARS,
+							maxChars: ACP_DIGEST_MAX_CHARS,
 							end: run.runStart,
 							includeLast: compactionResume,
 						});
