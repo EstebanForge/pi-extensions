@@ -104,6 +104,10 @@ export interface AgyConfig {
 	/** Official-server ACP engine options (used when engine = "acp"). */
 	acp: AcpConfig;
 	mode: AgyMode;
+	/** Fresh-conversation handoff style. "digest" (default) ships the bounded
+	 *  context digest; "sync" ships canonical history checkpoints (ACP only —
+	 *  stream-json keeps the digest path regardless). AGY_HANDOFF=sync opts in. */
+	handoff: "digest" | "sync";
 	/** Fail-closed kill switch for provider turns. ON = every provider turn
 	 *  is refused visibly: the agy CLI has no review-only enforcement on any
 	 *  path (probed 2026-10-07, upstream #1181: plan mode stages a plan and
@@ -220,6 +224,7 @@ export interface AgyConfig {
 const DEFAULTS: AgyConfig = {
 	engine: DEFAULT_ENGINE,
 	mode: "accept-edits",
+	handoff: "digest",
 	readOnly: false,
 	skipPermissions: true,
 	defaultModel: "gemini-4-hydrogen",
@@ -398,6 +403,12 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 				? "plan"
 				: "accept-edits";
 
+	const handoffRaw = (process.env.AGY_HANDOFF ?? file.handoff ?? DEFAULTS.handoff).toString().toLowerCase();
+	const handoff: "digest" | "sync" = handoffRaw === "sync" ? "sync" : handoffRaw === "digest" ? "digest" : (() => {
+		parseWarnings.push(`handoff: ${String(handoffRaw)} is not digest|sync; using ${DEFAULTS.handoff}`);
+		return DEFAULTS.handoff;
+	})();
+
 	const envPerm = process.env.AGY_SKIP_PERMISSIONS;
 	const skipPermissions =
 		envPerm !== undefined
@@ -513,6 +524,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 		engine,
 		acp,
 		mode,
+		handoff,
 		readOnly,
 		skipPermissions,
 		defaultModel,

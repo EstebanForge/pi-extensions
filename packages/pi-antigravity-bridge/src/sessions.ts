@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { bridgeDir } from "./config.js";
+import { narrowSessionSync, type SessionSyncState } from "./history-sync.js";
 
 function defaultStorePath(): string {
 	return path.join(bridgeDir(), "sessions.json");
@@ -35,6 +36,11 @@ export interface AgySession {
 	 *  builder neither re-injects that summary nor restarts its window on
 	 *  it. Optional/absent when no compaction existed at write time. */
 	digestSummaryId?: string;
+	/** History-sync protocol journal (handoff = "sync"). Absent on digest
+	 *  records and on records predating the sync mode. Zeroed digest
+	 *  watermark fields accompany it (the sync persist contract), so a
+	 *  later flip back to digest re-offers the backlog once, safely. */
+	sync?: SessionSyncState;
 }
 
 type StoreMap = Record<string, AgySession>;
@@ -56,12 +62,17 @@ function narrowStoreMap(parsed: unknown): StoreMap {
 		const mc = (value as { lastMessageCount?: unknown }).lastMessageCount;
 		const db = (value as { digestBoundary?: unknown }).digestBoundary;
 		const dci = (value as { digestSummaryId?: unknown }).digestSummaryId;
+		// Malformed sync journals narrow to an invalid-sync-state marker
+		// (never throws; self-heals via a named rebuild), so the field is
+		// kept but flagged.
+		const sync = narrowSessionSync((value as { sync?: unknown }).sync);
 		clean[key] = {
 			conversationId,
 			lastStepIdx: typeof idx === "number" && Number.isFinite(idx) ? idx : -1,
 			lastMessageCount: typeof mc === "number" && Number.isFinite(mc) ? mc : 0,
 			...(typeof db === "string" ? { digestBoundary: db } : {}),
 			...(typeof dci === "string" ? { digestSummaryId: dci } : {}),
+			...(sync ? { sync } : {}),
 		};
 	}
 	return clean;
@@ -105,6 +116,7 @@ export class SessionStore {
 			lastMessageCount: s.lastMessageCount ?? 0,
 			...(s.digestBoundary !== undefined ? { digestBoundary: s.digestBoundary } : {}),
 			...(s.digestSummaryId !== undefined ? { digestSummaryId: s.digestSummaryId } : {}),
+			...(s.sync !== undefined ? { sync: structuredClone(s.sync) } : {}),
 		};
 	}
 

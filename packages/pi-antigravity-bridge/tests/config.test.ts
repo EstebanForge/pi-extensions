@@ -26,6 +26,7 @@ function withoutAgyEnvs(run: () => void): void {
 		"AGY_TURN_TIMEOUT_MIN",
 		"AGY_INACTIVITY_TIMEOUT_MIN",
 		"AGY_DEFAULT_THINKING",
+		"AGY_HANDOFF",
 	] as const;
 	const prevs = keys.map((k) => [k, process.env[k]] as const);
 	for (const k of keys) delete process.env[k];
@@ -633,6 +634,34 @@ test("config: defaultThinking accepts the native xhigh tier from env and file", 
 			fs.writeFileSync(p, JSON.stringify({ defaultThinking: "ultra" }));
 			const c = loadConfig(p);
 			assert.equal(c.defaultThinking, "medium");
+		});
+	} finally {
+		fs.rmSync(p, { force: true });
+	}
+});
+
+test("config: handoff mode defaults to digest, env and file opt into sync, junk falls back", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			assert.equal(loadConfig(p).handoff, "digest");
+		});
+		withoutAgyEnvs(() => {
+			process.env.AGY_HANDOFF = "sync";
+			assert.equal(loadConfig(p).handoff, "sync");
+			delete process.env.AGY_HANDOFF;
+		});
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ handoff: "sync" }));
+			assert.equal(loadConfig(p).handoff, "sync");
+		});
+		let warned: string[] = [];
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ handoff: "stream" }));
+			const c = loadConfig(p);
+			assert.equal(c.handoff, "digest");
+			warned = c.parseWarnings ?? [];
+			assert.ok(warned.some((line) => line.includes("handoff")), "junk handoff must warn");
 		});
 	} finally {
 		fs.rmSync(p, { force: true });

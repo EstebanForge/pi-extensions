@@ -158,3 +158,41 @@ test("flush resolves only after queued sets and deletes reach disk", async () =>
 	assert.equal(disk["sid:a"], undefined);
 	assert.equal(disk["sid:b"]?.conversationId, "conv-b");
 });
+
+const syncState = {
+	version: 1 as const,
+	epoch: 1,
+	checkpoint: { entryCount: 2, hash: "a".repeat(64), entryId: "m1-0123456789abcdef" },
+	inFlight: { turnId: "t1", target: { entryCount: 2, hash: "a".repeat(64) }, submission: "prepared" as const },
+};
+
+test("SessionStore: sync journal survives a reload and get() carries it", async () => {
+	const p = tmpStorePath();
+	const store = new SessionStore(p);
+	store.set("s1", { conversationId: "conv-1", lastStepIdx: 0, lastMessageCount: 0, sync: structuredClone(syncState) });
+	await store.flush();
+	const reloaded = new SessionStore(p);
+	const record = reloaded.get("s1");
+	assert.ok(record?.sync);
+	assert.equal(record.sync.epoch, 1);
+	assert.equal(record.sync.checkpoint?.entryCount, 2);
+	assert.equal(record.sync.inFlight?.turnId, "t1");
+});
+
+test("SessionStore: a malformed sync field drops the field but keeps the entry", async () => {
+	const p = tmpStorePath();
+	fs.writeFileSync(p, JSON.stringify({
+		"s1": { conversationId: "conv-1", lastStepIdx: 0, sync: { version: 1, checkpoint: { entryCount: 1, hash: "not-a-hash" } } },
+	}));
+	const store = new SessionStore(p);
+	const record = store.get("s1");
+	assert.ok(record);
+	assert.equal(record.conversationId, "conv-1");
+	// malformed journals narrow to the invalid marker, never drop
+	assert.equal(record.sync?.invalidReason, "invalid-sync-state");
+	// the disk copy normalizes on the next write (an idle store never rewrites)
+	store.set("s1", { ...record, lastStepIdx: 1 });
+	await store.flush();
+	const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, { sync?: { invalidReason?: string } }>;
+	assert.equal(raw.s1?.sync?.invalidReason, "invalid-sync-state");
+});
