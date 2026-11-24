@@ -243,7 +243,7 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
  *  the user's machine must go through the bridge. Rides the systemPrompt
  *  gate: the note ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. Extension Pi tools not declared directly are listed in bridge_tool_info; call bridge_tool_info to inspect their description and schema, then call bridge_call_tool to run them. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. Your turn ends when your reply ends, and pi never waits for agy's own wake-ups: never let a native run_command go to the background (keep WaitMsBeforeAsync at 0 for foreground runs and native commands under two minutes, since longer foreground waits hit pi's idle cap and kill the turn; wrap long commands in timeout and run anything longer through the Pi Bridge bash tool, which keeps it inside your turn, and poll bridge_poll_result if it answers STILL RUNNING) and never use the native schedule tool or timers. A task left running when you reply outlives your turn: its wake-up cannot call Pi Bridge tools, and a delegated subagent session is already gone when it fires.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, write, bash). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. Extension Pi tools not declared directly are listed in bridge_tool_info; call bridge_tool_info to inspect their description and schema, then call bridge_call_tool to run them. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. Your turn ends when your reply ends, and pi never waits for agy's own wake-ups: never let a native run_command go to the background (keep WaitMsBeforeAsync at 0 for foreground runs and native commands under two minutes, since longer foreground waits hit pi's idle cap and kill the turn; wrap long commands in timeout and run anything longer through the Pi Bridge bash tool, which keeps it inside your turn, and poll bridge_poll_result if it answers STILL RUNNING) and never use the native schedule tool or timers. A task left running when you reply outlives your turn: its wake-up cannot call Pi Bridge tools, and a delegated subagent session is already gone when it fires.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -253,7 +253,7 @@ export const TOOL_PRIORITY_NOTE =
  *  note's "use the Pi Bridge tools" instruction must be redirected into
  *  scripts. */
 export const CODEMODE_NOTE =
-	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, execute) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.execute. Long or multi-step file work belongs in one script, not many tool calls.";
+	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, execute) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.write, tools.bash. Long or multi-step file work belongs in one script, not many tool calls.";
 
 export function buildFullPrompt(
 	systemPrompt: string | undefined,
@@ -682,6 +682,10 @@ export interface StreamSimpleDeps {
 	/** Session keys rotated on `session_compact` awaiting a one-shot
 	 *  compaction handoff into a fresh agy conversation. */
 	pendingCompactionHandoff?: Set<string>;
+	/** Live pi-side tool visibility (extension wiring). Lets prompt text
+	 *  adapt to the catalog the engine actually got; omitted in tests,
+	 *  which reads as "the configured mode is authoritative". */
+	hasActiveTool?: (name: string) => boolean;
 	/** Per-provider handoff runtime: the mode each session key's last
 	 *  dispatched turn used (continuations must settle under the same
 	 *  contract as the parked turn) and consecutive warm-session rebuild
@@ -1395,6 +1399,8 @@ export interface DriverDeps {
 	pendingCompactionHandoff?: Set<string>;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
+	/** Live pi-side tool visibility (see StreamSimpleDeps). */
+	hasActiveTool?: (name: string) => boolean;
 	/** Per-provider handoff runtime (see StreamSimpleDeps). */
 	handoffRuntime?: {
 		mode: Map<string, "digest" | "sync">;
@@ -1762,6 +1768,11 @@ async function runTurnDriver(
 	// settle contract below so a digest redelivery over a sync-latched
 	// session settles digest-shaped.
 	let digestDispatched = false;
+	// The codemode note ships only when the engine's catalog actually has
+	// the tool: pi registers codemode inactive by default, and the note
+	// would otherwise point at scripts the engine cannot call. No probe
+	// dep (tests) reads as "the configured mode is authoritative".
+	const codemodeNote = config.bridgeTools === "codemode" && (deps.hasActiveTool?.("codemode") ?? true);
 	// The sync orchestrator for THIS pass when the sync gate dispatched; the
 	// settle (and the park persist) sit outside the fresh-pass block, so the
 	// binding is function-level (the round-1 settle scope trap).
@@ -1945,7 +1956,7 @@ async function runTurnDriver(
 				// coordinator calls throw on invariants: both must fail the turn
 				// visibly, not surface as an unhandled rejection.
 				const input = turn.inputFor({
-					prompt: buildFullPrompt(sys, "", userPrompt ?? "", { codemodeOnly: config.bridgeTools === "codemode" }) + stageImageNote(syncImages),
+					prompt: buildFullPrompt(sys, "", userPrompt ?? "", { codemodeOnly: codemodeNote }) + stageImageNote(syncImages),
 					images: syncImages,
 				});
 				turn.bound(key);
@@ -1975,7 +1986,7 @@ async function runTurnDriver(
 						// history to a fresh conversation; the gate re-opens there.
 						const fresh = turn.loadFailed({
 							prompt:
-								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "", { codemodeOnly: config.bridgeTools === "codemode" }) +
+								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "", { codemodeOnly: codemodeNote }) +
 								stageImageNote(syncImages),
 							images: syncImages,
 						});
@@ -2088,7 +2099,7 @@ async function runTurnDriver(
 					[
 						SYSTEM_PROMPT_PREAMBLE,
 						rawSysPrompt,
-						config.bridgeTools === "codemode" ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE,
+						codemodeNote ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE,
 					].join("\n\n"),
 				);
 				if (stagedName) {
@@ -2140,7 +2151,7 @@ async function runTurnDriver(
 						// Both features off: the variant would equal the plain prompt.
 						if (!fbSys && !freshDigest?.text) return undefined;
 						return {
-							prompt: buildFullPrompt(fbSys, "", deliveredPrompt, { codemodeOnly: config.bridgeTools === "codemode" }) + stageImageNote(runImages),
+							prompt: buildFullPrompt(fbSys, "", deliveredPrompt, { codemodeOnly: codemodeNote }) + stageImageNote(runImages),
 							contextBlock: freshDigest?.text
 								? {
 										uri: `urn:pi-bridge:context-digest/fresh/${messageCount}`,
@@ -2153,7 +2164,7 @@ async function runTurnDriver(
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, { codemodeOnly: config.bridgeTools === "codemode" })) +
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, { codemodeOnly: codemodeNote })) +
 			stageImageNote(runImages);
 		if (!syncTurn) {
 			try {
@@ -2581,6 +2592,7 @@ export function createStreamSimple(
 				roster: deps.roster,
 				pendingCompactionHandoff: deps.pendingCompactionHandoff,
 				handoffRuntime,
+				hasActiveTool: deps.hasActiveTool,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream

@@ -283,7 +283,7 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 	// xhigh is hidden unless the base lists it (agy 1.5.16 ships xhigh tiers
 	// for the Gemini 4 line only); visible stops pass through unclamped.
 	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null, xhigh: null });
-	assert.deepEqual(hydrogen.thinkingLevelMap, { off: null, minimal: null });
+	assert.deepEqual(hydrogen.thinkingLevelMap, { off: null, minimal: null, xhigh: "xhigh" });
 	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null, xhigh: null });
 	assert.deepEqual(claude.thinkingLevelMap, { off: null, minimal: null, xhigh: null });
 	assert.equal(unverified.thinkingLevelMap, undefined);

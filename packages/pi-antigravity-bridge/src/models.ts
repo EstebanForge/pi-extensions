@@ -349,14 +349,16 @@ export function slugify(full: string): string {
 
 /** Build the thinkingLevelMap for an effort-driven base: hide "off" and
  *  "minimal" always (agy has no no-thinking mode; a base REQUIRES an effort),
- *  and hide any of low/medium/high the base doesn't offer (e.g. Pro has no
- *  medium). pi's getSupportedThinkingLevels treats a null value as hidden, so
- *  the toggle then shows exactly agy's slider stops. */
+ *  and hide any of low/medium/high/xhigh the base doesn't offer (e.g. Pro has
+ *  no medium). pi's getSupportedThinkingLevels treats a null value as hidden
+ *  for low/medium/high, but xhigh additionally requires an EXPLICIT non-null
+ *  entry to appear at all, so a base that ships xhigh maps it to itself. */
 function thinkingLevelMapFor(efforts: readonly AgyEffort[]): ThinkingLevelMap {
 	const map: Record<string, string | null> = { off: null, minimal: null };
 	for (const level of ["low", "medium", "high", "xhigh"] as const) {
 		if (!efforts.includes(level)) map[level] = null;
 	}
+	if (efforts.includes("xhigh")) map.xhigh = "xhigh";
 	return map as ThinkingLevelMap;
 }
 

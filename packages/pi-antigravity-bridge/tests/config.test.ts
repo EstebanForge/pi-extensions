@@ -84,7 +84,9 @@ test("config: AGY_BRIDGE_TOOLS accepts codemode", () => {
 		process.env.AGY_BRIDGE_TOOLS = "CODEMODE";
 		assert.equal(loadConfig(p).bridgeTools, "codemode");
 		process.env.AGY_BRIDGE_TOOLS = "garbage";
-		assert.equal(loadConfig(p).bridgeTools, "all");
+		const c = loadConfig(p);
+		assert.equal(c.bridgeTools, "all");
+		assert.ok((c.parseWarnings ?? []).some((w) => w.includes("bridgeTools")), "junk mode warns");
 	} finally {
 		delete process.env.AGY_BRIDGE_TOOLS;
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });

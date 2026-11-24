@@ -687,6 +687,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		onNativeBackground: (info) => armConversationWatcher(info.conversationId, info.turnStartMs),
 		roster,
 		pendingCompactionHandoff,
+		hasActiveTool: (name) => pi.getActiveTools().includes(name),
 		engine,
 		log: fileLog.log.bind(fileLog),
 	});
@@ -1494,6 +1495,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					"Antigravity doctor (no tokens spent)",
 					`  engine:        ${engine}`,
 					`  bridge:        ${config.bridgeTools}${port ? ` (port ${port})` : " (not running)"}`,
+					...(config.bridgeTools === "codemode" && !pi.getActiveTools().includes("codemode")
+						? ["  bridge:        codemode tool INACTIVE in pi; the engine sees an all-mode catalog without the codemode note. Activate with --tools codemode or the defaultTools setting."]
+						: []),
 					`  driver:        ${snap.state}${snap.pid ? ` pid=${snap.pid}` : ""}${snap.conversationId ? ` session=${snap.conversationId.slice(0, 8)}` : ""}`,
 					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,
 					`  sessions:      ${ctx.store.size} bound`,
@@ -1816,8 +1820,14 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 							: `bridge ${next.bridgeTools}. The active catalog and call guard update now; ACP may keep cached tool schemas until a session reloads or an agy process restarts (/reload applies it).`,
 						"info",
 					);
+					if (val === "codemode" && !pi.getActiveTools().includes("codemode")) {
+						ui?.notify(
+							"pi's codemode tool is inactive, so the engine sees an all-mode catalog and no codemode note. Activate it first: --tools codemode, the defaultTools setting, or /tools.",
+							"warning",
+						);
+					}
 				} else {
-					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only. none: bridge off.`, "info");
+					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active; without it this behaves like all). none: bridge off.`, "info");
 				}
 				return;
 			}
@@ -2006,9 +2016,9 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "bridge",
 			label: "Bridge tools",
 			description:
-				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. none: bridge off.",
+				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active, e.g. --tools codemode). none: bridge off.",
 			currentValue: config.bridgeTools,
-			values: ["all", "mcp", "none"],
+			values: ["all", "mcp", "codemode", "none"],
 		},
 		{
 			id: "turn-cap",

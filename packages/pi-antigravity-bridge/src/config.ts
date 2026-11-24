@@ -448,7 +448,10 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp" || bridgeRaw === "codemode"
 			? bridgeRaw
-			: DEFAULTS.bridgeTools;
+			: (() => {
+				parseWarnings.push(`bridgeTools: ${bridgeRaw} is not all|mcp|codemode|none; using ${DEFAULTS.bridgeTools}`);
+				return DEFAULTS.bridgeTools;
+			})();
 
 	// Extra long-window tool names for the bridge escalation (issue #6).
 	// Comma-separated in the env; junk entries and junk shapes are dropped,
