@@ -39,7 +39,7 @@ describe("projectHistory", () => {
 	});
 
 	it("hashes images over decoded bytes, not base64 text", () => {
-		// "hi" and its re-encoded padded form hash identically as bytes.
+		// the sha256 is over the DECODED bytes, not the base64 text
 		const data = Buffer.from("hi").toString("base64");
 		const m: Message = { role: "user", content: [{ type: "image", data, mimeType: "image/png" }], timestamp: 1 };
 		const { entries } = projectHistory([m]);
@@ -82,6 +82,10 @@ describe("projectHistory", () => {
 		expect(p1.prefixes[2]).not.toBe(p2.prefixes[2]);
 		// identical content at different positions gets different ids
 		expect(p1.entries[1]!.id).not.toBe(p2.entries[1]!.id);
+		// position-sensitivity proper: SAME content, different position
+		const twin = projectHistory([user("a", 1), assistant("r", 2), user("a", 3)]);
+		expect(twin.entries[0]!.hash).toBe(twin.entries[2]!.hash);
+		expect(twin.entries[0]!.id).not.toBe(twin.entries[2]!.id);
 		// deterministic across runs
 		expect(projectHistory([user("a", 1), user("b", 2)]).prefixes).toEqual(p1.prefixes);
 	});

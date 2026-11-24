@@ -14,6 +14,7 @@ import {
 } from "../src/history-sync.js";
 
 const user = (text: string, ts = 1000): Message => ({ role: "user", content: text, timestamp: ts });
+const toolResult = (ts = 3000): Message => ({ role: "toolResult", toolCallId: "t1", toolName: "read", isError: false, content: [{ type: "text", text: "out" }], timestamp: ts });
 const assistant = (text: string, ts = 2000, stopReason = "stop"): Message => ({
 	role: "assistant",
 	content: [{ type: "text", text }],
@@ -60,14 +61,21 @@ describe("reconcileCheckpoint", () => {
 		expect(reconcileCheckpoint(projection, { version: 1, epoch: 0, checkpoint: cp })).toEqual(cp);
 	});
 
-	it("absorbs an echoed assistant one step, but not a different one", () => {
+	it("absorbs an echoed assistant one step, keeps the base on anything else", () => {
 		const a1 = assistant("reply-1", 2);
 		const projection = projectHistory([user("a", 1), a1]);
 		const base = historyCheckpoint(projection, 1);
 		const good = reconcileCheckpoint(projection, { version: 1, epoch: 0, checkpoint: base, expectedAssistantHash: semanticMessageHash(a1) });
 		expect(good?.entryCount).toBe(2);
-		const bad = reconcileCheckpoint(projection, { version: 1, epoch: 0, checkpoint: base, expectedAssistantHash: "d".repeat(64) });
-		expect(bad).toBeUndefined();
+		// a different assistant at the boundary is foreign content: the base
+		// stands and the turn rides the delta instead of forcing a rebuild
+		const foreign = reconcileCheckpoint(projection, { version: 1, epoch: 0, checkpoint: base, expectedAssistantHash: "d".repeat(64) });
+		expect(foreign).toEqual(base);
+		// a foreign user turn at the boundary likewise leaves the base intact
+		const withForeign = projectHistory([user("a", 1), user("other-provider", 3)]);
+		expect(reconcileCheckpoint(withForeign, { version: 1, epoch: 0, checkpoint: base, expectedAssistantHash: semanticMessageHash(a1) })).toEqual(base);
+		// only a prefix mismatch invalidates
+		expect(reconcileCheckpoint(projection, { version: 1, epoch: 0, checkpoint: { entryCount: 1, hash: "e".repeat(64) }, expectedAssistantHash: semanticMessageHash(a1) })).toBeUndefined();
 	});
 });
 
@@ -102,16 +110,34 @@ describe("planHistorySync decisions", () => {
 		expect(planHistorySync(projection, { version: 1, epoch: 0, inFlight: { turnId: "t", target: historyCheckpoint(projection), submission: "prepared" } })).toMatchObject({ kind: "rebuild", reason: "unsettled-submission" });
 		expect(planHistorySync(projection, { version: 1, epoch: 0, checkpoint: { entryCount: 1, hash: "f".repeat(64) } })).toMatchObject({ kind: "rebuild", reason: "changed-prefix" });
 		expect(planHistorySync(projection)).toMatchObject({ kind: "rebuild", reason: "missing-checkpoint" });
+		// invalidReason wins even over a matching continuation inFlight
+		const cp = historyCheckpoint(projection);
+		const matching = { turnId: "t1", target: cp, submission: "dispatching" as const };
+		expect(planHistorySync(projection, { version: 1, epoch: 1, invalidReason: "interrupted", inFlight: matching }, { continuation: true }).reason).toBe("interrupted");
+		// continuation with no inFlight and a matching checkpoint keeps the
+		// warm session: the recycle rule must key on plan.kind, not the reason
+		expect(planHistorySync(projection, { version: 1, epoch: 0, checkpoint: cp }, { continuation: true })).toMatchObject({ kind: "continue", reason: "matching-prefix" });
 	});
 
-	it("resumes a live continuation and refuses new user input mid-turn", () => {
-		const projection = projectHistory([user("a", 1), assistant("r", 2)]);
-		const target = historyCheckpoint(projection);
-		const inFlight = { turnId: "t1", target, submission: "prepared" as const };
-		const resumed = planHistorySync(projection, { version: 1, epoch: 0, checkpoint: historyCheckpoint(projection, 1), inFlight }, { continuation: true });
+	it("resumes from the real park shape: request target + echoed assistant", () => {
+		// park() stores the REQUEST projection (pre-assistant) plus the hash of
+		// the streaming assistant; the absorb fires when pi echoes that exact
+		// assistant back as entries[target.entryCount].
+		const u1 = user("a", 1);
+		const a1 = assistant("reply", 2);
+		const request = projectHistory([u1]);
+		const target = historyCheckpoint(request);
+		const tr: Message = { role: "toolResult", toolCallId: "t1", toolName: "read", isError: false, content: [{ type: "text", text: "out" }], timestamp: 3 };
+		const echo = projectHistory([u1, a1, tr]);
+		const state = { version: 1 as const, epoch: 0, checkpoint: target, inFlight: { turnId: "t1", target, submission: "prepared" as const, expectedAssistantHash: semanticMessageHash(a1) } };
+		const resumed = planHistorySync(echo, state, { continuation: true });
 		expect(resumed).toMatchObject({ kind: "resume", reason: "live-tool-continuation", history: [], currentUser: [] });
-		const withNewUser = projectHistory([user("a", 1), assistant("r", 2), user("steer", 3)]);
-		expect(planHistorySync(withNewUser, { version: 1, epoch: 0, inFlight }, { continuation: true })).toMatchObject({ kind: "rebuild", reason: "new-user-during-turn" });
+		// steer input after the tool result is new user input mid-turn
+		const withSteer = projectHistory([u1, a1, tr, user("steer", 4)]);
+		expect(planHistorySync(withSteer, state, { continuation: true })).toMatchObject({ kind: "rebuild", reason: "new-user-during-turn" });
+		// a rewritten assistant does not match the parked hash
+		const rewritten = projectHistory([u1, assistant("rewritten", 2), tr]);
+		expect(planHistorySync(rewritten, state, { continuation: true })).toMatchObject({ kind: "rebuild", reason: "changed-inflight-prefix" });
 	});
 
 	it("rebuilds changed-inflight-prefix when the parked target no longer matches", () => {
@@ -155,13 +181,13 @@ describe("current-input boundary", () => {
 	});
 
 	it("extends history past consecutive users via a matching inFlight target", () => {
-		// [u1, A(toolUse), u2] where the turn parked covering u1..A; u2 is the
-		// only new input on the retry request.
-		const parked = projectHistory([user("a", 1), assistant("r", 2)]);
-		const projection = projectHistory([user("a", 1), assistant("r", 2), user("b", 3)]);
-		const target = historyCheckpoint(parked);
+		// [u1, u2] consecutive users with the parked target covering u1 only:
+		// the boundary clamp keeps u1 historical even with no assistant between
+		const projection = projectHistory([user("a", 1), user("b", 2)]);
+		const target = historyCheckpoint(projectHistory([user("a", 1)]));
 		const plan = planHistorySync(projection, { version: 1, epoch: 1, invalidReason: "interrupted", inFlight: { turnId: "t1", target, submission: "dispatching" } }, { isBacklogShape });
-		expect(plan.currentUser.map((e) => e.sourceIndex)).toEqual([2]);
+		expect(plan.currentUser.map((e) => e.sourceIndex)).toEqual([1]);
+		expect(plan.history.map((e) => e.sourceIndex)).toEqual([0]);
 		expect(plan.kind).toBe("rebuild");
 	});
 
@@ -226,6 +252,60 @@ describe("SessionSyncCoordinator", () => {
 		expect(snap.epoch).toBe(2);
 		expect(snap.inFlight?.turnId).toBe("t1");
 		expect(coordinator.phase).toBe("idle");
+	});
+
+	it("carries a park through resume to a confirmed terminal checkpoint", () => {
+		const u1 = user("a", 1);
+		const a1 = assistant("reply", 2);
+		const a2 = assistant("final", 3);
+		const tr = toolResult(4);
+		const request = projectHistory([u1]);
+		const coordinator = new SessionSyncCoordinator();
+		coordinator.prepare(request);
+		coordinator.bound("t1");
+		coordinator.dispatching();
+		// park stores the request projection + the streaming assistant hash;
+		// submission is untouched (a parked prompt never finished)
+		coordinator.park(request, a1);
+		expect(coordinator.snapshot.inFlight).toMatchObject({ turnId: "t1", submission: "dispatching" });
+		expect(coordinator.snapshot.inFlight?.target).toEqual(historyCheckpoint(request));
+		expect(coordinator.snapshot.inFlight?.expectedAssistantHash).toBe(semanticMessageHash(a1));
+		// pi echoes assistant + tool result; the coordinator resumes in place
+		const echo = projectHistory([u1, a1, tr]);
+		const resumed = coordinator.prepare(echo, { continuation: true });
+		expect(resumed.kind).toBe("resume");
+		coordinator.bound("t1");
+		// resume-bound keeps the conservative pre-turn base: the assistant is
+		// only claimed by terminal's full-projection checkpoint
+		expect(coordinator.snapshot.checkpoint).toBeUndefined();
+		expect(coordinator.snapshot.inFlight?.target).toEqual(historyCheckpoint(echo));
+		expect(coordinator.snapshot.inFlight?.submission).toBe("dispatching");
+		// turn ends: terminal claims the PRE-assistant projection + the echo
+		// hash; the assistant enters the checkpoint only when pi echoes it back
+		const settleBase = projectHistory([u1, a1, tr]);
+		coordinator.terminal(settleBase, a2);
+		const settled = coordinator.snapshot;
+		expect(settled.checkpoint).toEqual(historyCheckpoint(settleBase));
+		expect(settled.expectedAssistantHash).toBe(semanticMessageHash(a2));
+		expect(settled.inFlight).toBeUndefined();
+		// next turn: the echoed a2 absorbs one step, the new user is input
+		const next = coordinator.prepare(projectHistory([u1, a1, tr, a2, user("b", 5)]));
+		expect(next.kind).toBe("continue");
+		expect(next.checkpoint).toEqual(historyCheckpoint(projectHistory([u1, a1, tr, a2]), 4));
+		expect(next.currentUser.map((e) => e.sourceIndex)).toEqual([4]);
+		expect(next.history).toHaveLength(0);
+	});
+
+	it("bound() clears invalidReason after invalidation", () => {
+		const projection = mkProjection();
+		const coordinator = new SessionSyncCoordinator();
+		coordinator.prepare(projection);
+		coordinator.bound("t1");
+		coordinator.invalidate("interrupted");
+		expect(coordinator.snapshot.invalidReason).toBe("interrupted");
+		coordinator.prepare(projection);
+		coordinator.bound("t2");
+		expect(coordinator.snapshot.invalidReason).toBeUndefined();
 	});
 
 	it("drains from running or syncing and guards phase transitions", () => {

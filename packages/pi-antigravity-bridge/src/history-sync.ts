@@ -117,9 +117,18 @@ function absorbAssistant(projection: HistoryProjection, base: HistoryCheckpoint 
 	return historyCheckpoint(projection, base!.entryCount + 1);
 }
 
-/** A provider's returned assistant is not canonical until Pi echoes it back. */
+/** A provider's returned assistant is not canonical until Pi echoes it back.
+ *  Lenient on purpose: the stored checkpoint already claimed its span, so a
+ *  foreign turn parked at the boundary rides the delta instead of forcing a
+ *  rebuild; only a prefix mismatch invalidates. */
 export function reconcileCheckpoint(projection: HistoryProjection, state?: SessionSyncState): HistoryCheckpoint | undefined {
-	return absorbAssistant(projection, state?.checkpoint, state?.expectedAssistantHash);
+	if (!matchesCheckpoint(projection, state?.checkpoint)) return;
+	const expected = state?.expectedAssistantHash;
+	const base = state!.checkpoint!;
+	if (!expected) return base;
+	const entry = projection.entries[base.entryCount];
+	if (entry?.role !== "assistant" || entry.hash !== expected) return base;
+	return historyCheckpoint(projection, base.entryCount + 1);
 }
 
 function entryText(entry: HistoryEntry): string {
