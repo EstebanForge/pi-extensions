@@ -228,7 +228,6 @@ check(
 );
 
 console.log(`\n[smoke] ${results.filter((r) => r.pass).length}/${results.length} checks passed`);
-console.log("[smoke] sync events:", JSON.stringify(logs.filter((l) => l.event.startsWith("sync")), null, 1));
 await driver.close("shutdown");
 fs.rmSync(dir, { recursive: true, force: true });
 fs.rmSync(fakeAgentRoot, { recursive: true, force: true });
