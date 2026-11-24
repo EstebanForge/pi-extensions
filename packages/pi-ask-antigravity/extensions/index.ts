@@ -135,7 +135,7 @@ COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request com
 THINKING LEVEL (params: thinking, effort - SYNONYMS for one knob):
 - pi calls it thinking, agy calls it effort. Same thing. Pass ONE of the two.
 - Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to agy's low|medium|high; unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
-- An explicit level beats a tier embedded in model ("flash high") and the configured default. Omit both for the configured default.`;
+- An explicit level beats a tier embedded in model ("gemini-4-carbon-high") and the configured default. Omit both for the configured default.`;
 
 // --- Types -----------------------------------------------------------------
 
@@ -932,7 +932,7 @@ export default async function (
 	const modelParam = Type.Optional(
 		Type.String({
 			description:
-				"Model alias or exact id. Friendly: 'flash' (latest Flash, prefers the gemini-flash-latest alias), 'pro' (latest Pro, prefers gemini-pro-latest), 'gemini' (=flash). Add a tier: 'flash high', 'pro low'. Pin a version: '3.5 flash'. Exact: 'Gemini 3.5 Flash (Medium)'. Omit for the configured default.",
+				"Model alias or exact id. Omit for the configured default (gemini-4-hydrogen, fast all-rounder). Gemini 4 lines: 'gemini-4-hydrogen' (default), 'gemini-4-neon' (more capable), 'gemini-4-carbon' (most capable). Tier via suffix: 'gemini-4-carbon-high'. Legacy 'flash'/'pro' resolve to the deprecated 3.x era.",
 		}),
 	);
 
