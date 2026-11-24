@@ -39,7 +39,7 @@ import { SubagentRoster } from "./subagent-roster.js";
 import { clampOverflowUsage, toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
-import { AcpHistorySync } from "./acp/history-sync.js";
+import { AcpHistorySync, OutboundFrameBudgetError } from "./acp/history-sync.js";
 import { SessionStore } from "./sessions.js";
 import { detectQuotaNotice, quotaErrorMessage } from "./quota-notice.js";
 import { redactText } from "./redact.js";
@@ -1984,7 +1984,7 @@ async function runTurnDriver(
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				deps.log?.("turn-error", { reason: "dispatch-failed", error: msg }, "error");
-				finalize(stream, blocks, "error", /outbound frame budget/.test(msg) ? msg : `agy failed to start: ${msg}`);
+				finalize(stream, blocks, "error", err instanceof OutboundFrameBudgetError ? msg : `agy failed to start: ${msg}`);
 				return;
 			}
 		}

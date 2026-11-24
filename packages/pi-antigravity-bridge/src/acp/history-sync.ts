@@ -13,6 +13,10 @@ import { SessionSyncCoordinator, type HistorySyncPlan, type SessionSyncState, ty
 import type { AgySession } from "../sessions.js";
 import type { Message } from "@earendil-works/pi-ai";
 
+/** Thrown by inputFor when the framed turn would exceed the outbound budget;
+ *  the provider uses it to report a budget refusal without string matching. */
+export class OutboundFrameBudgetError extends Error {}
+
 export interface AcpHistorySyncOptions extends SyncOptions {}
 
 export interface SyncTurnOutcome {
@@ -151,7 +155,7 @@ export class AcpHistorySync {
 		}
 		const bytes = Buffer.byteLength(JSON.stringify(input)) + FRAME_MARGIN_BYTES;
 		if (bytes > OUTBOUND_FRAME_BUDGET_BYTES) {
-			throw new Error(`history-sync input exceeds the outbound frame budget (${bytes} bytes); compact the session and retry`);
+			throw new OutboundFrameBudgetError(`history-sync input exceeds the outbound frame budget (${bytes} bytes); compact the session and retry`);
 		}
 		return input;
 	}

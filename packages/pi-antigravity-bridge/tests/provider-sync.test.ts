@@ -93,8 +93,6 @@ interface TurnScript {
 	activities?: DriverActivity[];
 	/** When set, the turn resolves as a failed outcome (ERROR, terminal). */
 	failure?: string;
-	/** Fire onSessionBound with the scripted conversation id. */
-	fireBound?: boolean;
 	/** Fire onSessionLoadFailed (ignore its rebuild input) before resolving. */
 	fireLoadFail?: boolean;
 }
@@ -112,7 +110,6 @@ function makeFakeDriver(scripts: TurnScript[], requests: DriverTurnRequest[]): S
 			requests.push(opts);
 			const script = scripts[Math.min(idx, scripts.length - 1)]!;
 			idx += 1;
-			if (script.fireBound) opts.onSessionBound?.({ sessionId: script.conversationId, reused: false, fresh: true });
 			if (script.fireLoadFail) opts.onSessionLoadFailed?.({ sessionId: script.conversationId, error: "session/load failed (fake)" });
 			const outcome: TurnOutcome = script.failure
 				? {
@@ -416,13 +413,32 @@ test("a load failure re-arms and settles terminal on the fresh conversation", as
 
 test("an over-budget history finalizes the turn with a dispatch error", async () => {
 	await withEnv({ AGY_HANDOFF: "sync", AGY_SYSTEM_PROMPT: "off" }, async () => {
-		// A fresh rebuild frames the whole transcript: a single oversized
-		// message must hard-fail the dispatch visibly, not hang the stream.
+		// The production-real shape: the oversize rides in the framed HISTORY
+		// (resource block), not the prompt. The dispatch must hard-fail
+		// visibly, not hang the stream; runTurn resolving is the no-hang proof.
 		const h = harness([{ conversationId: "conv-x" }]);
 		try {
-			// runTurn resolving (instead of hanging) is the no-hang proof.
+			await runTurn(h, [user("y".repeat(3 * 1024 * 1024 + 4000), 1), ownTurn("r", 2), user("question", 3)], "");
+			const terr = h.logs.find((l) => l.event === "turn-error");
+			assert.ok(terr && (terr.data as { reason?: string })?.reason === "dispatch-failed", "the dispatch failure logged");
+			assert.ok(String((terr.data as { error?: string })?.error).includes("outbound frame budget"), "the refusal names the budget");
+			assert.ok(!h.requests.length, "the oversized frame never reached the driver");
+		} finally {
+			cleanup(h);
+		}
+	});
+});
+
+test("an over-sized current prompt fails the dispatch with the budget refusal", async () => {
+	await withEnv({ AGY_HANDOFF: "sync", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		// A lone oversized user message is CURRENT INPUT (no framed history);
+		// inputFor counts the prompt bytes too and must refuse the same way.
+		const h = harness([{ conversationId: "conv-x" }]);
+		try {
 			await runTurn(h, [user("y".repeat(3 * 1024 * 1024 + 4000), 1)], "");
-			assert.ok(h.logs.some((l) => l.event === "turn-error" && (l.data as { reason?: string })?.reason === "dispatch-failed"), "the dispatch failure logged");
+			const terr = h.logs.find((l) => l.event === "turn-error");
+			assert.ok(terr && (terr.data as { reason?: string })?.reason === "dispatch-failed", "the dispatch failure logged");
+			assert.ok(String((terr.data as { error?: string })?.error).includes("outbound frame budget"), "the refusal names the budget");
 			assert.ok(!h.requests.length, "the oversized frame never reached the driver");
 		} finally {
 			cleanup(h);
