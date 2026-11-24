@@ -47,6 +47,21 @@ export interface DriverTurnRequest extends DriverProfile {
 	 *  stream-json driver ignores it (the CLI drops stale ids silently and
 	 *  the swap point is undetectable). */
 	fallback?: { prompt: string; contextBlock?: { uri: string; text: string } };
+	/** History-sync lifecycle hooks (ACP only; optional). onSessionBound
+	 *  fires after the session is established (new, loaded, reused, or the
+	 *  load-failure fresh creation) and before config apply, so the provider
+	 *  can persist the binding first. onBeforePrompt fires just before the
+	 *  prompt RPC (write-ahead dispatch signal). Both fail the turn when they
+	 *  throw: a silent hook failure would checkpoint state the transport
+	 *  never confirmed. */
+	onSessionBound?: (info: { sessionId: string; reused: boolean; fresh: boolean }) => void;
+	onBeforePrompt?: (info: { sessionId: string }) => void;
+	/** Fired when session/load fails, BEFORE the fresh-session creation, so
+	 *  the provider can invalidate and re-prepare without an orphaned
+	 *  session. Returning a rebuild input swaps it in as the fresh
+	 *  conversation's prompt/contextBlock (replacing the fix-3 fallback
+	 *  swap, which digest mode uses instead). */
+	onSessionLoadFailed?: (info: { sessionId: string; error: unknown }) => { prompt: string; contextBlock?: { uri: string; text: string } } | void;
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). 0 disables the cap. */
@@ -113,6 +128,13 @@ export interface TurnOutcome {
 	 *  guard (not a user abort, not a process crash). With sawResult false on
 	 *  a resumed conversation this marks the conversation as poisoned. */
 	deadline?: "timeout" | "stall";
+	/** ACP provenance, populated in #settle from the turn flags (??=) so
+	 *  every path - failTurn, connection exit, abort - carries them. The
+	 *  weaker meaning is documented: attempted = the driver invoked the
+	 *  prompt call, not that the transport wrote it. Stream-json leaves
+	 *  both undefined (nothing consumes them there). */
+	promptAttempted?: boolean;
+	promptTerminal?: boolean;
 }
 
 export interface TurnHandle {
