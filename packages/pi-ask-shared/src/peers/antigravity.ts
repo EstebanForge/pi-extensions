@@ -21,7 +21,7 @@ import { compareVersionsDesc } from "../versions.js";
 
 // --- Types -----------------------------------------------------------------
 
-export type ThinkingTier = "low" | "medium" | "high";
+export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
 export type Family = "flash" | "pro" | "other";
 
 export interface ModelEntry {
@@ -51,7 +51,7 @@ export const FAMILY_DEFAULT_TIER: Record<Family, ThinkingTier> = {
 	other: "medium",
 };
 
-export const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
+export const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2, xhigh: 3 };
 
 /** pi thinking-level vocabulary -> agy tier, for the thinking/effort tool
  *  params. Unknown values fall to low (agy always thinks something). */
@@ -139,7 +139,7 @@ export function parseModelLine(line: string): ModelEntry | null {
 	const versionMatch = lower.match(/(\d+\.\d+)/);
 	const version = versionMatch ? versionMatch[1] : null;
 
-	const tierMatch = lower.match(/-(low|medium|high)$/);
+	const tierMatch = lower.match(/-(xhigh|high|medium|low)$/);
 	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
 
 	return { full, family, version, tier };
@@ -165,7 +165,7 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
  *  (agy rejects a bare base: "requires --effort"). Only unverified families
  *  keep agy's exact slug whole, so an unknown suffix can never trigger an
  *  unsupported --effort. */
-const TIER_SUFFIX_RE = /-(low|medium|high)$/;
+const TIER_SUFFIX_RE = /-(xhigh|high|medium|low)$/;
 
 function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
@@ -247,7 +247,7 @@ export function resolveAgyModel(
 			: null;
 	const versionMatch = lower.match(/(\d+\.\d+)/);
 	const version = versionMatch ? versionMatch[1] : null;
-	const tierMatch = lower.match(/\b(low|medium|high)\b/);
+	const tierMatch = lower.match(/\b(xhigh|high|medium|low)\b/);
 	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
 
 	if (!family) {

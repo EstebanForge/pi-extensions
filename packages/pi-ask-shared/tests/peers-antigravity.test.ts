@@ -138,9 +138,9 @@ describe("resolveModel", () => {
 			entry("gemini-4-hydrogen-low", "low"),
 			entry("gemini-4-hydrogen-medium", "medium"),
 			entry("gemini-4-hydrogen-high", "high"),
-			// Mirrors the live parse: xhigh is outside the -(low|medium|high)$
-			// tier grammar, so the entry carries no tier and stays unpickable.
-			entry("gemini-4-hydrogen-xhigh"),
+			// The Gemini 4 line ships a native xhigh tier (agy 1.5.16); the
+			// tier grammar accepts it and the resolver can pick it.
+			entry("gemini-4-hydrogen-xhigh", "xhigh"),
 		];
 		expect(resolveAgyModel("gemini-4-hydrogen", withHydrogen, "medium")).toEqual({
 			model: "gemini-4-hydrogen",
@@ -150,6 +150,20 @@ describe("resolveModel", () => {
 			model: "gemini-4-hydrogen",
 			effort: "high",
 		});
+		expect(resolveAgyModel("gemini-4-hydrogen", withHydrogen, "medium", "xhigh")).toEqual({
+			model: "gemini-4-hydrogen",
+			effort: "xhigh",
+		});
+		// A catalog without xhigh walks the xhigh request down to the best
+		// available tier (nearest rank, ties toward higher).
+		expect(
+			resolveAgyModel(
+				"gemini-4-hydrogen",
+				withHydrogen.filter((e) => e.tier !== "xhigh"),
+				"medium",
+				"xhigh",
+			)?.effort,
+		).toBe("high");
 		// Bare "gemini" must stay the Flash family alias, not a tiered base.
 		expect(resolveAgyModel("gemini", withHydrogen, "medium")?.model).toBe("gemini-3.6-flash");
 		// An unknown bare base (no catalog variants, no gemini substring)

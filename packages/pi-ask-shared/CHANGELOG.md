@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.7] - 2026-11-24
+
+### Changed
+
+- The Antigravity tier vocabulary now carries the native `xhigh` tier (agy 1.5.16 ships `gemini-4-{hydrogen,neon}-xhigh` slugs): `ThinkingTier` gains the value, the tier-suffix grammar and the alias tier-word matcher accept it, and `TIER_RANK` orders it above `high`. A resolver request for `xhigh` over a catalog without the tier walks down to `high` (nearest rank, ties toward higher). Type-plus-parse only; `FAMILY_DEFAULT_TIER` and existing resolutions are unchanged. Consumers passing wider tiers must require this floor (pi-antigravity-bridge bumps to `^0.1.7` in the same change).
+
 ## [0.1.6] - 2026-11-13
 
 ### Changed
