@@ -11,6 +11,7 @@ import type { Message, Usage } from "@earendil-works/pi-ai";
 import {
 	boundaryFingerprint,
 	buildContextDigest,
+	buildContextDigestResult,
 	compactionFingerprint,
 	digestMaxCharsForEngine,
 	findLastCompactionIdx,
@@ -329,4 +330,41 @@ test("digest: the window can stop at an explicit end (trailing user run joins th
 	assert.ok(digest.includes("backlog question"), "pre-run backlog stays digest context");
 	assert.ok(!digest.includes("current prompt"), "joined prompt members must not reappear in the digest");
 	assert.ok(!digest.includes("note"), "the whole run is excluded, not just the last message");
+});
+
+test("digest result: untruncated window reports deliveredFrom == windowStart", () => {
+	const msgs = [user("alpha"), asst("openai", "beta"), user("gamma")];
+	const r = buildContextDigestResult(msgs, 0, { bound: false, maxChars: 8000, includeLast: true });
+	assert.equal(r.windowStart, 0);
+	assert.equal(r.windowEnd, 3);
+	assert.equal(r.deliveredFrom, 0);
+	assert.ok(r.text.includes("alpha"));
+	assert.ok(r.text.includes("gamma"));
+});
+
+test("digest result: budget truncation reports the oldest kept message index", () => {
+	// window [0..3): old small, old huge, new small. Newest-first budget keeps
+	// only the newest part, so messages 0 and 1 were skipped for budget.
+	const msgs = [user("s".repeat(20)), user("h".repeat(5000)), user("t".repeat(20))];
+	const r = buildContextDigestResult(msgs, 0, { bound: false, maxChars: 200, includeLast: true });
+	assert.equal(r.windowEnd, 3);
+	assert.equal(r.deliveredFrom, 2, "deliveredFrom must point at the oldest rendered message");
+	assert.ok(r.text.includes("t".repeat(20)));
+	assert.ok(!r.text.includes("h".repeat(100)));
+});
+
+test("digest result: nothing fits reports deliveredFrom == windowEnd", () => {
+	const msgs = [user("h".repeat(5000)), user("t".repeat(5000))];
+	const r = buildContextDigestResult(msgs, 0, { bound: false, maxChars: 200 });
+	assert.equal(r.windowEnd, 1);
+	assert.equal(r.deliveredFrom, 1, "no window content rendered, so nothing is delivered");
+	assert.ok(r.text.length < 300, "tail-slice fallback keeps only a marker + slice");
+});
+
+test("digest result: bound-mode skips do not move deliveredFrom", () => {
+	// own-provider turns render nothing in bound mode; deliveredFrom must
+	// still point at the oldest message whose content is in the digest.
+	const msgs = [user("alpha"), asst("antigravity", "own turn"), user("gamma")];
+	const r = buildContextDigestResult(msgs, 0, { bound: true, maxChars: 8000 });
+	assert.equal(r.deliveredFrom, 0);
 });

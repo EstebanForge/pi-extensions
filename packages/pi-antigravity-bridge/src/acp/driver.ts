@@ -293,7 +293,10 @@ export class AcpDriver implements TurnDriver {
 	}
 
 	async #executeTurn(turn: ActiveTurn): Promise<void> {
-		const request = turn.request;
+		// Reassigned when a load failure applies the request's fresh-mode
+		// fallback (issue #25): everything after session setup must read the
+		// swapped variant.
+		let request = turn.request;
 		const conn = await this.#ensureConnection(request);
 		let reused = false;
 
@@ -339,6 +342,14 @@ export class AcpDriver implements TurnDriver {
 				} catch (err2) {
 					this.#failTurn(turn, `ACP session failed: ${describe(err2)}`);
 					return;
+				}
+				if (request.fallback) {
+					// The recreated conversation holds nothing: swap in the as-if-
+					// fresh variant the provider prebuilt (system prompt + full
+					// digest) instead of shipping the bound-mode prompt blind.
+					this.#log("session-load-fallback-applied", { sessionId: request.conversationId });
+					request = { ...request, prompt: request.fallback.prompt, contextBlock: request.fallback.contextBlock };
+					turn.request = request;
 				}
 			} else {
 				this.#failTurn(turn, `ACP session failed: ${describe(err)}`);

@@ -427,16 +427,36 @@ export function compactionFingerprint(m: Message): string {
  *  Fidelity note: other-provider assistant turns contribute only their text
  *  blocks; tool-call and thinking blocks are dropped. The intent (which tool)
  *  is lost, but their results still surface separately as toolResult messages. */
-export function buildContextDigest(
+export interface DigestResult {
+	/** Digest body, "" when nothing rendered. */
+	text: string;
+	/** First index of the delta window (after clamp adjustments). */
+	windowStart: number;
+	/** Exclusive window end (run extraction boundary). */
+	windowEnd: number;
+	/** Oldest message index whose content is actually in the digest.
+	 *  == windowStart when the whole window rendered; == windowEnd when
+	 *  nothing fit; in between when the budget cut old turns (the pi-lens
+	 *  watermark invariant: the record may only claim delivery of what
+	 *  rendered). */
+	deliveredFrom: number;
+}
+
+export function buildContextDigestResult(
 	messages: Message[],
 	watermark: number,
 	opts: DigestOptions = {},
-): string {
+): DigestResult {
 	const own = opts.ownProvider ?? "antigravity";
 	const maxChars = opts.maxChars ?? DIGEST_MAX_CHARS;
-	if (messages.length === 0) return "";
+	if (messages.length === 0) {
+		return { text: "", windowStart: 0, windowEnd: 0, deliveredFrom: 0 };
+	}
 
 	const deltaParts: string[] = [];
+	// Message index each delta part was rendered from: the budget cut has to
+	// report which messages actually shipped, not just how many parts.
+	const partIdx: number[] = [];
 
 	// 1. Compaction summary (never in agy's DB, so always high-value), but
 	//    only when THIS summary has not shipped in a previous digest.
@@ -475,16 +495,19 @@ export function buildContextDigest(
 			const t = [blocksToText(m.content).trim(), renderToolCalls(m.content)].filter(Boolean).join("\n");
 			if (!t) continue;
 			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
+			partIdx.push(i);
 		} else if (m.role === "user") {
 			const t = blocksToText(m.content);
 			if (t.includes(COMPACTION_MARKER)) continue; // delivered as the summary part
 			if (!t.trim()) continue;
 			deltaParts.push(`[earlier user message]\n${t}`);
+			partIdx.push(i);
 		} else if (m.role === "toolResult") {
 			const t = blocksToText(m.content).trim();
 			deltaParts.push(
 				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${capToolResultBody(t)}`,
 			);
+			partIdx.push(i);
 		}
 	}
 
@@ -501,15 +524,18 @@ export function buildContextDigest(
 		summaryPart = `${summaryPart.slice(0, room)}\n${MARKER}`;
 	}
 	let delta = deltaParts.join(SEP);
+	let oldestKept = partIdx.length > 0 ? partIdx[0] : end;
 	if (maxChars > 0) {
 		const budget = Math.max(0, maxChars - (summaryPart ? summaryPart.length + SEP.length : 0));
 		if (delta.length > budget) {
 			const kept: string[] = [];
 			let used = 0;
+			oldestKept = end;
 			for (let i = deltaParts.length - 1; i >= 0; i--) {
 				const cost = deltaParts[i].length + (kept.length > 0 ? SEP.length : 0);
 				if (used + cost > budget) break;
 				kept.unshift(deltaParts[i]);
+				oldestKept = partIdx[i];
 				used += cost;
 			}
 			if (kept.length > 0) {
@@ -521,9 +547,18 @@ export function buildContextDigest(
 		}
 	}
 
-	return [summaryPart, delta]
+	const text = [summaryPart, delta]
 		.filter((s): s is string => typeof s === "string" && s.length > 0)
 		.join(SEP);
+	return { text, windowStart: start, windowEnd: end, deliveredFrom: text ? oldestKept : end };
+}
+
+export function buildContextDigest(
+	messages: Message[],
+	watermark: number,
+	opts: DigestOptions = {},
+): string {
+	return buildContextDigestResult(messages, watermark, opts).text;
 }
 
 /** Build a fresh AssistantMessage shell for this turn. Mutated as blocks
@@ -1586,6 +1621,11 @@ async function runTurnDriver(
 	// Summary id carried forward from the record; the gate below overwrites it
 	// only when a digest actually ships, so skipped turns never lose it.
 	let settleSummaryId = existing?.digestSummaryId;
+	// Settle writes (both store.set paths) use these: they default to normal
+	// advance semantics and the digest build overrides them when a wanted
+	// digest failed to ship (see the delivery invariant at the build site).
+	let nextCount = messageCount;
+	let nextBoundary: string | undefined = settleBoundary;
 
 	// Continuation: resolve parked round-trips from pi's toolResult messages,
 	// then re-attach to the still-running agy turn. No new user event is sent:
@@ -1824,16 +1864,17 @@ async function runTurnDriver(
 		// agy's server-side prompt cache.
 		const wantDigest = (config.digest || compactionHandoff || compactionResume) && !runTruncated;
 		const maxChars = digestMaxCharsForEngine(engine, promptBytes);
-		const digest =
+		const digestRes =
 			wantDigest && maxChars !== null && late.length === 0 && !resume
-				? buildContextDigest(context.messages, watermark, {
+				? buildContextDigestResult(context.messages, watermark, {
 						bound: Boolean(existing?.conversationId),
 						seenSummaryId: existing?.digestSummaryId,
 						maxChars,
 						end: run.runStart,
 						includeLast: compactionResume,
 					})
-				: "";
+				: undefined;
+		const digest = digestRes?.text ?? "";
 		// Byte-level fail closed (issue #2): the char budget over-reserves for
 		// ASCII but a multibyte digest can still exceed the remaining byte
 		// room. ACP carries no prompt cap, so the check is stream-json only.
@@ -1843,6 +1884,35 @@ async function runTurnDriver(
 			promptBytes + STREAM_JSON_PROMPT_MARGIN + Buffer.byteLength(digest, "utf8") > STREAM_JSON_PROMPT_CAP
 				? ""
 				: digest;
+		// Watermark delivery invariant (issue #25 follow-up): the record may
+		// only claim what reached agy. When a built digest failed the byte
+		// check, nothing shipped, so the settle write HOLDS the pre-turn
+		// watermark - the whole window re-offers next turn, duplicating
+		// nothing because nothing arrived. (maxChars null is defensive: a
+		// spent budget co-occurs with runTruncated, which skips the digest
+		// deliberately.) Partial renders (budget cut the oldest turns) still
+		// advance: the hole can never re-fit under the newest-first budget,
+		// and re-offering it every turn would re-embed cap-sized duplicate
+		// blocks into agy's DB; the hole is logged instead.
+		const digestDropped = wantDigest && (maxChars === null || (digest !== "" && !digestFinal));
+		if (digestDropped) {
+			nextCount = existing?.lastMessageCount ?? watermark;
+			nextBoundary = existing?.digestBoundary;
+		}
+		deps.log?.(
+			"digest",
+			{
+				engine,
+				bound: Boolean(existing?.conversationId),
+				maxChars,
+				bytes: digestFinal ? Buffer.byteLength(digestFinal, "utf8") : 0,
+				windowStart: digestRes?.windowStart,
+				windowEnd: digestRes?.windowEnd,
+				deliveredFrom: digestRes?.deliveredFrom,
+				shipped: Boolean(digestFinal),
+			},
+			digestDropped ? "warn" : "info",
+		);
 		// The delivered summary id persists only when a digest actually shipped:
 		// late/resume/budget-skipped turns carry the previous id forward so the
 		// summary is not lost to a turn that never delivered it.
@@ -1901,6 +1971,35 @@ async function runTurnDriver(
 		// prompt is text-only); user-message images ride them on ACP natively
 		// and staged files on stream-json.
 		const runImages = [...images, ...late.flatMap((l) => l.images ?? [])];
+		// Issue #25: an ACP session/load failure silently creates a fresh agy
+		// conversation mid-turn, and the bound-mode prompt (G10 gate closed by
+		// the binding, bound:true digest skipping own turns) would ship blind.
+		// This variant is built as-if-fresh; the driver swaps it in only when
+		// the load actually fails. stream-json cannot detect that drop, so it
+		// is ACP-only.
+		const requestConversation = redeliveryConversation ?? existing?.conversationId ?? null;
+		const acpFallback =
+			deps.engine === "acp" && requestConversation && !resume && late.length === 0
+				? (() => {
+						const freshDigest = buildContextDigestResult(context.messages, 0, {
+							bound: false,
+							maxChars: DIGEST_MAX_CHARS,
+							end: run.runStart,
+							includeLast: compactionResume,
+						});
+						return {
+							prompt:
+								buildFullPrompt(getCurrentSystemPrompt(context.messages) || undefined, "", deliveredPrompt) +
+								stageImageNote(runImages),
+							contextBlock: freshDigest.text
+								? {
+										uri: `urn:pi-bridge:context-digest/fresh/${messageCount}`,
+										text: `${DIGEST_PREAMBLE}\n\n${freshDigest.text}`,
+									}
+								: undefined,
+						};
+					})()
+				: undefined;
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
@@ -1919,6 +2018,7 @@ async function runTurnDriver(
 				prompt: fullPrompt,
 				images: runImages.length > 0 ? runImages : undefined,
 				agent,
+				fallback: acpFallback,
 				contextBlock: embeddedDigest
 					? {
 							uri: `urn:pi-bridge:context-digest/${messageCount}`,
@@ -1984,8 +2084,8 @@ async function runTurnDriver(
 				store.set(key, {
 					conversationId: parkedConv,
 					lastStepIdx: -1,
-					lastMessageCount: messageCount,
-					digestBoundary: settleBoundary,
+					lastMessageCount: nextCount,
+					digestBoundary: nextBoundary,
 					digestSummaryId: settleSummaryId,
 				});
 				deps.pendingCompactionHandoff?.delete(key);
@@ -2114,8 +2214,8 @@ async function runTurnDriver(
 				store.set(key, {
 					conversationId: outcome.conversationId,
 					lastStepIdx: -1,
-					lastMessageCount: messageCount,
-					digestBoundary: settleBoundary,
+					lastMessageCount: nextCount,
+					digestBoundary: nextBoundary,
 					digestSummaryId: settleSummaryId,
 				});
 				deps.pendingCompactionHandoff?.delete(key);

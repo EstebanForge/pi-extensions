@@ -39,6 +39,14 @@ export interface DriverTurnRequest extends DriverProfile {
 	 *  resource block instead of inline prompt text (G1 on ACP). Stream-json
 	 *  embeds the digest in the prompt string and ignores this. */
 	contextBlock?: { uri: string; text: string };
+	/** Fresh-session variant for the ACP load-failure path (issue #25): when
+	 *  session/load fails and the driver falls back to a new session, it
+	 *  swaps prompt/contextBlock for this, so the fresh conversation still
+	 *  receives the system prompt and the full bound:false digest instead of
+	 *  answering blind. The provider prebuilds it for bound turns; the
+	 *  stream-json driver ignores it (the CLI drops stale ids silently and
+	 *  the swap point is undetectable). */
+	fallback?: { prompt: string; contextBlock?: { uri: string; text: string } };
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). 0 disables the cap. */

@@ -35,6 +35,7 @@ async function runDriver(
 		effort?: string | null;
 		images?: Array<{ data: string; mimeType: string }>;
 		contextBlock?: { uri: string; title: string; text: string };
+		fallback?: { prompt: string; contextBlock?: { uri: string; text: string } };
 		conversationId?: string | null;
 		timeoutMin?: number;
 		skipPermissions?: boolean;
@@ -76,6 +77,7 @@ async function runDriver(
 		prompt: opts.prompt ?? "hi",
 		images: opts.images,
 		contextBlock: opts.contextBlock,
+		fallback: opts.fallback,
 		timeoutMin: opts.timeoutMin,
 		signal: opts.signal ?? controller.signal,
 	});
@@ -200,6 +202,37 @@ describe("acp/driver load replay (run 6 rules)", () => {
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "OK");
 		assert.equal(outcome.conversationId, SESSION_ID);
+	});
+
+	test("load failure swaps in the fresh-mode fallback (issue #25)", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			fallback: {
+				prompt: "FRESH-PROMPT",
+				contextBlock: { uri: "urn:pi-bridge:test/fresh", text: "FRESH-CONTEXT" },
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		assert.equal(sent.length, 1);
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "FRESH-PROMPT", "the fallback prompt replaces the bound prompt");
+		const resource = blocks.find((b) => b.type === "resource") as {
+			resource: { uri: string; text: string };
+		};
+		assert.equal(resource.resource.text, "FRESH-CONTEXT", "the fallback context block ships");
+	});
+
+	test("without a fallback the load-failure turn keeps the original prompt", async () => {
+		const run = await tracked("load-fails", { conversationId: "gone", prompt: "PLAIN" });
+		await run.handle.outcome;
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "PLAIN");
 	});
 });
 
