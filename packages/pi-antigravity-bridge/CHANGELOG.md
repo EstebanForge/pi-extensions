@@ -2,10 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.15.0] - 2026-11-24
 
 ### Added
 
+- Opt-in canonical-history handoff (`config.handoff: "sync"`, env `AGY_HANDOFF=sync`; ACP-only, digest stays the default): a rolling sha256 prefix chain over the projected transcript drives a per-turn plan, so warm sessions ship only the owed delta as an `urn:pi-bridge:history:v1` block and a session/load failure re-plans as a lossless rebuild (the settle re-arms; no blind turn, no double rebuild). The settle persists the zeroed contract plus the confirmed checkpoint, the churn gate falls back to digest after 3 consecutive `changed-prefix` rebuilds (the latch rides the record so digest turns keep it), and the framed delta hard-fails past the 3 MiB outbound frame budget (the engine silently truncates resources near 3.82 MiB, so bigger frames would checkpoint content it never read). Mode flips are safe both directions. Design: `docs/designs/history-sync-mode.md` (including implementation deviations); live proof: `scripts/smoke-handoff.mjs` scenario 4 and `scripts/probe-acp-frame.mjs` on agy 1.5.16.
 - Codemode-only bridge mode (`/agy bridge codemode`, env `AGY_BRIDGE_TOOLS=codemode`): the engine's catalog shrinks to pi's `codemode` tool (the one direct tool) plus `bridge_tool_info`/`bridge_call_tool` and `bridge_poll_result`, so multi-step work runs as scripts pi-side and nested tool calls never re-enter the engine's context (spike: `scripts/probe-codemode.mjs`, one wire call carried two nested sandbox calls; session/load on a fresh engine process kept the registration; ~2.5k input tokens over a plain baseline turn). The provider system prompt gains a codemode note redirecting the file-tool instruction into scripts (`buildFullPrompt` `codemodeOnly`).
 
 ### Changed
