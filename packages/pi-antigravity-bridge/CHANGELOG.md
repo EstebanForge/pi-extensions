@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Codemode-only bridge mode (`/agy bridge codemode`, env `AGY_BRIDGE_TOOLS=codemode`): the engine's catalog shrinks to pi's `codemode` tool (the one direct tool) plus `bridge_tool_info`/`bridge_call_tool` and `bridge_poll_result`, so multi-step work runs as scripts pi-side and nested tool calls never re-enter the engine's context (spike: `scripts/probe-codemode.mjs`, one wire call carried two nested sandbox calls; session/load on a fresh engine process kept the registration; ~2.5k input tokens over a plain baseline turn). The provider system prompt gains a codemode note redirecting the file-tool instruction into scripts (`buildFullPrompt` `codemodeOnly`).
+
 ### Changed
 
 - Native xhigh thinking tier: the catalog splits `gemini-4-{hydrogen,neon}-xhigh` slugs into base + tier, pi's `xhigh` thinking level passes through to the engine when the base lists it (clamps to `high` otherwise, `max` unchanged), the model toggle shows the xhigh stop only for bases that ship it, and `/agy thinking` plus the AskAntigravity `thinking` param accept `xhigh` end to end (probe: `scripts/probe-xhigh.mjs`, agy 1.5.16 accepted the qualified xhigh slug). Requires `@estebanforge/pi-ask-shared` `^0.1.7` (floor bump: the resolver vocabulary widens first; publish shared before this package).

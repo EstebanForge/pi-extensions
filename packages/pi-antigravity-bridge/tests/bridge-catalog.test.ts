@@ -3,6 +3,7 @@ import {
 	bridgeCallToolDef,
 	bridgeToolInfoDef,
 	bridgedPiTools,
+	codemodeCatalog,
 	formatBridgeToolInfo,
 	parseBridgeCallRequest,
 	partitionBridgeTools,
@@ -159,5 +160,50 @@ describe("hybrid partition and proxy helpers", () => {
 		const { direct, proxied } = partitionBridgeTools(authorized);
 		expect(direct.map((t) => t.name)).toEqual(["read"]);
 		expect(proxied.map((t) => t.name)).toEqual(["git_commit"]);
+	});
+});
+
+describe("codemode catalog mode", () => {
+	const allWithCm = [{ name: "codemode", sourceInfo: { source: "builtin" } }, ...all];
+	const active = allWithCm.map((tool) => tool.name);
+
+	it("bridges codemode plus extension tools, nothing builtin besides codemode", () => {
+		expect(bridgedPiTools(allWithCm, active, "codemode", new Set()).map((t) => t.name)).toEqual([
+			"codemode",
+			"web_search",
+			"mcp:files",
+		]);
+	});
+
+	it("still respects the active set, hiding, and bridge-off", () => {
+		expect(bridgedPiTools(allWithCm, ["codemode"], "codemode", new Set()).map((t) => t.name)).toEqual(["codemode"]);
+		expect(bridgedPiTools(allWithCm, active, "codemode", new Set(["codemode"])).map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+		expect(bridgedPiTools(allWithCm, active, "none", new Set()).map((t) => t.name)).toEqual([]);
+	});
+
+	it("keeps the plain all-mode builtin exclusion untouched", () => {
+		expect(bridgedPiTools(allWithCm, active, "all", new Set()).map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+	});
+});
+
+describe("codemodeCatalog projection", () => {
+	it("projects codemode direct and everything else proxied", () => {
+		const authorized = [
+			{ name: "codemode", description: "Run scripts.", parameters: { type: "object", properties: { code: { type: "string" } } } },
+			{ name: "subagent", description: "Delegate.", parameters: { type: "object" } },
+			{ name: "read", description: "Read files.", parameters: { type: "object" } },
+		];
+		const { direct, proxied } = codemodeCatalog(authorized);
+		expect(direct.map((t) => t.name)).toEqual(["codemode"]);
+		expect(direct[0]?.description).toBe("Run scripts.");
+		expect(direct[0]?.inputSchema).toEqual({ type: "object", properties: { code: { type: "string" } } });
+		expect(proxied.map((t) => t.name)).toEqual(["subagent", "read"]);
+	});
+
+	it("falls back to an info/call-only catalog when codemode is not active", () => {
+		const authorized = [{ name: "subagent", description: "Delegate." }];
+		const { direct, proxied } = codemodeCatalog(authorized);
+		expect(direct).toEqual([]);
+		expect(proxied.map((t) => t.name)).toEqual(["subagent"]);
 	});
 });

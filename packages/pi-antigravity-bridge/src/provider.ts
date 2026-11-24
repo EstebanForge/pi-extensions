@@ -248,14 +248,23 @@ export const TOOL_PRIORITY_NOTE =
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
  *  Pass systemPrompt only on a fresh conversation (see runTurnDriver). */
+/** Appended after the tool-priority note when the bridge runs in codemode
+ *  configuration: the engine's catalog has no direct file tools, so the
+ *  note's "use the Pi Bridge tools" instruction must be redirected into
+ *  scripts. */
+export const CODEMODE_NOTE =
+	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, execute) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.execute. Long or multi-step file work belongs in one script, not many tool calls.";
+
 export function buildFullPrompt(
 	systemPrompt: string | undefined,
 	digest: string,
 	prompt: string,
+	options?: { codemodeOnly?: boolean },
 ): string {
 	const parts: string[] = [];
 	if (systemPrompt) {
-		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${TOOL_PRIORITY_NOTE}\n\n${SYSTEM_PROMPT_END}`);
+		const note = options?.codemodeOnly ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE;
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${note}\n\n${SYSTEM_PROMPT_END}`);
 	}
 	if (digest) {
 		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);
@@ -1936,7 +1945,7 @@ async function runTurnDriver(
 				// coordinator calls throw on invariants: both must fail the turn
 				// visibly, not surface as an unhandled rejection.
 				const input = turn.inputFor({
-					prompt: buildFullPrompt(sys, "", userPrompt ?? "") + stageImageNote(syncImages),
+					prompt: buildFullPrompt(sys, "", userPrompt ?? "", { codemodeOnly: config.bridgeTools === "codemode" }) + stageImageNote(syncImages),
 					images: syncImages,
 				});
 				turn.bound(key);
@@ -1966,7 +1975,7 @@ async function runTurnDriver(
 						// history to a fresh conversation; the gate re-opens there.
 						const fresh = turn.loadFailed({
 							prompt:
-								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "") +
+								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "", { codemodeOnly: config.bridgeTools === "codemode" }) +
 								stageImageNote(syncImages),
 							images: syncImages,
 						});
@@ -2076,7 +2085,11 @@ async function runTurnDriver(
 		if (deps.engine !== "acp") {
 			if (rawSysPrompt && !config.agent) {
 				const stagedName = stageSyspromptAgent(
-					[SYSTEM_PROMPT_PREAMBLE, rawSysPrompt, TOOL_PRIORITY_NOTE].join("\n\n"),
+					[
+						SYSTEM_PROMPT_PREAMBLE,
+						rawSysPrompt,
+						config.bridgeTools === "codemode" ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE,
+					].join("\n\n"),
 				);
 				if (stagedName) {
 					agent = stagedName;
@@ -2127,7 +2140,7 @@ async function runTurnDriver(
 						// Both features off: the variant would equal the plain prompt.
 						if (!fbSys && !freshDigest?.text) return undefined;
 						return {
-							prompt: buildFullPrompt(fbSys, "", deliveredPrompt) + stageImageNote(runImages),
+							prompt: buildFullPrompt(fbSys, "", deliveredPrompt, { codemodeOnly: config.bridgeTools === "codemode" }) + stageImageNote(runImages),
 							contextBlock: freshDigest?.text
 								? {
 										uri: `urn:pi-bridge:context-digest/fresh/${messageCount}`,
@@ -2140,7 +2153,7 @@ async function runTurnDriver(
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt)) +
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, { codemodeOnly: config.bridgeTools === "codemode" })) +
 			stageImageNote(runImages);
 		if (!syncTurn) {
 			try {

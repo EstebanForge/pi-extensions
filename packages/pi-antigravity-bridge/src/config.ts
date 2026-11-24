@@ -50,7 +50,7 @@ export type Engine = "stream-json" | "acp";
 export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
-export type BridgeTools = "none" | "mcp" | "all";
+export type BridgeTools = "none" | "mcp" | "all" | "codemode";
 
 /** How ACP turns report token usage while Gate B stands (agy sends none).
  *  "estimate" (default): word-boundary regex over prompt/response/thought
@@ -446,7 +446,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 
 	const bridgeRaw = String(process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
 	const bridgeTools: BridgeTools =
-		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp"
+		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp" || bridgeRaw === "codemode"
 			? bridgeRaw
 			: DEFAULTS.bridgeTools;
 

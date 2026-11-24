@@ -36,8 +36,11 @@ deterministic; the wiring on the pi side already exists.
 What actually exists in the tree today:
 
 - `extensions/index.ts` `listTools()` builds the MCP catalog live from pi's
-  active tools; a session with the codemode tool active already advertises
-  it to the engine.
+  active tools. Pi's builtin codemode tool was excluded from every bridge
+  mode (builtin source) until the opt-in `bridgeTools: codemode` mode
+  landed: that mode advertises codemode as the one direct tool plus the
+  info/call pair, and the provider's system prompt gains a note redirecting
+  the file-tool instruction into scripts.
 - The STILL RUNNING early-ack plus `bridge_poll_result` already covers any
   bridge call past ~20s, so long scripts are handled by the generic path.
 - `mcpServers` registration on both session/new and session/load carries

@@ -272,3 +272,17 @@ test("gate: a user-configured agent wins; the block falls back inline (never clo
 		}
 	});
 });
+
+test("codemode note rides the gate only when requested", () => {
+	// Default: the plain note, no codemode redirection.
+	const plain = buildFullPrompt(SYS, "", "hello");
+	assert.equal(plain.includes("codemode configuration"), false);
+	// Codemode configuration: the note redirects the file-tool instruction
+	// into scripts, still inside the delimited block.
+	const cm = buildFullPrompt(SYS, "", "hello", { codemodeOnly: true });
+	assert.ok(cm.includes("codemode configuration"), "the codemode note is present");
+	assert.ok(cm.indexOf("codemode configuration") > cm.indexOf(TOOL_PRIORITY_NOTE), "it follows the tool priority note");
+	assert.ok(cm.indexOf("codemode configuration") < cm.indexOf(SYSTEM_PROMPT_END), "it stays inside the delimited block");
+	// No system prompt, no note either (same gate as the priority note).
+	assert.equal(buildFullPrompt(undefined, "", "hello", { codemodeOnly: true }).includes("codemode configuration"), false);
+});

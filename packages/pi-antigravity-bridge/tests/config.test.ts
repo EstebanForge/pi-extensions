@@ -67,11 +67,26 @@ test("config: defaults select the full bridge surface", () => {
 test("config: bridgeTools round-trips through load/save", () => {
 	const p = tmpConfig();
 	try {
-		for (const surface of ["all", "mcp", "none"] as const) {
+		for (const surface of ["all", "mcp", "none", "codemode"] as const) {
 			saveConfig({ bridgeTools: surface }, p);
 			assert.equal(loadConfig(p).bridgeTools, surface);
 		}
 	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: AGY_BRIDGE_TOOLS accepts codemode", () => {
+	const p = tmpConfig();
+	try {
+		process.env.AGY_BRIDGE_TOOLS = "codemode";
+		assert.equal(loadConfig(p).bridgeTools, "codemode");
+		process.env.AGY_BRIDGE_TOOLS = "CODEMODE";
+		assert.equal(loadConfig(p).bridgeTools, "codemode");
+		process.env.AGY_BRIDGE_TOOLS = "garbage";
+		assert.equal(loadConfig(p).bridgeTools, "all");
+	} finally {
+		delete process.env.AGY_BRIDGE_TOOLS;
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
