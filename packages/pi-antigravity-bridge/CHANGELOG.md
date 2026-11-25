@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- With the approval gate on, the shadow `bash` (which replaces pi's `bash` for every model, not only Antigravity) now runs commands with the session's `shellCommandPrefix` and `shellPath` settings, like pi's own bash. Before, the twin was built without them, so a configured prefix or shell wrapper silently stopped applying to every bash call once the gate was enabled. Hosts without `pi.getSettings` keep the previous behavior.
+- `bridgeTools: "none"` no longer disables an active approval gate. Startup returned before staging the gate, so agy's native tools ran ungated while the provider stayed usable. The listener now starts for the gate alone and exposes no pi tools.
+
 ## [1.15.1] - 2026-11-25
 
 ### Fixed

@@ -22,6 +22,8 @@
 //
 // Run: npm test
 
+import os from "node:os";
+import path from "node:path";
 import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -230,4 +232,23 @@ export function createShadowTool(base: AnyToolDefinition, policy: GatePolicy, op
 		};
 	};
 	return { ...base, parameters: withGateMarkerSchema(base.parameters), execute } as AnyToolDefinition;
+}
+
+/** The shell options pi passes its own bash tool (shellCommandPrefix,
+ *  shellPath), read from the session's effective settings. The bash shadow
+ *  replaces pi's bash for every model, so its twin must run commands the same
+ *  way. pi expands a leading "~" in shellPath; mirror that. Hosts without
+ *  pi.getSettings keep the previous option-less twin. */
+export function bashSettingsOptions(pi: {
+	getSettings?: () => { shellCommandPrefix?: string; shellPath?: string };
+}): { commandPrefix?: string; shellPath?: string } {
+	if (typeof pi.getSettings !== "function") return {};
+	const { shellCommandPrefix, shellPath } = pi.getSettings();
+	const home = os.homedir();
+	const expanded =
+		shellPath === "~" ? home : shellPath?.startsWith("~/") ? path.join(home, shellPath.slice(2)) : shellPath;
+	return {
+		...(shellCommandPrefix ? { commandPrefix: shellCommandPrefix } : {}),
+		...(expanded ? { shellPath: expanded } : {}),
+	};
 }

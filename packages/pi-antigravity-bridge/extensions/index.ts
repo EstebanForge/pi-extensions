@@ -55,6 +55,7 @@ import { PollRunFolder, type PollRunData } from "../src/poll-fold.js";
 import {
 	createShadowTool,
 	stripMarkerFields,
+	bashSettingsOptions,
 	type AnyToolDefinition,
 	type GatePolicy,
 } from "../src/approval-gate.js";
@@ -985,9 +986,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		sweepStaleBridgeDirs();
 		sweepStagedAgyHomes();
 		// Start the bridge unless the user turned it off. No patch gate, no
-		// consent flow: calls route through pi's normal toolUse loop.
+		// consent flow: calls route through pi's normal toolUse loop. The
+		// approval gate rides the same listener, so an active gate keeps it
+		// running even with bridgeTools "none" (no pi tools are listed):
+		// hiding pi tools from agy must never un-gate agy's native tools.
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
-		if (bridgeMode === "none") return; // user opted out
+		const gateWanted = resolveGateMode(loadConfig().approvals.gateMode, detectPermissionGateExtensions()) !== "off";
+		if (bridgeMode === "none" && !gateWanted) return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
@@ -1210,11 +1215,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					// pi.getAllTools() is unusable here: it returns ToolInfo, which
 					// strips execute. Marker calls never execute; non-marker calls
 					// delegate to the twins, so behavior matches the standard
-					// builtins (session-level bash-operations overrides are not
-					// inherited; documented in README).
+					// builtins. The shadow replaces bash for EVERY model, so the
+					// twin gets the same shellCommandPrefix/shellPath settings pi
+					// gives its own bash (session-level bash-operations overrides
+					// are still not inherited; documented in README).
 					const gateCwd = process.cwd();
 					const bases: Record<string, AnyToolDefinition> = {
-						bash: createBashToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						bash: createBashToolDefinition(gateCwd, bashSettingsOptions(pi)) as unknown as AnyToolDefinition,
 						write: createWriteToolDefinition(gateCwd) as unknown as AnyToolDefinition,
 						edit: createEditToolDefinition(gateCwd) as unknown as AnyToolDefinition,
 					};
