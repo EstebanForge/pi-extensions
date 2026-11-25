@@ -179,6 +179,7 @@ function capturingDriver(seen: { opts?: DriverTurnRequest }): StreamDriver {
 
 async function captureTurn(
 	engine: "stream-json" | "acp",
+	gateUnavailable?: () => string | undefined,
 ): Promise<{ opts?: DriverTurnRequest; events: unknown[] }> {
 	const seen: { opts?: DriverTurnRequest } = {};
 	const driver = capturingDriver(seen);
@@ -193,6 +194,7 @@ async function captureTurn(
 		acpDriver: engine === "acp" ? capturingDriver(seen) : undefined,
 		roundTrips: new ToolRoundTrips(driver),
 		engine,
+		gateUnavailable,
 	});
 	const stream = streamSimple(
 		{ ...model },
@@ -250,6 +252,18 @@ test("provider: refusals finalize exactly once (single occurrence of the message
 		const { events } = await captureTurn("stream-json");
 		const occurrences = (JSON.stringify(events).match(/readOnly cannot be enforced on provider turns/g) || []).length;
 		assert.equal(occurrences, 1, "the refusal text must appear exactly once in the stream");
+	});
+});
+
+test("provider: a required approval gate that is not staged refuses the turn on both engines", async () => {
+	await withEnvs({ AGY_READONLY: "0", AGY_MODE: "accept-edits" }, async () => {
+		for (const engine of ["stream-json", "acp"] as const) {
+			const { opts, events } = await captureTurn(engine, () => "MCP listener failed: test");
+			assert.equal(opts, undefined, `${engine}: an ungated turn must not reach the driver`);
+			assert.match(JSON.stringify(events), /approval gate is required but not active \(MCP listener failed: test\)/);
+		}
+		const { opts } = await captureTurn("stream-json", () => undefined);
+		assert.ok(opts, "a staged (or unrequired) gate must not refuse");
 	});
 });
 

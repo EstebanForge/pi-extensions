@@ -688,6 +688,11 @@ export interface StreamSimpleDeps {
 	onNativeBackground?: (info: { conversationId: string; turnStartMs: number }) => void;
 	/** Subagent roster (both engines); folded from every activity. */
 	roster?: SubagentRoster;
+	/** Why the approval gate this session requires is not staged, or
+	 *  undefined when it is staged or not required. A set reason refuses
+	 *  provider turns: an unstaged gate would let agy's native tools run
+	 *  without the pi-side approval the config asked for. */
+	gateUnavailable?: () => string | undefined;
 	/** Session keys rotated on `session_compact` awaiting a one-shot
 	 *  compaction handoff into a fresh agy conversation. */
 	pendingCompactionHandoff?: Set<string>;
@@ -2732,6 +2737,19 @@ export function createStreamSimple(
 				blocks,
 				"error",
 				"Plan mode cannot be enforced on provider turns: the agy CLI stages a plan and executes writes in the same turn (probed 2026-10-07, google-antigravity/antigravity-cli#1181), and provider plan turns are disabled on ACP too. /agy mode accept-edits, and enforce review-only in the host.",
+			);
+			return stream;
+		}
+		const gateMissing = deps.gateUnavailable?.();
+		if (gateMissing) {
+			const partial = newAssistant(model);
+			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			deps.log?.("turn-error", { reason: "approval-gate-unavailable" }, "warn");
+			finalize(
+				stream,
+				blocks,
+				"error",
+				`The approval gate is required but not active (${gateMissing}), so agy's native tools would run without pi-side approval. Restart pi; /agy doctor shows the bridge state.`,
 			);
 			return stream;
 		}

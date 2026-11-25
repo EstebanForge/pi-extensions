@@ -231,6 +231,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Staged gate hooks do not stop agy's own request_permission path, so when
 	// true the ACP driver stops letting skipPermissions auto-allow it.
 	let gateActive = false;
+	// Set while a required approval gate is not staged; provider turns are
+	// refused until the shadows are registered (fail closed).
+	let gateUnavailable: string | undefined;
 	let managedAcpCleanupRan = false;
 	let legacyConfigCleanupRan = false;
 	let digestMigrationRan = false;
@@ -687,6 +690,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		onNativeEvent,
 		onNativeBackground: (info) => armConversationWatcher(info.conversationId, info.turnStartMs),
 		roster,
+		gateUnavailable: () => gateUnavailable,
 		pendingCompactionHandoff,
 		hasActiveTool: (name) => pi.getActiveTools().includes(name),
 		engine,
@@ -992,8 +996,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// hiding pi tools from agy must never un-gate agy's native tools.
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
 		const gateWanted = resolveGateMode(loadConfig().approvals.gateMode, detectPermissionGateExtensions()) !== "off";
-		if (bridgeMode === "none" && !gateWanted) return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
+		gateUnavailable = gateWanted ? "approval gate not staged yet" : undefined;
+		if (bridgeMode === "none" && !gateWanted) return; // user opted out
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
 		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
@@ -1261,9 +1266,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					// approval toolUse must never dispatch to the REAL builtin and
 					// execute locally.
 					roundTrips.approvalPark = handle.approvals;
+					gateUnavailable = undefined;
 				}
 			}
 		} else {
+			if (gateUnavailable) gateUnavailable = `MCP listener failed: ${r.reason}`;
 			console.error(`[antigravity-bridge] MCP tool bridge disabled: ${r.reason}`);
 		}
 	});
