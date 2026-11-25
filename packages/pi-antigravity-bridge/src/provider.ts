@@ -88,6 +88,15 @@ export function _resetObservationalMemoryWarnedForTesting(): void {
  *  each other's files. */
 const stagedAgentByConversation = new Map<string, string>();
 
+/** Per-session mid-park steering cursor: the context length the current turn
+ *  was dispatched with, and the transcript index past the last steer actually
+ *  delivered to agy. The moving first-pending-toolResult anchor alone misses
+ *  a steer that landed during an EARLIER park of a park chain: the anchor
+ *  moves to the newer park's toolResult, which sits after the steer, and the
+ *  settle claims it undelivered. Absent (pi restart mid-turn) the provider
+ *  falls back to the anchor rule. */
+const steerCursors = new Map<string, { dispatchedAt: number; deliveredThrough: number }>();
+
 /** Zero-usage helper. agy doesn't expose token counts; pi's cost math gets
  *  zeros (we're not billing through this provider). */
 function zeroUsage(): Usage {
@@ -375,9 +384,9 @@ const ACP_DIGEST_MAX_CHARS = 24_000;
 /** stream-json single-prompt silent-drop cap (issue #2, probed 2026-09-30):
  *  the CLI drops any prompt past ~25KB with SUCCESS and an empty response,
  *  and the dropped turn leaves the conversation permanently unresponsive. */
-const STREAM_JSON_PROMPT_CAP = 25_000;
+export const STREAM_JSON_PROMPT_CAP = 25_000;
 /** Headroom under the cap for the staged-image note and prompt framing. */
-const STREAM_JSON_PROMPT_MARGIN = 4_096;
+export const STREAM_JSON_PROMPT_MARGIN = 4_096;
 
 /** Per-engine digest cap. ACP ships the digest as an embeddedContext
 	resource block: no prompt cap applies, so the probe-raised cap stands.
@@ -1372,31 +1381,39 @@ export interface SteeredUserMessage {
 	images: Array<{ data: string; mimeType: string }>;
 }
 
-/** User messages pi delivered into the context after the first still-pending
- *  toolResult: pi's steering poll runs right after tool results, so a message
- *  typed while agy was parked joins the transcript but the continuation pass
- *  re-attaches to the parked turn and sends no new user event (Baluard
- *  2026-11-25: the message sat in the transcript, agy never saw it, and pi's
- *  drained queue never re-triggered - the turn just ended). Everything at or
- *  before the first pending toolResult belongs to the parked turn's
- *  dispatched prompt; backlog shapes (compaction/branch/bash runs) never
- *  count as steering. Pure; exported for tests. */
-export function collectSteeredUserMessages(messages: Message[], pendingIds: readonly string[]): SteeredUserMessage[] {
+/** User messages pi delivered into the context after the steering floor: pi's
+ *  steering poll runs right after tool results, so a message typed while agy
+ *  was parked joins the transcript but the continuation pass re-attaches to
+ *  the parked turn and sends no new user event (Baluard 2026-11-25: the
+ *  message sat in the transcript, agy never saw it, and pi's drained queue
+ *  never re-triggered - the turn just ended). The floor is the session's
+ *  steering cursor (dispatch length + delivered-through); without one (pi
+ *  restart mid-turn) it falls back to the first still-pending toolResult's
+ *  index, whose everything-before belongs to the parked turn's dispatched
+ *  prompt. Backlog shapes (compaction/branch/bash runs) never count as
+ *  steering. Pure; exported for tests. */
+export function collectSteeredUserMessages(messages: Message[], pendingIds: readonly string[], floor?: number): SteeredUserMessage[] {
 	if (pendingIds.length === 0) return [];
-	const pending = new Set(pendingIds);
-	let anchor = -1;
-	for (let i = 0; i < messages.length; i++) {
-		const m = messages[i];
-		if (m.role !== "toolResult") continue;
-		const id = (m as { toolCallId?: string }).toolCallId;
-		if (id && pending.has(id)) {
-			anchor = i;
-			break;
+	let start: number;
+	if (floor !== undefined) {
+		start = floor;
+	} else {
+		const pending = new Set(pendingIds);
+		let anchor = -1;
+		for (let i = 0; i < messages.length; i++) {
+			const m = messages[i];
+			if (m.role !== "toolResult") continue;
+			const id = (m as { toolCallId?: string }).toolCallId;
+			if (id && pending.has(id)) {
+				anchor = i;
+				break;
+			}
 		}
+		if (anchor < 0) return [];
+		start = anchor + 1;
 	}
-	if (anchor < 0) return [];
 	const out: SteeredUserMessage[] = [];
-	for (let i = anchor + 1; i < messages.length; i++) {
+	for (let i = start; i < messages.length; i++) {
 		const m = messages[i];
 		if (m.role !== "user") continue;
 		if (isBacklogUserShape(blocksToText(m.content))) continue;
@@ -1712,8 +1729,21 @@ async function runTurnDriver(
 	const results = collectToolResults(context.messages, deps.roundTrips.pendingIds);
 	const isContinuation = results.length > 0;
 	// Scanned before the resolve loop: the pending set must still contain the
-	// parks being resolved, and the anchor is the first of them.
-	const steered = ephemeral ? [] : collectSteeredUserMessages(context.messages, deps.roundTrips.pendingIds);
+	// parks being resolved. The steering floor is the session's dispatch
+	// cursor when one exists (dispatch length + delivered-through), else the
+	// first-pending-toolResult anchor fallback.
+	const steerCursor = steerCursors.get(key);
+	const steered = ephemeral
+		? []
+		: collectSteeredUserMessages(
+				context.messages,
+				deps.roundTrips.pendingIds,
+				steerCursor ? Math.max(steerCursor.dispatchedAt, steerCursor.deliveredThrough) : undefined,
+		  );
+	// Set when a steer leads the dead-turn fallback into a fresh dispatch: the
+	// steer shipped as that dispatch's own prompt, so the post-outcome sweep
+	// must stay off (and its stranded-claim re-sweep with it).
+	let steerLedFresh = false;
 	// Escalated calls answer through bridge_poll_result, not through an agy
 	// turn waiting on the park, so note them before resolving.
 	const escalatedNames = results
@@ -1844,7 +1874,13 @@ async function runTurnDriver(
 		// Dead turn: claim NOW (single-use). A live turn claims after outcome
 		// instead — claiming here would eat the post-outcome recovery.
 		if (!ephemeral) late.push(...collectStranded());
-		if (isContinuation && late.length === 0) {
+		// A steer with a bound conversation leads the fresh dispatch instead of
+		// stopping quietly: the trailing user run becomes the prompt, so the
+		// message is answered rather than dropped or left to the digest window.
+		// The sweep below must not re-deliver what that dispatch just shipped.
+		const steerCanLead = steered.length > 0 && Boolean(existing?.conversationId);
+		if (isContinuation && late.length === 0 && steerCanLead) steerLedFresh = true;
+		if (isContinuation && late.length === 0 && !steerCanLead) {
 			if (escalatedNames.length === 0) {
 				deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
 				finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
@@ -1970,6 +2006,14 @@ async function runTurnDriver(
 		// contract, and the settle bypasses the digest store writes. Legacy
 		// paths (late/strand redelivery, retry-dropped resume, post-compaction
 		// resume) and the churn latch stay on the digest flow.
+		// A fresh dispatch of the trailing user run opens a new steering window:
+		// everything up to here is the prompt the turn carries, so mid-park
+		// steers must land strictly after this index. Synthetic prompts (late
+		// strands, resume, compaction seeding) do NOT open one - their context
+		// may still hold undelivered steers.
+		if (!resume && !compactionResume && late.length === 0) {
+			steerCursors.set(key, { dispatchedAt: messageCount, deliveredThrough: 0 });
+		}
 		const handoffRuntime = deps.handoffRuntime;
 		const syncTurnRequested = config.handoff === "sync" && engine === "acp";
 		if (
@@ -2399,51 +2443,88 @@ async function runTurnDriver(
 	// fix: sweep and deliver as a late run in the same conversation. Single
 	// shot: claims are single-use, so a re-delivered strand cannot reappear
 	// here; a late run that parks hands recovery to the next pi pass.
+	// A late-start failure must invalidate the sync contract below: its
+	// checkpoint would claim the steer agy never received.
+	let lateStartFailed = false;
 	if (!ephemeral && isContinuation && outcome.status === "OK" && !outcome.aborted) {
-		const more = collectStranded();
+		const more = steerLedFresh ? [] : collectStranded();
 		// Steered messages join the same late run: pi delivered them into the
 		// context while the turn was parked and the reentry pass sent nothing
 		// to agy, so this sweep is the only delivery window left.
-		if (more.length > 0 || steered.length > 0) {
+		if (!steerLedFresh && (more.length > 0 || steered.length > 0)) {
 			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
 			const steerText = steered.map((s) => s.text).filter(Boolean).join("\n\n");
 			const latePrompt = more.length > 0 ? buildLateResultPrompt(more, steerText || undefined) : steerText;
+			// stream-json silently drops any prompt past the cap (issue #2) and
+			// the dropped turn leaves the conversation unresponsive: slice the
+			// steer visibly instead of killing it.
+			const lateBudget = STREAM_JSON_PROMPT_CAP - STREAM_JSON_PROMPT_MARGIN;
+			let deliveredLatePrompt = latePrompt;
+			if ((deps.engine ?? config.engine) !== "acp" && Buffer.byteLength(latePrompt, "utf8") > lateBudget) {
+				deliveredLatePrompt = `[truncated]\n${Buffer.from(latePrompt, "utf8").subarray(0, Math.max(0, lateBudget - 32)).toString("utf8")}`;
+				deps.log?.(
+					"turn-warning",
+					{ reason: "steer-prompt-truncated", bytes: Buffer.byteLength(latePrompt, "utf8"), budget: lateBudget },
+					"warn",
+				);
+			}
 			const moreImages = [...more.flatMap((s) => s.images ?? []), ...steered.flatMap((s) => s.images)];
 			deps.log?.(
 				"steered-redelivery-turn",
 				{ tools: more.map((s) => s.name), steered: steered.length, conversation: conv },
 				"info",
 			);
-			try {
-				const lateHandle = await deps.driver.run({
-					cwd,
-					model: agyModel,
-					effort,
-					mode: config.mode,
-					skipPermissions: config.skipPermissions,
-					timeoutMin: config.turnTimeoutMin,
-					inactivityMin: config.inactivityTimeoutMin,
-					conversationId: conv,
-					prompt: latePrompt + stageImageNote(moreImages),
-					images: moreImages.length > 0 ? moreImages : undefined,
-					agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
-					signal: options?.signal,
-				});
-				if ((await drainTurn(lateHandle)) === "parked") return;
-				outcome = await lateHandle.outcome;
-			} catch (err) {
-				// Release the claims so the next pass can retry the delivery.
+			if (!conv) {
+				// Unbindable: a brand-new conversation would answer the steer with
+				// zero context. Release the claims and hold the watermark - the
+				// digest re-offers the steer once a conversation is bound.
 				for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
-				// A steer has no registry to re-arm, only the digest window: hold
-				// the watermark at the first undelivered message so the next turn
-				// re-offers it (the delivery-invariant direction: claim nothing
-				// that did not reach agy).
-				if (steered.length > 0) nextCount = steered[0].index;
-				deps.log?.(
-					"turn-error",
-					{ reason: "redelivery-start-failed", error: err instanceof Error ? err.message : String(err) },
-					"error",
-				);
+				lateStartFailed = true;
+				if (steered.length > 0) {
+					nextCount = steered[0].index;
+					nextBoundary = boundaryFingerprint(context.messages[steered[0].index - 1]);
+				}
+				deps.log?.("turn-warning", { reason: "steer-redelivery-unbound", steered: steered.length }, "warn");
+			} else {
+				try {
+					const lateHandle = await deps.driver.run({
+						cwd,
+						model: agyModel,
+						effort,
+						mode: config.mode,
+						skipPermissions: config.skipPermissions,
+						timeoutMin: config.turnTimeoutMin,
+						inactivityMin: config.inactivityTimeoutMin,
+						conversationId: conv,
+						prompt: deliveredLatePrompt + stageImageNote(moreImages),
+						images: moreImages.length > 0 ? moreImages : undefined,
+						agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
+						signal: options?.signal,
+					});
+					// Accepted by agy from here on: a parked late run hands
+					// recovery to the next pass, which must not re-collect it.
+					const cursor = steerCursors.get(key);
+					if (cursor && steered.length > 0) cursor.deliveredThrough = steered[steered.length - 1].index + 1;
+					if ((await drainTurn(lateHandle)) === "parked") return;
+					outcome = await lateHandle.outcome;
+				} catch (err) {
+					// Release the claims so the next pass can retry the delivery.
+					for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
+					// A steer has no registry to re-arm, only the digest window: hold
+					// the watermark AND the boundary fingerprint at the first
+					// undelivered message, or the next turn reads the mismatched
+					// boundary as a mutated transcript and resets to full history.
+					lateStartFailed = true;
+					if (steered.length > 0) {
+						nextCount = steered[0].index;
+						nextBoundary = boundaryFingerprint(context.messages[steered[0].index - 1]);
+					}
+					deps.log?.(
+						"turn-error",
+						{ reason: "redelivery-start-failed", error: err instanceof Error ? err.message : String(err) },
+						"error",
+					);
+				}
 			}
 		}
 	}
@@ -2471,7 +2552,10 @@ async function runTurnDriver(
 				})();
 			const result = settleSync.finish(
 				{
-					ok: outcome.status === "OK",
+					// A late-start failure leaves the steer undelivered: a terminal
+					// checkpoint would claim it. Invalidate so the next turn re-plans
+					// and the rebuild re-ships the steer as the newest user entry.
+					ok: outcome.status === "OK" && !lateStartFailed,
 					conversationId: outcome.conversationId ?? null,
 					aborted: outcome.aborted,
 					promptAttempted: outcome.promptAttempted,
