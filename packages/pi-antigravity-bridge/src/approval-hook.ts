@@ -1,9 +1,10 @@
 // Staging for the approval-gate hooks.json (docs/TODO.md 2.5).
 //
 // The agy CLI discovers `.agents/hooks.json` in its --add-dir directories
-// (live-probed 2026-09-22: stream-json and interactive sessions load and
-// execute PreToolUse hooks from any add-dir; print mode reads only the
-// global config) and fires them before a gated tool runs (V2: deny
+// (live-probed 2026-09-22 for stream-json and interactive sessions, and
+// 2026-11-25 on agy 1.5.17 for print mode `-p`, which also loads and
+// executes add-dir hooks - an earlier note here claimed print mode read
+// only the global config) and fires them before a gated tool runs (V2: deny
 // honored, reason reaches the model; V3: hook TIMEOUT = soft-pass, agy
 // proceeds ungated). Therefore:
 //   - the staged handler timeout must exceed the whole park budget with

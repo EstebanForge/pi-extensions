@@ -355,3 +355,33 @@ test("bridgeRealm survives module reload with live member, prefers newest duplic
 	await sOther.leave();
 	await sNew.leave();
 });
+
+test("an approval park with no streaming antigravity turn denies with the delegated-run reason", async () => {
+	withTmpAgentDir();
+	const realm = bridgeRealm();
+	const s1 = realm.join({
+		sessionId: () => "sess-idle",
+		streamSimple: makeStream("idle"),
+		hasActiveTurn: () => false,
+		conversationId: () => "conv-idle",
+	});
+	const a = await s1.attachBridge(makeDeps("t-idle"), () => {});
+	assert.equal(a.ok, true);
+	assert.ok(a.handle);
+	try {
+		const parked = await mcpPostApproval(a.handle.port, a.handle.realmToken);
+		assert.equal(parked.status, 200);
+		assert.ok(typeof parked.body.ticket === "string");
+		const poll = await fetch(`http://127.0.0.1:${a.handle.port}/approval/${parked.body.ticket as string}`, {
+			headers: { [TOKEN_HEADER]: a.handle.realmToken },
+		});
+		const decision = (await poll.json()) as { decision?: string; reason?: string };
+		assert.equal(decision.decision, "deny");
+		assert.ok(
+			(decision.reason ?? "").includes("no antigravity turn is streaming"),
+			`the deny must tell a delegated run why it cannot be approved, got: ${decision.reason}`,
+		);
+	} finally {
+		await s1.leave();
+	}
+});

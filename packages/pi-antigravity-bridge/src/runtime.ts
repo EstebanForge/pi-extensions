@@ -236,7 +236,7 @@ class Realm implements BridgeRealm {
 				onApproval(ticket, payload);
 				return;
 			}
-			this.#server?.approvals.resolve(ticket, { allow: false, reason: `approval gate: ${this.#unattributed()}` });
+			this.#server?.approvals.resolve(ticket, { allow: false, reason: this.#unroutableApproval() });
 		},
 	};
 
@@ -251,6 +251,15 @@ class Realm implements BridgeRealm {
 	#unattributed(): string {
 		const open = [...this.#members].filter((m) => m.bridge && m.port.hasActiveTurn());
 		return open.length > 1 ? SEVERAL_TURNS : NO_TURN;
+	}
+
+	// The deny reaches delegated `agy -p` runs too once they carry the staged
+	// gate dir, so this text is written for that reader, not the provider.
+	#unroutableApproval(): string {
+		const open = [...this.#members].filter((m) => m.bridge && m.port.hasActiveTurn());
+		return open.length > 1
+			? `approval gate: ${SEVERAL_TURNS}`
+			: "approval gate: no antigravity turn is streaming, so this delegated run's mutating tool call cannot reach a pi-side approval and is denied; run the mutating step inside an antigravity turn, or set approvals.gateMode off";
 	}
 
 	#log(event: string, data?: unknown): void {
