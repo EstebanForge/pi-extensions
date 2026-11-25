@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- A user message typed while a bridge tool round-trip was parked no longer vanishes (Baluard session 2026-11-25 11:54): pi's steering poll delivered it into the transcript, but the continuation pass re-attached to the parked turn without sending any new user event, so the model answered the pre-park work, the queue stayed empty, and the turn ended with the message sitting unanswered. The provider now collects user messages that joined after the first pending toolResult and delivers them to the same conversation in a late run once the parked turn settles OK, combined with any stranded escalated results in a single prompt (image blocks ride along; the plain no-steer continuation still starts no run). A failed late start holds the watermark at the first undelivered message, so the digest re-offers the steer next turn instead of the settle marking it delivered (the delivery invariant: claim only what reached agy).
+
 ## [1.15.0] - 2026-11-24
 
 ### Added

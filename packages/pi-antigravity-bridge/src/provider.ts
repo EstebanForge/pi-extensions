@@ -1364,6 +1364,49 @@ export interface LateToolResult {
 	images?: Array<{ data: string; mimeType: string }>;
 }
 
+export interface SteeredUserMessage {
+	/** Transcript index of the message; the watermark hold on a failed
+	 *  delivery claims up to this index. */
+	index: number;
+	text: string;
+	images: Array<{ data: string; mimeType: string }>;
+}
+
+/** User messages pi delivered into the context after the first still-pending
+ *  toolResult: pi's steering poll runs right after tool results, so a message
+ *  typed while agy was parked joins the transcript but the continuation pass
+ *  re-attaches to the parked turn and sends no new user event (Baluard
+ *  2026-11-25: the message sat in the transcript, agy never saw it, and pi's
+ *  drained queue never re-triggered - the turn just ended). Everything at or
+ *  before the first pending toolResult belongs to the parked turn's
+ *  dispatched prompt; backlog shapes (compaction/branch/bash runs) never
+ *  count as steering. Pure; exported for tests. */
+export function collectSteeredUserMessages(messages: Message[], pendingIds: readonly string[]): SteeredUserMessage[] {
+	if (pendingIds.length === 0) return [];
+	const pending = new Set(pendingIds);
+	let anchor = -1;
+	for (let i = 0; i < messages.length; i++) {
+		const m = messages[i];
+		if (m.role !== "toolResult") continue;
+		const id = (m as { toolCallId?: string }).toolCallId;
+		if (id && pending.has(id)) {
+			anchor = i;
+			break;
+		}
+	}
+	if (anchor < 0) return [];
+	const out: SteeredUserMessage[] = [];
+	for (let i = anchor + 1; i < messages.length; i++) {
+		const m = messages[i];
+		if (m.role !== "user") continue;
+		if (isBacklogUserShape(blocksToText(m.content))) continue;
+		const parts = lastMessageParts(m);
+		if (!parts.text && parts.images.length === 0) continue;
+		out.push({ index: i, text: parts.text ?? "", images: parts.images });
+	}
+	return out;
+}
+
 /** Frame late tool results so agy treats them as the results its bridge calls
  *  never received: a park whose round-trip died while the pi tool ran, or an
  *  escalated result the model never polled. The reason carries the framing. */
@@ -1668,6 +1711,9 @@ async function runTurnDriver(
 	// agy receives the result via the bridge's MCP HTTP response.
 	const results = collectToolResults(context.messages, deps.roundTrips.pendingIds);
 	const isContinuation = results.length > 0;
+	// Scanned before the resolve loop: the pending set must still contain the
+	// parks being resolved, and the anchor is the first of them.
+	const steered = ephemeral ? [] : collectSteeredUserMessages(context.messages, deps.roundTrips.pendingIds);
 	// Escalated calls answer through bridge_poll_result, not through an agy
 	// turn waiting on the park, so note them before resolving.
 	const escalatedNames = results
@@ -2355,10 +2401,19 @@ async function runTurnDriver(
 	// here; a late run that parks hands recovery to the next pi pass.
 	if (!ephemeral && isContinuation && outcome.status === "OK" && !outcome.aborted) {
 		const more = collectStranded();
-		if (more.length > 0) {
+		// Steered messages join the same late run: pi delivered them into the
+		// context while the turn was parked and the reentry pass sent nothing
+		// to agy, so this sweep is the only delivery window left.
+		if (more.length > 0 || steered.length > 0) {
 			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
-			deps.log?.("escalated-redelivery-turn", { tools: more.map((s) => s.name), conversation: conv }, "info");
-			const moreImages = more.flatMap((s) => s.images ?? []);
+			const steerText = steered.map((s) => s.text).filter(Boolean).join("\n\n");
+			const latePrompt = more.length > 0 ? buildLateResultPrompt(more, steerText || undefined) : steerText;
+			const moreImages = [...more.flatMap((s) => s.images ?? []), ...steered.flatMap((s) => s.images)];
+			deps.log?.(
+				"steered-redelivery-turn",
+				{ tools: more.map((s) => s.name), steered: steered.length, conversation: conv },
+				"info",
+			);
 			try {
 				const lateHandle = await deps.driver.run({
 					cwd,
@@ -2369,7 +2424,7 @@ async function runTurnDriver(
 					timeoutMin: config.turnTimeoutMin,
 					inactivityMin: config.inactivityTimeoutMin,
 					conversationId: conv,
-					prompt: buildLateResultPrompt(more) + stageImageNote(moreImages),
+					prompt: latePrompt + stageImageNote(moreImages),
 					images: moreImages.length > 0 ? moreImages : undefined,
 					agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
 					signal: options?.signal,
@@ -2379,6 +2434,11 @@ async function runTurnDriver(
 			} catch (err) {
 				// Release the claims so the next pass can retry the delivery.
 				for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
+				// A steer has no registry to re-arm, only the digest window: hold
+				// the watermark at the first undelivered message so the next turn
+				// re-offers it (the delivery-invariant direction: claim nothing
+				// that did not reach agy).
+				if (steered.length > 0) nextCount = steered[0].index;
 				deps.log?.(
 					"turn-error",
 					{ reason: "redelivery-start-failed", error: err instanceof Error ? err.message : String(err) },
