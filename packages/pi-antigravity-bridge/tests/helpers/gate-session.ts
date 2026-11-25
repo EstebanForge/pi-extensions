@@ -43,6 +43,7 @@ function nooped<T extends object>(base: T): T {
 export interface GateSession {
 	tools: Map<string, AnyToolDefinition>;
 	home: string;
+	cwd: string;
 	providerDef: { streamSimple?: BridgeStreamSimple } | undefined;
 	shutdown: () => Promise<void>;
 }
@@ -125,7 +126,7 @@ export async function startSession(
 		}
 		throw err;
 	}
-	return { tools, home, providerDef, shutdown: runShutdown };
+	return { tools, home, cwd: workspace, providerDef, shutdown: runShutdown };
 }
 
 export function globalBridgeEntry(home: string): string {

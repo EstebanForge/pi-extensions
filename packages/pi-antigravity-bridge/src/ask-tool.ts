@@ -42,6 +42,9 @@ import {
 	type Mode,
 } from "@estebanforge/pi-ask-shared";
 import { extensionsDataDir, loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
+import { detectPermissionGateExtensions, resolveGateMode } from "./approval-detect.js";
+import { gateHooksStaged } from "./approval-hook.js";
+import { bridgeMcpConfigDir } from "./mcp-server.js";
 import { redactText } from "./redact.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
 import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
@@ -825,6 +828,20 @@ export async function registerAskAntigravityTool(
 					details: emptyDetails(),
 				};
 			}
+			// Provider-parity gate wiring: the delegated spawn must ride the staged gate (driver.ts adds it to every turn) or AskAntigravity is an ungated spawn path around it; gateHooksStaged implies a live listener (a failed listener never stages).
+			const gateWanted =
+				resolveGateMode(config.approvals.gateMode, detectPermissionGateExtensions()) !== "off";
+			if (gateWanted && !gateHooksStaged()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Error: the approval gate is required but not staged for this session, so a delegated agy run would bypass it. Restart pi and check /agy doctor; if the problem persists, set approvals.gateMode to off.",
+						},
+					],
+					details: emptyDetails(),
+				};
+			}
 			const requestedModel = (params.model as string | undefined) ?? config.defaultModel;
 			if (typeof params.model === "string" && params.model.trim().startsWith("-")) {
 				return {
@@ -964,7 +981,10 @@ export async function registerAskAntigravityTool(
 				skipPermissions: config.skipPermissions !== false,
 				conversationId: isContinuation ? (rawConvId as string) : null,
 				timeoutMinutes: timeoutMin,
-				addDirs: contextFile ? [askContextDir()] : [],
+				addDirs: [
+					...(contextFile ? [askContextDir()] : []),
+					...(gateWanted ? [bridgeMcpConfigDir()] : []),
+				],
 				extraArgs: extraArgs(),
 				prompt: effectivePrompt,
 			});
