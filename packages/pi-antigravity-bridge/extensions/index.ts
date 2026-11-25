@@ -311,8 +311,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("stream-home-stage-failed", { error: String(err) }, "warn");
 				// The per-pid --add-dir config is not the stream-json delivery
 				// path; restore the global registration so the bridge stays
-				// reachable when the staged home is unusable.
-				if (mcpHandle) {
+				// reachable when the staged home is unusable. "none" still skips:
+				// no pi tools exposed means nothing to reach.
+				if (mcpHandle && loadConfig().bridgeTools !== "none") {
 					registerBridgeServer({ pid: process.pid, port: mcpHandle.port, token: mcpHandle.realmToken, tokenHeader: TOKEN_HEADER });
 				}
 				return undefined;
@@ -995,10 +996,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// running even with bridgeTools "none" (no pi tools are listed):
 		// hiding pi tools from agy must never un-gate agy's native tools.
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
-		const gateWanted = resolveGateMode(loadConfig().approvals.gateMode, detectPermissionGateExtensions()) !== "off";
+		// One resolution per session_start: the staging block below must gate
+		// on the SAME verdict, or a mid-start flip leaves the gate unstaged
+		// while gateUnavailable says pending (every turn refused until restart).
+		const gateMode = resolveGateMode(loadConfig().approvals.gateMode, detectPermissionGateExtensions());
 		if (mcpHandle) return; // already running (reload re-fires session_start)
-		gateUnavailable = gateWanted ? "approval gate not staged yet" : undefined;
-		if (bridgeMode === "none" && !gateWanted) return; // user opted out
+		gateUnavailable = gateMode === "off" ? undefined : "approval gate not staged yet";
+		if (bridgeMode === "none" && gateMode === "off") return; // user opted out
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
 		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
@@ -1128,7 +1132,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// stream-json skips the global file entirely when the isolated home
 			// is active (issue #14): this session's bridge rides the staged
 			// config instead, so no other agy on the machine can see or call it.
-			if (engine === "stream-json" && !streamHome.isolated) {
+			// bridgeTools "none" skips it too: with no pi tools exposed, a global
+			// entry would only announce the listener to agy processes the user
+			// opted out of; the gate needs no registration (its hook rides the
+			// session's own add-dir).
+			if (engine === "stream-json" && !streamHome.isolated && bridgeMode !== "none") {
 				if (r.first) {
 					registerBridgeServer({
 						pid: process.pid,
@@ -1160,7 +1168,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// enabled (auto = on only when a third-party gate extension exists).
 			{
 				const cfg = loadConfig();
-				const mode = resolveGateMode(cfg.approvals.gateMode, detectPermissionGateExtensions());
+				const mode = gateMode;
 				gateActive = mode !== "off";
 				if (mode !== "off" && engine === "acp") {
 					// Staged-home hook delivery is probe-verified on agy 1.5.12
@@ -1841,7 +1849,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						);
 					}
 				} else {
-					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active; without it this behaves like all). none: bridge off.`, "info");
+					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active; without it this behaves like all). none: no pi tools (an active approval gate still runs the listener gate-only).`, "info");
 				}
 				return;
 			}
@@ -2030,7 +2038,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "bridge",
 			label: "Bridge tools",
 			description:
-				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active, e.g. --tools codemode). none: bridge off.",
+				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active, e.g. --tools codemode). none: no pi tools (an active approval gate still runs the listener gate-only).",
 			currentValue: config.bridgeTools,
 			values: ["all", "mcp", "codemode", "none"],
 		},

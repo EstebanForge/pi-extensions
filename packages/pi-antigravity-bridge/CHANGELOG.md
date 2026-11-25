@@ -10,6 +10,9 @@ All notable changes to this project will be documented in this file.
 - `bridgeTools: "none"` no longer disables an active approval gate. Startup returned before staging the gate, so agy's native tools ran ungated while the provider stayed usable. The listener now starts for the gate alone and exposes no pi tools.
 - A required approval gate that cannot be staged (for example, the MCP listener failed to start) now refuses provider turns with a visible error instead of letting agy's native tools run without pi-side approval.
 - The shadow `bash` twin resolves a `file://` `shellPath` the way pi does.
+- The gate mode is resolved once per session start: the staging block and the fail-closed refusal state now act on the same verdict, so a config or gate-extension change mid-startup can no longer leave a required gate unstaged while the refusal state says pending (every turn refused until restart).
+- A throw while reading shell settings (host skew, malformed `file://` path) no longer aborts gate staging between hook staging and shadow registration; the twin degrades to default shell options, because losing the whole gate to shell fidelity would refuse every turn.
+- With `bridgeTools: "none"`, the bridge no longer writes its per-pid entry into the global agy config (`~/.gemini/config/mcp_config.json`), including the staged-home recovery path: with no pi tools exposed, a global entry would only announce the listener to agy processes the user opted out of. The gate needs no registration; its hook rides the session's own add-dir.
 
 ## [1.15.1] - 2026-11-25
 
