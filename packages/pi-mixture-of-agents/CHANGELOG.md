@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The preset wizard's flow confirms report as `question` blocked status instead of the `permission` confirm default.** Pi 1.6.1 adds `blockedKind` to `ctx.ui.confirm()`; the explainer, incomplete-reference save, and enable confirms now pass it, so status-bar terminals that distinguish kinds see them as questions. The overwrite guard and the delete confirm keep the permission default. Pi dependency floor moved to ^1.6.1.
+
 ## 1.0.4 — 2026-11-10
 
 ### Added

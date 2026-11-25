@@ -602,7 +602,7 @@ async function pickModelSlot(
 	return { provider: chosen.slice(0, idx), model: chosen.slice(idx + 1) };
 }
 
-async function configurePreset(nameArg: string, ctx: ExtensionCommandContext): Promise<void> {
+export async function configurePreset(nameArg: string, ctx: ExtensionCommandContext): Promise<void> {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
 		ctx.ui.notify("/moa edit requires an interactive terminal.", "warning");
 		return;
@@ -625,6 +625,8 @@ async function configurePreset(nameArg: string, ctx: ExtensionCommandContext): P
 				"",
 				"Pick models you already have configured in Pi. Continue?",
 			].join("\n"),
+			// "question" over the confirm default: wizard confirms gate dialog flow, not a write.
+			{ blockedKind: "question" },
 		);
 		if (!proceed) return;
 		name = (await ctx.ui.input("Preset name", "default")) || "";
@@ -665,11 +667,12 @@ async function configurePreset(nameArg: string, ctx: ExtensionCommandContext): P
 		const accept = await ctx.ui.confirm(
 			"Incomplete reference set",
 			`Only ${reference_models.length} of ${refCount} reference models were picked. Save with ${reference_models.length}?`,
+			{ blockedKind: "question" },
 		);
 		if (!accept) return;
 	}
 
-	const enabled = await ctx.ui.confirm(`Enable "${name}"?`, "On: refs fan out then aggregate. Off: aggregator alone.");
+	const enabled = await ctx.ui.confirm(`Enable "${name}"?`, "On: refs fan out then aggregate. Off: aggregator alone.", { blockedKind: "question" });
 
 	const preset = { reference_models, aggregator, enabled };
 	try {
@@ -685,7 +688,7 @@ async function configurePreset(nameArg: string, ctx: ExtensionCommandContext): P
 	await ctx.reload();
 }
 
-async function deletePreset(nameArg: string, ctx: ExtensionCommandContext): Promise<void> {
+export async function deletePreset(nameArg: string, ctx: ExtensionCommandContext): Promise<void> {
 	const name = nameArg.trim();
 	if (!name) return;
 
