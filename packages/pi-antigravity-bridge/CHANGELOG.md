@@ -6,7 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- `bridge_poll_result` now long-waits up to 60s for the call to settle instead of answering `STILL RUNNING` immediately (issue #29: the model burned an LLM turn per poll on multi-minute commands). Settle wakes the held request instantly, so a 40s command costs one poll instead of dozens, and a still-running call answers once a minute. The STILL RUNNING ack text is unchanged; the poll tool description now states the wait. `failAll` does not settle escalated entries, so an abandoned poll wakes via its request abort or the 60s window (`tests/poll-wait.test.ts`).
+- `bridge_poll_result` now long-waits up to 110s for the call to settle instead of answering `STILL RUNNING` immediately (issue #29: the model burned an LLM turn per poll on multi-minute commands). Settle wakes the held request instantly, so a 40s command costs one poll instead of dozens, and a still-running call answers about once every two minutes. The poll tool description and the ack text now tell the model to poll again immediately, since each poll blocks up to 110s. `failAll` does not settle escalated entries, so an abandoned poll wakes via its request abort or the window (`tests/poll-wait.test.ts`).
+- ACP sessions show session-cumulative cache telemetry in the usage status line (`· cache 91% · 14 calls`, from exact `PromptResponse.usage`) and log one `turn-usage` event per turn with the turn's call count and cache ratio.
 
 ## [1.15.2] - 2026-11-25
 

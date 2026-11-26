@@ -48,8 +48,8 @@ async function escalatedRt(callId = "c1"): Promise<ToolRoundTrips> {
 	return rt;
 }
 
-test("the poll window is 60s: under the 120s delegation hold and agy's ~180s deadline", () => {
-	assert.equal(POLL_WAIT_MS, 60_000);
+test("the poll window is 110s: under the 120s delegation hold and agy's ~180s deadline", () => {
+	assert.equal(POLL_WAIT_MS, 110_000);
 });
 
 test("waitForSettle resolves as soon as the call settles, well under the window", async () => {

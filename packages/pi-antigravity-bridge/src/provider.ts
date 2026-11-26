@@ -952,7 +952,7 @@ export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
 				type: "text",
 				text: [
 					`STILL RUNNING: the pi tool "${e.name}" has not finished yet.`,
-					`Call ${POLL_TOOL_NAME} with callId "${e.callId}" to get the result. Poll again if it still reports running; you may do other work between polls.`,
+					`Call ${POLL_TOOL_NAME} with callId "${e.callId}" to get the result. Call it again immediately after each answer: each poll now blocks up to 110 seconds and returns the moment the call settles. Do other work between polls only when that work is genuinely useful.`,
 					"Do NOT end your turn while this call is unresolved: keep polling until it reports done or failed. Ending the turn strands the result.",
 				].join("\n"),
 			},
@@ -965,14 +965,15 @@ export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
  *  request up to POLL_WAIT_MS for an instant settle, because every early
  *  STILL RUNNING costs agy a full LLM turn (quota + context). Settle wakes
  *  the waiter immediately, so the window only bounds still-running holds;
- *  60s stays under agy's ~180s request deadline with the 120s delegation
- *  hold as precedent. Turn end and shutdown do not settle escalated
- *  entries (failAll spares them), so the abort and the window are the
- *  wake-up paths for abandoned polls. An abort skips markDelivered:
- *  marking a result the client never received would strand it away from
- *  the redelivery paths. Accepted gap (unchanged): the mark fires when the
- *  poll ANSWERS, not when the HTTP response lands. */
-export const POLL_WAIT_MS = 60_000;
+ *  110s stays under agy's ~180s request deadline with the 120s delegation
+ *  hold as production precedent, and a poll killed by that deadline is
+ *  harmless (abort skips the delivered mark). Turn end and shutdown do not
+ *  settle escalated entries (failAll spares them), so the abort and the
+ *  window are the wake-up paths for abandoned polls. An abort skips
+ *  markDelivered: marking a result the client never received would strand
+ *  it away from the redelivery paths. Accepted gap (unchanged): the mark
+ *  fires when the poll ANSWERS, not when the HTTP response lands. */
+export const POLL_WAIT_MS = 110_000;
 
 export async function answerPoll(
 	roundTrips: Pick<ToolRoundTrips, "poll" | "markDelivered" | "waitForSettle">,
@@ -1001,7 +1002,7 @@ export function formatPollAnswer(callId: string, view: PollView | undefined): Br
 	}
 	if (view.state === "running") {
 		return {
-			content: [{ type: "text", text: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Poll again later.` }],
+			content: [{ type: "text", text: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Call ${POLL_TOOL_NAME} again now: it blocks up to 110 seconds and returns the moment the call settles.` }],
 			isError: false,
 		};
 	}

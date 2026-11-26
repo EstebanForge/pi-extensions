@@ -537,21 +537,58 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// SDK's exact usage metadata before it reaches the client.
 	if (engine === "acp") {
 		let lastUsageStatus = "";
+		// Per-session usage accumulator. Replace-per-message, never sum-per-event:
+		// message_update refires with growing totals while an assistant message
+		// streams, so adding on every event would double-count.
+		const usageByMessage = new Map<number, { input: number; output: number; cacheRead: number }>();
+		let usageTurnStart = { calls: 0, input: 0, output: 0, cacheRead: 0 };
+		const usageSums = () => {
+			let input = 0;
+			let output = 0;
+			let cacheRead = 0;
+			for (const u of usageByMessage.values()) {
+				input += u.input;
+				output += u.output;
+				cacheRead += u.cacheRead;
+			}
+			return { input, output, cacheRead, calls: usageByMessage.size };
+		};
+		pi.on("agent_start", () => {
+			usageTurnStart = usageSums();
+		});
 		pi.on("message_update", (event, ctx) => {
 			if (!ctx.hasUI || event.message.role !== "assistant" || event.message.provider !== "antigravity" || loadConfig().acp.usageEstimate === "off") return;
-			const { input, output } = event.message.usage;
-			const status = ctx.ui.theme.fg("dim", `ACP ≈ ${input} in / ${output} out`);
+			const { input, output, cacheRead } = event.message.usage;
+			// AssistantMessage carries no id; the request-start timestamp is the
+			// per-inference key and is stable across streaming updates.
+			usageByMessage.set(event.message.timestamp, { input, output, cacheRead });
+			const sums = usageSums();
+			const cacheBase = sums.input + sums.cacheRead;
+			const cachePct = cacheBase > 0 ? Math.round((sums.cacheRead / cacheBase) * 100) : 0;
+			const status = ctx.ui.theme.fg("dim", `ACP ≈ ${input} in / ${output} out · cache ${cachePct}% · ${sums.calls} calls`);
 			if (status !== lastUsageStatus) {
 				lastUsageStatus = status;
 				ctx.ui.setStatus("agy-usage", status);
 			}
 		});
 		const clearUsageStatus = (_event: unknown, ctx: { hasUI: boolean; ui: ExtensionUIContext }) => {
+			const sums = usageSums();
+			const turn = {
+				calls: sums.calls - usageTurnStart.calls,
+				input: sums.input - usageTurnStart.input,
+				output: sums.output - usageTurnStart.output,
+				cacheRead: sums.cacheRead - usageTurnStart.cacheRead,
+			};
+			if (turn.calls > 0) {
+				const base = turn.input + turn.cacheRead;
+				fileLog.log("turn-usage", { ...turn, cachePct: base > 0 ? Math.round((turn.cacheRead / base) * 100) : 0 });
+			}
 			lastUsageStatus = "";
 			if (ctx.hasUI) ctx.ui.setStatus("agy-usage", undefined);
 		};
 		pi.on("agent_end", (event, ctx) => {
 			clearUsageStatus(event, ctx);
+			usageByMessage.clear();
 			pendingNativeTools = 0;
 			closePollRun();
 			if (ctx.hasUI) ctx.ui.setStatus("agy-native", undefined);
@@ -1038,7 +1075,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			tools.push({
 				name: POLL_TOOL_NAME,
 				description:
-					"Fetch the result of a long-running bridge tool call that answered STILL RUNNING with a callId. The poll waits up to a minute for the result; poll again if it still reports running.",
+					"Fetch the result of a long-running bridge tool call that answered STILL RUNNING with a callId. The poll blocks up to 110 seconds for the result; call it again immediately if it still reports running.",
 				inputSchema: {
 					type: "object",
 					properties: { callId: { type: "string", description: "callId from the STILL RUNNING answer" } },
