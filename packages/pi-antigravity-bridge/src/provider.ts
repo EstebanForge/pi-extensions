@@ -811,6 +811,7 @@ export interface PollView {
  *  evict first (a running call is never evicted while a newer one is). */
 export class EscalationRegistry {
 	#calls = new Map<string, PollView>();
+	#waiters = new Map<string, Set<() => void>>();
 	#trim(): void {
 		// Soft cap: only settled entries evict. Evicting a RUNNING call would
 		// strand its result (settle becomes a no-op, poll reports unknown), so
@@ -836,6 +837,7 @@ export class EscalationRegistry {
 		e.isError = isError;
 		if (images.length > 0) e.images = images;
 		this.#trim();
+		this.#fireWaiters(callId);
 	}
 	settleFailed(callId: string, reason: string): void {
 		const e = this.#calls.get(callId);
@@ -843,6 +845,42 @@ export class EscalationRegistry {
 		e.state = "failed";
 		e.reason = reason;
 		this.#trim();
+		this.#fireWaiters(callId);
+	}
+
+	#fireWaiters(callId: string): void {
+		const waiters = this.#waiters.get(callId);
+		if (!waiters) return;
+		this.#waiters.delete(callId);
+		for (const wake of waiters) wake();
+	}
+
+	/** Resolve when the call settles, the window elapses, or signal aborts.
+	 *  Turn end and shutdown do not settle escalated entries (failAll spares
+	 *  them), so the abort listener and the window are the wake-up paths for
+	 *  abandoned polls. The caller re-reads through poll(), which stays the
+	 *  single pure read path. */
+	waitForSettle(callId: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+		const entry = this.#calls.get(callId);
+		if (!entry || entry.state !== "running" || signal?.aborted) return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			let done = false;
+			const waiters = this.#waiters.get(callId) ?? new Set<() => void>();
+			this.#waiters.set(callId, waiters);
+			const finish = () => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				waiters.delete(finish);
+				if (waiters.size === 0 && this.#waiters.get(callId) === waiters) this.#waiters.delete(callId);
+				if (signal) signal.removeEventListener("abort", finish);
+				resolve();
+			};
+			waiters.add(finish);
+			const timer = setTimeout(finish, timeoutMs);
+			timer.unref?.();
+			if (signal) signal.addEventListener("abort", finish, { once: true });
+		});
 	}
 	poll(callId: string): PollView | undefined {
 		const e = this.#calls.get(callId);
@@ -921,6 +959,32 @@ export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
 		],
 		isError: false,
 	};
+}
+
+/** Long-waiting bridge_poll_result (issue #29): a running call holds the
+ *  request up to POLL_WAIT_MS for an instant settle, because every early
+ *  STILL RUNNING costs agy a full LLM turn (quota + context). Settle wakes
+ *  the waiter immediately, so the window only bounds still-running holds;
+ *  60s stays under agy's ~180s request deadline with the 120s delegation
+ *  hold as precedent. Turn end and shutdown do not settle escalated
+ *  entries (failAll spares them), so the abort and the window are the
+ *  wake-up paths for abandoned polls. An abort skips markDelivered:
+ *  marking a result the client never received would strand it away from
+ *  the redelivery paths. Accepted gap (unchanged): the mark fires when the
+ *  poll ANSWERS, not when the HTTP response lands. */
+export const POLL_WAIT_MS = 60_000;
+
+export async function answerPoll(
+	roundTrips: Pick<ToolRoundTrips, "poll" | "markDelivered" | "waitForSettle">,
+	callId: string,
+	signal: AbortSignal,
+): Promise<BridgeCallResultShape> {
+	if (roundTrips.poll(callId)?.state === "running") {
+		await roundTrips.waitForSettle(callId, POLL_WAIT_MS, signal);
+	}
+	const view = roundTrips.poll(callId);
+	if (view && view.state !== "running" && !signal.aborted) roundTrips.markDelivered(callId);
+	return formatPollAnswer(callId, view);
 }
 
 export function formatPollAnswer(callId: string, view: PollView | undefined): BridgeCallResultShape {
@@ -1057,6 +1121,10 @@ export class ToolRoundTrips {
 	 *  real poll path (extensions) calls this; poll() stays pure. */
 	markDelivered(callId: string): boolean {
 		return this.#escalations.markDelivered(callId);
+	}
+
+	waitForSettle(callId: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+		return this.#escalations.waitForSettle(callId, timeoutMs, signal);
 	}
 
 	/** Single-use claim of a settled-but-undelivered escalated result (the

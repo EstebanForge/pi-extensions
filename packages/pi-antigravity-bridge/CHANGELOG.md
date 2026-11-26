@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- `bridge_poll_result` now long-waits up to 60s for the call to settle instead of answering `STILL RUNNING` immediately (issue #29: the model burned an LLM turn per poll on multi-minute commands). Settle wakes the held request instantly, so a 40s command costs one poll instead of dozens, and a still-running call answers once a minute. The poll tool description and the STILL RUNNING ack text are unchanged for the model; `failAll` does not settle escalated entries, so an abandoned poll wakes via its request abort or the 60s window (`tests/poll-wait.test.ts`).
+
 ## [1.15.2] - 2026-11-25
 
 ### Fixed

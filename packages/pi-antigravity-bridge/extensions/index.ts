@@ -45,7 +45,7 @@ import {
 	createStreamSimple,
 	defaultEscalateAfterMs,
 	formatEscalatedAck,
-	formatPollAnswer,
+	answerPoll,
 	rotateSessionOnCompaction,
 	sessionKey,
 	type NativeDisplayEvent,
@@ -1038,7 +1038,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			tools.push({
 				name: POLL_TOOL_NAME,
 				description:
-					"Fetch the result of a long-running bridge tool call that answered STILL RUNNING with a callId. Poll again if it still reports running; the result or an error arrives here.",
+					"Fetch the result of a long-running bridge tool call that answered STILL RUNNING with a callId. The poll waits up to a minute for the result; poll again if it still reports running.",
 				inputSchema: {
 					type: "object",
 					properties: { callId: { type: "string", description: "callId from the STILL RUNNING answer" } },
@@ -1060,15 +1060,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (name === POLL_TOOL_NAME) {
 				const wanted = typeof args.callId === "string" ? args.callId : "";
 				mcpLog("poll-tool", { callId: wanted });
-				const view = roundTrips.poll(wanted);
-				// A terminal answer means the model RECEIVED the result; mark it
-				// so the redelivery path never double-delivers. poll() itself
-				// stays pure (internal peeks must not mark). Accepted gap: the
-				// mark fires when the poll ANSWERS, not when the HTTP response
-				// lands; a drop inside that one-write window would mark a result
-				// the model never saw.
-				if (view && view.state !== "running") roundTrips.markDelivered(wanted);
-				return Promise.resolve(formatPollAnswer(wanted, view));
+				return answerPoll(roundTrips, wanted, signal);
 			}
 			if (name === TOOL_INFO_TOOL_NAME) {
 				const { proxied } = partitionBridgeTools(getBridgeTools());
