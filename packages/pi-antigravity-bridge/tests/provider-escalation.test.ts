@@ -208,6 +208,44 @@ test("escalation: failAll spares escalated calls (turn end must not fake a failu
 	assert.equal(done.state, "done");
 });
 
+test("escalation: a handed-off result delivers with a trailing user follow-up", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	const p = rt.onToolCall("call-1", "ask_user_question", {}, new AbortController().signal);
+	await p; // sentinel: escalated; the model ended its turn on the handoff instruction
+	for (let i = 0; i < 3; i++) rt.noteStillRunningPoll("call-1");
+	rt.resolve("call-1", "USER ANSWER", false);
+	rt.stampConversation("conv-handoff");
+
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: d as unknown as StreamDriver,
+		roundTrips: rt,
+	});
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("call-1", "USER ANSWER"), { role: "user", content: "continue", timestamp: Date.now() } as unknown as Message],
+	});
+	const errors: AssistantMessage[] = [];
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const ev of stream) {
+		if (ev.type === "error") errors.push(ev.error);
+	}
+	// The handoff shape must not trip "tool result arrived but no antigravity
+	// turn is running": the dead-turn dispatch carries BOTH the strand and the
+	// user follow-up in the one late prompt.
+	assert.equal(errors.length, 0);
+	assert.equal(d.runCalls, 1);
+	const prompt = d.seen.opts?.prompt ?? "";
+	assert.match(prompt, /Late tool delivery/);
+	assert.match(prompt, /USER ANSWER/);
+	assert.match(prompt, /settled after your turn ended/);
+	assert.match(prompt, /continue/);
+	const claimed = rt.claimUndelivered("call-1");
+	assert.equal(claimed, undefined, "the sweep consumed the strand");
+});
+
 test("escalation: unpolled result with a dead agy turn is re-delivered as a late prompt", async () => {
 	const d = new RecordingDriver();
 	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
@@ -239,7 +277,7 @@ test("escalation: unpolled result with a dead agy turn is re-delivered as a late
 	const prompt = d.seen.opts?.prompt ?? "";
 	assert.match(prompt, /Late tool delivery/);
 	assert.match(prompt, /USER ANSWER/);
-	assert.match(prompt, /without calling bridge_poll_result/);
+	assert.match(prompt, /settled after your turn ended/);
 	// The framing must name the tool (issue #7): a bare result reads as a
 	// random follow-up prompt.
 	assert.match(prompt, /pi tool "ask_user_question":/);
@@ -468,10 +506,12 @@ test("escalation: ack and poll answers are model-readable", () => {
 	assert.match(ackText, /AskClaude/);
 	assert.match(ackText, /abc-1/);
 	assert.match(ackText, new RegExp(POLL_TOOL_NAME));
-	// Hardened contract: polling is mandatory. The old ack licensed stopping
-	// ("if you stop polling, the bridge re-delivers the result in a later
-	// turn") and gemini took the exit, stranding an ask_user_question answer.
-	assert.match(ackText, /Do NOT end your turn/);
+	// Hardened contract: polling is mandatory by default, but the poll-cap
+	// handoff is the licensed exit: only a poll answer may arm it. The old
+	// unconditional ack licensed stopping and gemini took the exit, stranding
+	// an ask_user_question answer.
+	assert.match(ackText, /Keep polling until the call reports done or failed/);
+	assert.match(ackText, /If a poll answer tells you to stop polling and end your turn, obey it/);
 	assert.match(ackText, /strands the result/);
 	assert.doesNotMatch(ackText, /re-delivers the result in a later turn/);
 

@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { afterEach, test, vi } from "vitest";
-import { answerPoll, EscalationRegistry, POLL_WAIT_MS, ToolRoundTrips } from "../src/provider.js";
+import { answerPoll, EscalationRegistry, POLL_HANDOFF_AFTER, POLL_WAIT_MS, ToolRoundTrips } from "../src/provider.js";
 import type { DriverActivity, DriverTurnRequest, StreamDriver } from "../src/driver.js";
 
 const ESC = 20;
@@ -205,6 +205,54 @@ test("an abort during the hold returns still-running and never marks delivered",
 	assert.equal(r.isError, false);
 	assert.match((r.content[0] as { text: string }).text, /STILL RUNNING/);
 	assert.ok(!rt.poll("c1")?.delivered);
+	assert.equal(rt.poll("c1")?.pollAnswers, undefined, "an answer that never reached the client must not count");
 	assert.equal(getEventListeners(ctrl.signal, "abort").length, 0);
 	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("poll answers below the handoff cap tell the model to call again now", async () => {
+	const rt = await escalatedRt();
+	vi.useFakeTimers();
+	for (let served = 1; served <= POLL_HANDOFF_AFTER; served++) {
+		const p = answerPoll(rt, "c1", new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(POLL_WAIT_MS + 1);
+		const r = await p;
+		assert.match((r.content[0] as { text: string }).text, /Call bridge_poll_result again now/);
+	}
+	assert.equal(rt.poll("c1")?.pollAnswers, POLL_HANDOFF_AFTER);
+});
+
+test("the answer after the cap arms the turn-end handoff", async () => {
+	const rt = await escalatedRt();
+	vi.useFakeTimers();
+	for (let served = 0; served < POLL_HANDOFF_AFTER; served++) {
+		const p = answerPoll(rt, "c1", new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(POLL_WAIT_MS + 1);
+		await p;
+	}
+	const p = answerPoll(rt, "c1", new AbortController().signal);
+	await vi.advanceTimersByTimeAsync(POLL_WAIT_MS + 1);
+	const r = await p;
+	const text = (r.content[0] as { text: string }).text;
+	assert.match(text, /Stop polling/);
+	assert.match(text, /end your turn now/);
+	assert.match(text, /your next message/);
+});
+
+test("a handed-off call keeps its redelivery path: settle stays claimable", async () => {
+	const rt = new ToolRoundTrips(new RecordingDriver() as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	const settled = rt
+		.onToolCall("c1", "exec_command", {}, new AbortController().signal)
+		.then((r) => ("escalated" in r ? "escalated" : "resolved"), () => "rejected");
+	await new Promise((r) => setTimeout(r, ESC + 20));
+	assert.equal(await settled, "escalated");
+	rt.noteStillRunningPoll("c1");
+	rt.noteStillRunningPoll("c1");
+	rt.noteStillRunningPoll("c1");
+	assert.equal(rt.resolve("c1", "late text", false), true);
+	const claimed = rt.claimAllUndelivered();
+	assert.equal(claimed.length, 1);
+	assert.equal(claimed[0].callId, "c1");
+	assert.ok(claimed[0].text?.includes("late text"));
+	assert.ok((claimed[0].pollAnswers ?? 0) >= POLL_HANDOFF_AFTER);
 });

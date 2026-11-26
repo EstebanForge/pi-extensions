@@ -252,7 +252,7 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
  *  the user's machine must go through the bridge. Rides the systemPrompt
  *  gate: the note ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, write, bash). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. Extension Pi tools not declared directly are listed in bridge_tool_info; call bridge_tool_info to inspect their description and schema, then call bridge_call_tool to run them. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. Your turn ends when your reply ends, and pi never waits for agy's own wake-ups: never let a native run_command go to the background (keep WaitMsBeforeAsync at 0 for foreground runs and native commands under two minutes, since longer foreground waits hit pi's idle cap and kill the turn; wrap long commands in timeout and run anything longer through the Pi Bridge bash tool, which keeps it inside your turn, and poll bridge_poll_result if it answers STILL RUNNING) and never use the native schedule tool or timers. A task left running when you reply outlives your turn: its wake-up cannot call Pi Bridge tools, and a delegated subagent session is already gone when it fires.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, write, bash). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. Extension Pi tools not declared directly are listed in bridge_tool_info; call bridge_tool_info to inspect their description and schema, then call bridge_call_tool to run them. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. If a poll answer tells you to stop polling and end your turn, obey it: the result is delivered as your next message. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. Your turn ends when your reply ends, and pi never waits for agy's own wake-ups: never let a native run_command go to the background (keep WaitMsBeforeAsync at 0 for foreground runs and native commands under two minutes, since longer foreground waits hit pi's idle cap and kill the turn; wrap long commands in timeout and run anything longer through the Pi Bridge bash tool, which keeps it inside your turn, and poll bridge_poll_result if it answers STILL RUNNING) and never use the native schedule tool or timers. A task left running when you reply outlives your turn: its wake-up cannot call Pi Bridge tools, and a delegated subagent session is already gone when it fires.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -801,6 +801,9 @@ export interface PollView {
 	 *  markDelivered (the real poll path); poll() stays pure so internal
 	 *  peeks (escalatedNames) never mark. */
 	delivered?: boolean;
+	/** Still-running poll answers served to the model (the poll path only).
+	 *  The handoff in formatPollAnswer arms at POLL_HANDOFF_AFTER. */
+	pollAnswers?: number;
 	/** The agy conversation this call belongs to. Stamped at turn end so an
 	 *  unpolled result can be re-delivered to the right conversation
 	 *  (first-turn parks never reach the provider's store.set). */
@@ -897,6 +900,16 @@ export class EscalationRegistry {
 		return true;
 	}
 
+	/** Count a STILL RUNNING answer served to the model (the poll path only).
+	 *  formatPollAnswer turns the count into a turn-end handoff at
+	 *  POLL_HANDOFF_AFTER; the settled result then reaches the model through
+	 *  the strand sweep instead of further polls. */
+	noteStillRunningPoll(callId: string): void {
+		const e = this.#calls.get(callId);
+		if (!e || e.state !== "running") return;
+		e.pollAnswers = (e.pollAnswers ?? 0) + 1;
+	}
+
 	/** Single-use claim of a done-but-undelivered result: returns the view
 	 *  and marks it delivered in one step, so a later pass can never deliver
 	 *  it twice. The entry stays pollable for a late model poll. Failed
@@ -953,7 +966,7 @@ export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
 				text: [
 					`STILL RUNNING: the pi tool "${e.name}" has not finished yet.`,
 					`Call ${POLL_TOOL_NAME} with callId "${e.callId}" to get the result. Call it again immediately after each answer: each poll now blocks up to 110 seconds and returns the moment the call settles. Do other work between polls only when that work is genuinely useful.`,
-					"Do NOT end your turn while this call is unresolved: keep polling until it reports done or failed. Ending the turn strands the result.",
+					"Keep polling until the call reports done or failed. If a poll answer tells you to stop polling and end your turn, obey it: the bridge delivers the result as your next message in this conversation. Ending the turn on your own initiative, without that instruction, strands the result.",
 				].join("\n"),
 			},
 		],
@@ -975,15 +988,28 @@ export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
  *  fires when the poll ANSWERS, not when the HTTP response lands. */
 export const POLL_WAIT_MS = 110_000;
 
+/** Still-running poll answers served before the poll answer switches to the
+ *  turn-end handoff. Every poll answer costs agy a full inference, so a
+ *  30-minute human-gated park costs roughly this constant plus the ack
+ *  instead of one call per minute; the settled result then reaches the
+ *  model through the dead-turn strand sweep (claimAllUndelivered is
+ *  registry-wide, so sibling parks ride the same handoff). */
+export const POLL_HANDOFF_AFTER = 3;
+
 export async function answerPoll(
-	roundTrips: Pick<ToolRoundTrips, "poll" | "markDelivered" | "waitForSettle">,
+	roundTrips: Pick<ToolRoundTrips, "poll" | "markDelivered" | "waitForSettle" | "noteStillRunningPoll">,
 	callId: string,
 	signal: AbortSignal,
+	log?: (event: string, data?: unknown) => void,
 ): Promise<BridgeCallResultShape> {
 	if (roundTrips.poll(callId)?.state === "running") {
 		await roundTrips.waitForSettle(callId, POLL_WAIT_MS, signal);
 	}
 	const view = roundTrips.poll(callId);
+	if (view && view.state === "running" && !signal.aborted) {
+		if ((view.pollAnswers ?? 0) >= POLL_HANDOFF_AFTER) log?.("poll-handoff", { callId, name: view.name });
+		roundTrips.noteStillRunningPoll(callId);
+	}
 	if (view && view.state !== "running" && !signal.aborted) roundTrips.markDelivered(callId);
 	return formatPollAnswer(callId, view);
 }
@@ -1001,8 +1027,16 @@ export function formatPollAnswer(callId: string, view: PollView | undefined): Br
 		};
 	}
 	if (view.state === "running") {
+		const handoff = (view.pollAnswers ?? 0) >= POLL_HANDOFF_AFTER;
 		return {
-			content: [{ type: "text", text: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Call ${POLL_TOOL_NAME} again now: it blocks up to 110 seconds and returns the moment the call settles.` }],
+			content: [
+				{
+					type: "text",
+					text: handoff
+						? `STILL RUNNING: "${view.name}" (callId ${callId}) is taking long. Stop polling: end your turn now, and the bridge will deliver the result as your next message in this conversation. Do not call ${POLL_TOOL_NAME} again for this callId.`
+						: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Call ${POLL_TOOL_NAME} again now: it blocks up to 110 seconds and returns the moment the call settles.`,
+					},
+			],
 			isError: false,
 		};
 	}
@@ -1132,6 +1166,13 @@ export class ToolRoundTrips {
 	 *  model ended its turn instead of polling). */
 	claimUndelivered(callId: string): (PollView & { callId: string }) | undefined {
 		return this.#escalations.claimUndelivered(callId);
+	}
+
+	/** Count a STILL RUNNING answer served to the model (the poll path only);
+	 *  formatPollAnswer turns the count into a turn-end handoff at
+	 *  POLL_HANDOFF_AFTER. */
+	noteStillRunningPoll(callId: string): void {
+		return this.#escalations.noteStillRunningPoll(callId);
 	}
 
 	/** Registry-wide sweep for done-but-undelivered results: a toolResult is
@@ -1877,7 +1918,7 @@ async function runTurnDriver(
 			return {
 				callId: view.callId,
 				name: view.name,
-				reason: "you never received this result: you ended your turn without calling bridge_poll_result",
+				reason: "the call settled after your turn ended; the result is delivered here so the work is not lost",
 				text: view.text ?? "(no output)",
 				isError: view.isError ?? false,
 				images: view.images,

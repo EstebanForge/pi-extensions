@@ -195,7 +195,7 @@ test("stranded escalated image result redelivers via a new prompt carrying the i
 		const errors = await collect(makeStreamSimple(driver, rt, engine)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
 		assert.equal(errors.length, 0);
 		assert.ok(seen.opts);
-		assert.match(seen.opts.prompt, /you never received this result/);
+		assert.match(seen.opts.prompt, /settled after your turn ended/);
 		assert.deepEqual(seen.opts.images, [IMG]);
 		assert.equal(seen.opts.prompt.includes("pi-bridge-img-"), engine === "stream-json");
 	}
@@ -244,7 +244,7 @@ test("more sweep: an image result stranded mid-turn redelivers with its image on
 	assert.equal(errors2.length, 0, errors2.map((e) => String(e)).join("; "));
 	await pass1;
 	assert.ok(seen.opts);
-	assert.match(seen.opts.prompt, /you never received this result/);
+	assert.match(seen.opts.prompt, /settled after your turn ended/);
 	assert.match(seen.opts.prompt, /pi-bridge-img-.*image-1\.png/s);
 	assert.deepEqual(seen.opts.images, [IMG]);
 });

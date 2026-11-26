@@ -1097,7 +1097,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (name === POLL_TOOL_NAME) {
 				const wanted = typeof args.callId === "string" ? args.callId : "";
 				mcpLog("poll-tool", { callId: wanted });
-				return answerPoll(roundTrips, wanted, signal);
+				return answerPoll(roundTrips, wanted, signal, mcpLog);
 			}
 			if (name === TOOL_INFO_TOOL_NAME) {
 				const { proxied } = partitionBridgeTools(getBridgeTools());
