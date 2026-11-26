@@ -20,22 +20,34 @@ const all = [
 	{ name: "agy_read_url", sourceInfo: { source: "pi-antigravity-bridge" } },
 	{ name: "bridge_tool_info", sourceInfo: { source: "pi-antigravity-bridge" } },
 	{ name: "bridge_call_tool", sourceInfo: { source: "pi-antigravity-bridge" } },
+	{ name: "bash", sourceInfo: { source: "builtin" } },
 ];
 
 describe("live Pi bridge catalog", () => {
 	it("uses the active set, not the registered set", () => {
-		expect(bridgedPiTools(all, ["read", "web_search"], "all", new Set()).map((t) => t.name)).toEqual(["web_search"]);
-		expect(bridgedPiTools(all, ["mcp:files"], "all", new Set()).map((t) => t.name)).toEqual(["mcp:files"]);
+		expect(bridgedPiTools(all, ["read", "web_search"], "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["web_search"]);
+		expect(bridgedPiTools(all, ["mcp:files"], "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["mcp:files"]);
 	});
 	it("supports session-only hide, MCP-only mode, and bridge-off", () => {
 		const active = all.map((tool) => tool.name);
-		expect(bridgedPiTools(all, active, "all", new Set(["web_search"])).map((t) => t.name)).toEqual(["mcp:files"]);
-		expect(bridgedPiTools(all, active, "mcp", new Set()).map((t) => t.name)).toEqual(["mcp:files"]);
-		expect(bridgedPiTools(all, active, "none", new Set()).map((t) => t.name)).toEqual([]);
+		expect(bridgedPiTools(all, active, "all", new Set(["web_search"]), "stream-json").map((t) => t.name)).toEqual(["mcp:files"]);
+		expect(bridgedPiTools(all, active, "mcp", new Set(), "stream-json").map((t) => t.name)).toEqual(["mcp:files"]);
+		expect(bridgedPiTools(all, active, "none", new Set(), "stream-json").map((t) => t.name)).toEqual([]);
 	});
 	it("never exposes the bridge's own tools, including the web wrappers and proxy tools", () => {
 		const active = all.map((tool) => tool.name);
-		expect(bridgedPiTools(all, active, "all", new Set()).map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+		expect(bridgedPiTools(all, active, "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+	});
+	it("ACP 'all' declares pi builtins directly; stream-json keeps them off (native mapping covers them)", () => {
+		const active = all.map((tool) => tool.name);
+		expect(bridgedPiTools(all, active, "all", new Set(), "acp").map((t) => t.name)).toEqual(["web_search", "mcp:files", "read", "bash"]);
+		expect(bridgedPiTools(all, active, "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+	});
+	it("ACP non-'all' modes keep the current catalog shape", () => {
+		const active = all.map((tool) => tool.name);
+		expect(bridgedPiTools(all, active, "none", new Set(), "acp").map((t) => t.name)).toEqual([]);
+		expect(bridgedPiTools(all, active, "mcp", new Set(), "acp").map((t) => t.name)).toEqual(["mcp:files"]);
+		expect(bridgedPiTools(all, active, "codemode", new Set(), "acp").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
 	});
 });
 
@@ -156,7 +168,7 @@ describe("hybrid partition and proxy helpers", () => {
 			{ name: "read", sourceInfo: { source: "extension" } },
 			{ name: "git_commit", sourceInfo: { source: "extension" } },
 		];
-		const authorized = bridgedPiTools(catalog, ["bash", "read", "git_commit"], "all", new Set());
+		const authorized = bridgedPiTools(catalog, ["bash", "read", "git_commit"], "all", new Set(), "stream-json");
 		const { direct, proxied } = partitionBridgeTools(authorized);
 		expect(direct.map((t) => t.name)).toEqual(["read"]);
 		expect(proxied.map((t) => t.name)).toEqual(["git_commit"]);
@@ -168,7 +180,7 @@ describe("codemode catalog mode", () => {
 	const active = allWithCm.map((tool) => tool.name);
 
 	it("bridges codemode plus extension tools, nothing builtin besides codemode", () => {
-		expect(bridgedPiTools(allWithCm, active, "codemode", new Set()).map((t) => t.name)).toEqual([
+		expect(bridgedPiTools(allWithCm, active, "codemode", new Set(), "stream-json").map((t) => t.name)).toEqual([
 			"codemode",
 			"web_search",
 			"mcp:files",
@@ -176,13 +188,13 @@ describe("codemode catalog mode", () => {
 	});
 
 	it("still respects the active set, hiding, and bridge-off", () => {
-		expect(bridgedPiTools(allWithCm, ["codemode"], "codemode", new Set()).map((t) => t.name)).toEqual(["codemode"]);
-		expect(bridgedPiTools(allWithCm, active, "codemode", new Set(["codemode"])).map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
-		expect(bridgedPiTools(allWithCm, active, "none", new Set()).map((t) => t.name)).toEqual([]);
+		expect(bridgedPiTools(allWithCm, ["codemode"], "codemode", new Set(), "stream-json").map((t) => t.name)).toEqual(["codemode"]);
+		expect(bridgedPiTools(allWithCm, active, "codemode", new Set(["codemode"]), "stream-json").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+		expect(bridgedPiTools(allWithCm, active, "none", new Set(), "stream-json").map((t) => t.name)).toEqual([]);
 	});
 
-	it("keeps the plain all-mode builtin exclusion untouched", () => {
-		expect(bridgedPiTools(allWithCm, active, "all", new Set()).map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+	it("keeps the all-mode builtin exclusion on stream-json", () => {
+		expect(bridgedPiTools(allWithCm, active, "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
 	});
 });
 

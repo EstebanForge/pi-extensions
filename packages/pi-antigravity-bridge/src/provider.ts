@@ -264,16 +264,23 @@ export const TOOL_PRIORITY_NOTE =
 export const CODEMODE_NOTE =
 	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, write, bash) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.write, tools.bash. Long or multi-step file work belongs in one script, not many tool calls.";
 
+/** Appended after the tool-priority note when the engine's catalog actually
+ *  declares pi's builtins directly (bridgeTools "all" on ACP). On ACP the
+ *  native tools run agy-side and a silent native command past the bridge's
+ *  5-minute stall guard is killed, so the note must move long commands onto
+ *  the bridge bash surface where polls keep the call alive. */
+export const ACP_TOOL_NOTE =
+	"[ACP note: the Pi Bridge tools (read, ls, grep, find, edit, write, bash) are in your tool list; call them directly. For anything that may run longer than a minute use the Pi Bridge bash tool, never native run_command or execute: a silent native command running longer than five minutes is killed and its result is lost. Bridge bash calls are safe over long waits: the bridge answers STILL RUNNING with a callId and polling delivers the result even after many minutes. Keep native commands for short tasks only.]";
+
 export function buildFullPrompt(
 	systemPrompt: string | undefined,
 	digest: string,
 	prompt: string,
-	options?: { codemodeOnly?: boolean },
+	options?: { codemodeOnly?: boolean; acpToolsDirect?: boolean },
 ): string {
 	const parts: string[] = [];
 	if (systemPrompt) {
-		const note = options?.codemodeOnly ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE;
-		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${note}\n\n${SYSTEM_PROMPT_END}`);
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${toolNotes(options)}\n\n${SYSTEM_PROMPT_END}`);
 	}
 	if (digest) {
 		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);
@@ -282,6 +289,15 @@ export function buildFullPrompt(
 		parts.push(prompt);
 	}
 	return parts.join("\n\n---\n\n");
+}
+
+/** Shared note composition for the system prompt block and the stream-json
+ *  staged agent file (which concatenates the notes without buildFullPrompt). */
+function toolNotes(options?: { codemodeOnly?: boolean; acpToolsDirect?: boolean }): string {
+	const parts = [TOOL_PRIORITY_NOTE];
+	if (options?.acpToolsDirect) parts.push(ACP_TOOL_NOTE);
+	if (options?.codemodeOnly) parts.push(CODEMODE_NOTE);
+	return parts.join("\n\n");
 }
 
 /** Flatten any message content shape (string or content-block array) to text.
@@ -1974,6 +1990,10 @@ async function runTurnDriver(
 			codemodeNote = true;
 		}
 	}
+	// The ACP note ships only when pi's builtins are actually declared in the
+	// engine's catalog (mirrors bridgedPiTools' ACP admission); otherwise the
+	// steer would point at tools agy cannot call.
+	const acpToolsDirect = deps.engine === "acp" && config.bridgeTools === "all";
 	// The sync orchestrator for THIS pass when the sync gate dispatched; the
 	// settle (and the park persist) sit outside the fresh-pass block, so the
 	// binding is function-level (the round-1 settle scope trap).
@@ -2171,7 +2191,7 @@ async function runTurnDriver(
 				// coordinator calls throw on invariants: both must fail the turn
 				// visibly, not surface as an unhandled rejection.
 				const input = turn.inputFor({
-					prompt: buildFullPrompt(sys, "", userPrompt ?? "", { codemodeOnly: codemodeNote }) + stageImageNote(syncImages),
+					prompt: buildFullPrompt(sys, "", userPrompt ?? "", { codemodeOnly: codemodeNote, acpToolsDirect }) + stageImageNote(syncImages),
 					images: syncImages,
 				});
 				turn.bound(key);
@@ -2201,7 +2221,7 @@ async function runTurnDriver(
 						// history to a fresh conversation; the gate re-opens there.
 						const fresh = turn.loadFailed({
 							prompt:
-								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "", { codemodeOnly: codemodeNote }) +
+								buildFullPrompt(config.systemPrompt ? getCurrentSystemPrompt(context.messages) || undefined : undefined, "", userPrompt ?? "", { codemodeOnly: codemodeNote, acpToolsDirect }) +
 								stageImageNote(syncImages),
 							images: syncImages,
 						});
@@ -2314,7 +2334,7 @@ async function runTurnDriver(
 					[
 						SYSTEM_PROMPT_PREAMBLE,
 						rawSysPrompt,
-						codemodeNote ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE,
+						toolNotes({ codemodeOnly: codemodeNote, acpToolsDirect }),
 					].join("\n\n"),
 				);
 				if (stagedName) {
@@ -2366,7 +2386,7 @@ async function runTurnDriver(
 						// Both features off: the variant would equal the plain prompt.
 						if (!fbSys && !freshDigest?.text) return undefined;
 						return {
-							prompt: buildFullPrompt(fbSys, "", deliveredPrompt, { codemodeOnly: codemodeNote }) + stageImageNote(runImages),
+							prompt: buildFullPrompt(fbSys, "", deliveredPrompt, { codemodeOnly: codemodeNote, acpToolsDirect }) + stageImageNote(runImages),
 							contextBlock: freshDigest?.text
 								? {
 										uri: `urn:pi-bridge:context-digest/fresh/${messageCount}`,
@@ -2379,7 +2399,7 @@ async function runTurnDriver(
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, { codemodeOnly: codemodeNote })) +
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, { codemodeOnly: codemodeNote, acpToolsDirect })) +
 			stageImageNote(runImages);
 		if (!syncTurn) {
 			try {

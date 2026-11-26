@@ -1,4 +1,4 @@
-import type { BridgeTools } from "./config.js";
+import type { BridgeTools, Engine } from "./config.js";
 import { POLL_TOOL_NAME } from "./provider.js";
 import { ACTIVATE_SKILL_TOOL_NAME } from "./skills.js";
 
@@ -45,6 +45,7 @@ export function serializeToolSchema(parameters?: object): object {
  * A stale tools/call must not bypass a disabled Pi tool. */
 export function bridgedPiTools(
 	all: BridgeToolInfo[], active: readonly string[], mode: BridgeTools, hidden: ReadonlySet<string>,
+	engine: Engine,
 ): BridgeToolInfo[] {
 	if (mode === "none") return [];
 	const enabled = new Set(active);
@@ -60,7 +61,12 @@ export function bridgedPiTools(
 			? tool.name === "codemode" || tool.sourceInfo?.source !== "builtin"
 			: mode === "mcp"
 				? /pi-mcp-adapter/.test(tool.sourceInfo?.source ?? "")
-				: tool.sourceInfo?.source !== "builtin"),
+				// ACP must declare pi's builtins directly: its native tool calls
+				// execute agy-side (provider Gate C), so unbuilt tools would be
+				// unreachable pi-side and long commands would bypass the poll
+				// machinery entirely. stream-json maps every native call onto pi
+				// tools, so the MCP duplicates stay hidden.
+				: engine === "acp" || tool.sourceInfo?.source !== "builtin"),
 	);
 }
 

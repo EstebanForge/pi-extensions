@@ -227,7 +227,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let realmSession: RealmSession | null = null;
 	// Session-only visibility overrides; never change either application's MCP config.
 	const hiddenBridgeTools = new Set<string>();
-	const getBridgeTools = () => bridgedPiTools(pi.getAllTools(), pi.getActiveTools(), loadConfig().bridgeTools, hiddenBridgeTools);
+	const getBridgeTools = () => bridgedPiTools(pi.getAllTools(), pi.getActiveTools(), loadConfig().bridgeTools, hiddenBridgeTools, engine);
 	// Staged gate hooks do not stop agy's own request_permission path, so when
 	// true the ACP driver stops letting skipPermissions auto-allow it.
 	let gateActive = false;
@@ -1878,7 +1878,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						);
 					}
 				} else {
-					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active; without it this behaves like all). none: no pi tools (an active approval gate still runs the listener gate-only).`, "info");
+					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools (ACP: pi's builtins too, declared directly). mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active; without it this behaves like all). none: no pi tools (an active approval gate still runs the listener gate-only).`, "info");
 				}
 				return;
 			}
@@ -2067,7 +2067,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "bridge",
 			label: "Bridge tools",
 			description:
-				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active, e.g. --tools codemode). none: no pi tools (an active approval gate still runs the listener gate-only).",
+				"Which pi tools the MCP bridge exposes to agy. all (default): every non-builtin tool; on ACP also pi's builtins (read, ls, grep, find, edit, write, bash), declared directly so long commands ride the poll machinery. mcp: pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active, e.g. --tools codemode). none: no pi tools (an active approval gate still runs the listener gate-only).",
 			currentValue: config.bridgeTools,
 			values: ["all", "mcp", "codemode", "none"],
 		},

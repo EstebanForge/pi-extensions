@@ -11,6 +11,8 @@ import path from "node:path";
 import { test } from "vitest";
 import { normalizeContext, type Api, type Model, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import {
+	ACP_TOOL_NOTE,
+	CODEMODE_NOTE,
 	SYSTEM_PROMPT_END,
 	SYSTEM_PROMPT_PREAMBLE,
 	TOOL_PRIORITY_NOTE,
@@ -92,6 +94,36 @@ test("tool priority note caps native foreground waits under the idle cap", () =>
 
 test("empty-string system prompt is treated as absent", () => {
 	assert.equal(buildFullPrompt("", "", "hello"), "hello");
+});
+
+test("ACP direct-builtin sessions append the stall-guard note; other shapes do not", () => {
+	const out = buildFullPrompt(SYS, "", "hello", { acpToolsDirect: true });
+	assert.ok(out.includes(ACP_TOOL_NOTE), "ACP note rides the prompt");
+	// Inside the delimited block, after the shared note.
+	const iShared = out.indexOf(TOOL_PRIORITY_NOTE);
+	const iAcp = out.indexOf(ACP_TOOL_NOTE);
+	assert.ok(iAcp > iShared && iAcp < out.indexOf(SYSTEM_PROMPT_END));
+	// The fallback engines keep the byte-identical prompt of today.
+	assert.equal(buildFullPrompt(SYS, "", "hello").includes(ACP_TOOL_NOTE), false);
+	assert.equal(buildFullPrompt(SYS, "", "hello", { acpToolsDirect: false }).includes(ACP_TOOL_NOTE), false);
+});
+
+test("ACP stall-guard note steers long commands to bridge bash", () => {
+	// Observed live 2026-11-26: agy on ACP ran a 10-minute sleep with its
+	// native execute tool; the silent command hit the 5-minute stall guard
+	// and was killed with no result. The note must bound native waits.
+	assert.match(ACP_TOOL_NOTE, /Pi Bridge bash tool/);
+	assert.match(ACP_TOOL_NOTE, /five minutes/);
+	assert.match(ACP_TOOL_NOTE, /killed/);
+	assert.match(ACP_TOOL_NOTE, /STILL RUNNING|poll/);
+});
+
+test("codemode and ACP notes compose after the shared note", () => {
+	const out = buildFullPrompt(SYS, "", "hello", { codemodeOnly: true, acpToolsDirect: true });
+	const iShared = out.indexOf(TOOL_PRIORITY_NOTE);
+	const iAcp = out.indexOf(ACP_TOOL_NOTE);
+	const iCode = out.indexOf(CODEMODE_NOTE);
+	assert.ok(iShared >= 0 && iAcp > iShared && iCode > iAcp);
 });
 
 test("order: system prompt block, then digest, then user prompt", () => {
