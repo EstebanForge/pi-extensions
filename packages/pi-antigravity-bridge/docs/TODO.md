@@ -12,6 +12,13 @@ decision -> hook stdout -> agy enforces.
 - Live-behavior risks to watch: hook timeout soft-passes (V3) - the staged timeout must keep exceeding the park budget; denied calls emit no `tool_call` session/update frames on ACP (V2); edit-class arg names beyond `create_file` are docs-attested, never live-captured - check the confirm-dialog text on a real `run_command` and a real `replace_file_content`.
 - On pass: clear the "NOT yet live-verified" notes (AGENTS.md, this file).
 
+Update 2026-11-25 (partial): the round trip has run live once - the issue #28
+author reported a gated `write_file` denied and an allowed one running with a
+worktree guard - and the print-mode hook probe (agy 1.5.17, 2026-11-25) fired
+a real PreToolUse hook from an add-dir. Still missing: OUR probe artifact
+with the full chain captured (hook stdout -> agy enforcement) per the
+checklist above.
+
 ## 2. Explicit `antigravity_approve` variant (dedicated mode)
 
 `approvals.gateMode: "dedicated"` currently stages the same shadow tools
@@ -123,3 +130,9 @@ are unchanged, but AskAntigravity's plan mode must no longer be described as
 6. Parked-turn stranding on mid-turn config flip (peer-review caveat, 2026-10-07): turning readOnly or mode=plan on while a bridge tool call is parked mid-agy-turn makes the CONTINUATION turn refuse; the live agy turn is never resolved or aborted and waits out turnTimeoutMin. Consider aborting parked turns when the refusal fires.
 
 7. systemPrompt 429s (issue #18 P3): NO bridge fault found, probed 2026-11-19 (`scripts/probe-sysprompt-429.mjs`, agy 1.5.12, healthy account). The staged carrier turns the reporter blamed all pass - baseline 12s, carrier `model: inherit` at 14KB 7s and at 80KB 7s, all answering exactly - killing the reporter's per-request-size theory (the carrier is an agent FILE, so the issue #2 ~25KB prompt-input cap never applied), and agy's session logs show the inherit carrier runs on `gemini-3.8-flash-high`, with a staged-home `--effort low` run resolving to `gemini-3.8-flash-low`: inherit follows the CLI `--model`/`--effort`, no separate quota bucket, and staged-home agent resolution works. The reporter's 429 RESOURCE_EXHAUSTED storms (agy 1.5.11, every turn ~2.5 min x4 while a direct `agy --print` succeeded) are NOT reproduced and NOT explained: their `/usage` showed 99% weekly and 100% five-hour quota REMAINING, so plain exhaustion contradicts the report too - cause unidentified, likely version- or account-specific; 1.5.11 could not be probed (agy auto-updates). Side finding from the pinned comparison variant: agy 1.5.12 silently drops custom agents whose frontmatter pins a model slug (`model: gemini-3.8-flash` never enumerates; only `model: inherit` does), so hand-pinning a carrier model is impossible on this build - production always writes inherit and is unaffected.
+
+8. Release-verification leftovers (2026-11-26, pre-1.15.3):
+
+- Live handoff smoke on stream-json: the ACP smoke passed end to end (2026-11-26, real agy: escalation → four polls → handoff → strand delivery → the model continued and reported the late-delivered marker); the stream-json leg is unverified (429 quota on all three catalog models) and the CHANGELOG discloses it.
+- Approvals-asymmetry decision: bridged tools execute pi-side and are not gated by `approvals.mode` or `skipPermissions` (pre-existing for extension tools; since the ACP catalog change also true for bash/edit/write, and the ACP prompt note steers agy there). Documented in README/CHANGELOG; the stricter arm - withhold mutating builtins on ACP when `skipPermissions` is false and no pi gate is active - needs a product decision.
+- Deferred review nits: serve the handoff answer at poll entry when the count is already at the cap (saves the last 110s hold); reconcile the ack's "do other work between polls only when genuinely useful" with the system note's poll-first wording; consider a minor bump instead of patch (the ACP catalog widens the model-visible tool surface); no test pins `getBridgeTools`' engine wiring (index.ts) - only the catalog unit tests and the factory prompt probe cover it indirectly.

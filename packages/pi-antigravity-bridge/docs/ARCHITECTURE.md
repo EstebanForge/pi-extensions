@@ -27,6 +27,7 @@ src/daily-log.ts      daily NDJSON support log (one file per day, 14-day retenti
 src/redact.ts         redactText(): pattern-based secret scrubbing for free text, word-boundary anchored, applied where stderr tails and error strings leave their holders
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip. Also the approval park: POST /approval (ticket early-ack) + GET /approval/<id>, fail-closed on timeout/unwired/close
+src/bridge-catalog.ts the live bridge catalog: filters pi's tools per tools/list AND per tools/call by the active set, bridgeTools mode, /agy tools hides, the bridge's own tools, and the engine (ACP "all" declares pi's seven default builtins directly; stream-json keeps the builtin-free catalog)
 src/mcp-registration.ts registers/unregisters the bridge in ~/.gemini/config/mcp_config.json for the stream-json CLI (per-pid, atomic, stale sweep) and flips our entries off around AskAntigravity spawns (refcounted; session start re-enables)
 src/approval-gate.ts  shadow tool factory (bash/write/edit): marker calls are ticket-verified approval round-trips, non-marker calls delegate; maps agy native tools onto the shadow surface
 src/approval-detect.ts third-party pi permission-extension detection; resolves approvals.gateMode auto (off until a gate extension exists)
@@ -61,7 +62,7 @@ Usage maps onto pi's `Usage` (input/output/thinking/cache-read tokens); cost sta
 
 ### Tool round-trip (G9)
 
-The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. Public APIs only.
+The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. Public APIs only. Slow calls early-ack after ~20s (120s for delegation-shaped tools) with a `STILL RUNNING` poll handle; `bridge_poll_result` long-waits up to 110s per call, and after three still-running answers the poll answer arms a turn-end handoff whose settled result is strand-swept into the next conversation prompt (issue #29).
 
 Display follows the same split: agy read-only steps (`view_file`, `list_dir`, `grep_search`, `find_by_name`) re-run as real pi builtins via `native-tools.ts`, so their cards render with pi's own renderers. Mutating and agy-specialty steps replay through a display-only `antigravity` wrapper tool - recorded output only, nothing re-executes. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
 
@@ -89,7 +90,11 @@ Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/home.ts` (private 
 (process + protocol methods + parked permission answering),
 `src/acp/events.ts` (update mapping, pure), `src/acp/driver.ts`
 (`AcpDriver`). Both engines implement `TurnDriver`; `provider.ts` depends on
-the interface only and is otherwise unchanged.
+the interface only and is otherwise unchanged. ACP is also where the bridge
+catalog declares pi's builtins directly (`bridgeTools: "all"`; see
+[ENGINES.md](./ENGINES.md)) and where the `ACP_TOOL_NOTE` prompt steers long
+commands onto the bridge bash - on this engine a silent native command past
+the stall guard is killed agy-side with no result.
 
 Phase-2/3 additions (all ACP-only, verified live):
 
