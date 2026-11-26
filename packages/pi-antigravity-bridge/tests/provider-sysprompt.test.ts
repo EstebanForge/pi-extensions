@@ -127,7 +127,8 @@ test("codemode and ACP notes compose after the shared note", () => {
 });
 
 test("ACP note gating probes bash activity, not just config (factory level)", async () => {
-	const mkHarness = (bashActive: boolean): Harness => {
+	type Probe = boolean | ((name: string) => boolean);
+	const mkHarness = (probe: Probe): Harness => {
 		const seen: { opts?: DriverTurnRequest } = {};
 		const driver: StreamDriver = {
 			run: async (opts: DriverTurnRequest) => {
@@ -154,7 +155,10 @@ test("ACP note gating probes bash activity, not just config (factory level)", as
 			acpDriver: driver,
 			roundTrips: new ToolRoundTrips(driver),
 			engine: "acp",
-			hasActiveTool: (name: string) => bashActive || name !== "bash",
+			hasActiveTool:
+				typeof probe === "function"
+					? probe
+					: (name: string) => probe || name !== "bash",
 		});
 		return { seen, streamSimple, dir };
 	};
@@ -162,15 +166,23 @@ test("ACP note gating probes bash activity, not just config (factory level)", as
 		resetSyspromptAgentForTests();
 		const on = mkHarness(true);
 		const off = mkHarness(false);
+		const stale = mkHarness(() => {
+			throw new Error("stale pi handle after /reload");
+		});
 		try {
 			await runTurn(on, "hello", SYS);
 			await runTurn(off, "hello", SYS);
+			// A throwing probe is the stale-handle case (codemodeNote guards the
+			// same throw); the note must fall back to riding, not kill the turn.
+			await runTurn(stale, "hello", SYS);
 			assert.ok(String(on.seen.opts?.prompt).includes(ACP_TOOL_NOTE), "bash active: note rides the inline ACP prompt");
 			assert.equal(String(off.seen.opts?.prompt).includes(ACP_TOOL_NOTE), false, "bash inactive: the note must not advertise tools pi does not have");
+			assert.ok(String(stale.seen.opts?.prompt).includes(ACP_TOOL_NOTE), "throwing probe: note rides via the true fallback and the turn completes");
 			assert.ok(String(on.seen.opts?.prompt).includes(TOOL_PRIORITY_NOTE));
 		} finally {
 			fs.rmSync(on.dir, { recursive: true, force: true });
 			fs.rmSync(off.dir, { recursive: true, force: true });
+			fs.rmSync(stale.dir, { recursive: true, force: true });
 		}
 	});
 });

@@ -1997,7 +1997,13 @@ async function runTurnDriver(
 	// would point at tools agy cannot call and forbid its only working ones.
 	// Same staleness window as codemodeNote: a /agy bridge flip re-reads on
 	// the next conversation, the held one keeps its note until then.
-	const acpToolsDirect = deps.engine === "acp" && config.bridgeTools === "all" && (deps.hasActiveTool?.("bash") ?? true);
+	let acpBashActive = true;
+	try {
+		acpBashActive = deps.hasActiveTool?.("bash") ?? true;
+	} catch {
+		acpBashActive = true;
+	}
+	const acpToolsDirect = deps.engine === "acp" && config.bridgeTools === "all" && acpBashActive;
 	// The sync orchestrator for THIS pass when the sync gate dispatched; the
 	// settle (and the park persist) sit outside the fresh-pass block, so the
 	// binding is function-level (the round-1 settle scope trap).
