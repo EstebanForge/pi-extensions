@@ -48,28 +48,33 @@ async function escalatedRt(callId = "c1"): Promise<ToolRoundTrips> {
 	return rt;
 }
 
-test("the poll window stays under agy's request deadline and the delegation precedent", () => {
+test("the poll window is 60s: under the 120s delegation hold and agy's ~180s deadline", () => {
 	assert.equal(POLL_WAIT_MS, 60_000);
 });
 
 test("waitForSettle resolves as soon as the call settles, well under the window", async () => {
 	const rt = await escalatedRt();
+	const ctrl = new AbortController();
 	vi.useFakeTimers();
-	const p = rt.waitForSettle("c1", POLL_WAIT_MS);
+	const p = rt.waitForSettle("c1", POLL_WAIT_MS, ctrl.signal);
 	assert.equal(vi.getTimerCount(), 1);
 	assert.equal(rt.resolve("c1", "done text", false), true);
 	await vi.advanceTimersByTimeAsync(1);
 	await p;
 	assert.equal(vi.getTimerCount(), 0, "the window timer is cleared on settle");
+	assert.equal(getEventListeners(ctrl.signal, "abort").length, 0, "the abort listener is removed on settle");
 });
 
 test("waitForSettle resolves at the window with the call still running", async () => {
 	const rt = await escalatedRt();
+	const ctrl = new AbortController();
 	vi.useFakeTimers();
-	const p = rt.waitForSettle("c1", POLL_WAIT_MS);
+	const p = rt.waitForSettle("c1", POLL_WAIT_MS, ctrl.signal);
 	await vi.advanceTimersByTimeAsync(POLL_WAIT_MS + 1);
 	await p;
 	assert.equal(rt.poll("c1")?.state, "running", "the timeout must not settle the entry");
+	assert.equal(vi.getTimerCount(), 0);
+	assert.equal(getEventListeners(ctrl.signal, "abort").length, 0, "the abort listener is removed on timeout");
 });
 
 test("waitForSettle resolves on abort and cleans up the listener", async () => {
@@ -147,5 +152,59 @@ test("answerPoll answers an unknown callId immediately with the error text", asy
 	vi.useFakeTimers();
 	const r = await answerPoll(rt, "nope", new AbortController().signal);
 	assert.equal(r.isError, true);
+	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("waitForSettle wakes when the original signal settles the call failed", async () => {
+	const rt = new ToolRoundTrips(new RecordingDriver() as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
+	const ctrl = new AbortController();
+	const settled = rt
+		.onToolCall("c1", "exec_command", {}, ctrl.signal)
+		.then((r) => ("escalated" in r ? "escalated" : "resolved"), () => "rejected");
+	await new Promise((r) => setTimeout(r, ESC + 20));
+	assert.equal(await settled, "escalated");
+	vi.useFakeTimers();
+	const waiter = rt.waitForSettle("c1", POLL_WAIT_MS);
+	ctrl.abort();
+	await vi.advanceTimersByTimeAsync(1);
+	await waiter;
+	const view = rt.poll("c1");
+	assert.equal(view?.state, "failed");
+	const r = await answerPoll(rt, "c1", new AbortController().signal);
+	assert.equal(r.isError, true);
+	assert.ok((r.content[0] as { text: string }).text.includes("failed"));
+	assert.ok(!view.delivered, "the failed view was captured before answerPoll marked it");
+	assert.equal(rt.poll("c1")?.delivered, true, "a settled failure must reach the poller");
+});
+
+test("failAll does not wake a held waiter (escalated entries are spared)", async () => {
+	const rt = await escalatedRt();
+	vi.useFakeTimers();
+	const p = rt.waitForSettle("c1", POLL_WAIT_MS);
+	assert.equal(vi.getTimerCount(), 1);
+	rt.failAll("turn end");
+	await vi.advanceTimersByTimeAsync(1);
+	let woke = false;
+	void p.then(() => {
+		woke = true;
+	});
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(woke, false, "failAll spares escalated entries, so the waiter stays held");
+	assert.equal(rt.poll("c1")?.state, "running");
+	assert.equal(vi.getTimerCount(), 1, "the window timer is still armed");
+});
+
+test("an abort during the hold returns still-running and never marks delivered", async () => {
+	const rt = await escalatedRt();
+	const ctrl = new AbortController();
+	vi.useFakeTimers();
+	const p = answerPoll(rt, "c1", ctrl.signal);
+	await vi.advanceTimersByTimeAsync(1);
+	ctrl.abort();
+	const r = await p;
+	assert.equal(r.isError, false);
+	assert.match((r.content[0] as { text: string }).text, /STILL RUNNING/);
+	assert.ok(!rt.poll("c1")?.delivered);
+	assert.equal(getEventListeners(ctrl.signal, "abort").length, 0);
 	assert.equal(vi.getTimerCount(), 0);
 });
