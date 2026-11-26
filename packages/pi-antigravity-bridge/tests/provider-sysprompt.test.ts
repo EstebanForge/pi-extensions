@@ -126,6 +126,55 @@ test("codemode and ACP notes compose after the shared note", () => {
 	assert.ok(iShared >= 0 && iAcp > iShared && iCode > iAcp);
 });
 
+test("ACP note gating probes bash activity, not just config (factory level)", async () => {
+	const mkHarness = (bashActive: boolean): Harness => {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver: StreamDriver = {
+			run: async (opts: DriverTurnRequest) => {
+				seen.opts = opts;
+				return {
+					id: "fake-turn",
+					outcome: Promise.resolve({
+						status: "OK",
+						response: "ok",
+						finished: true,
+						aborted: false,
+						conversationId: "conv-acp-note",
+					}),
+					next: async () => null,
+					pushExternal: () => {},
+				};
+			},
+		} as unknown as StreamDriver;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-note-"));
+		const streamSimple = createStreamSimple({
+			entries: [{ id: "gemini-flash", full: "gemini-3.6-flash" }],
+			store: new SessionStore(path.join(dir, "sessions.json")),
+			driver,
+			acpDriver: driver,
+			roundTrips: new ToolRoundTrips(driver),
+			engine: "acp",
+			hasActiveTool: (name: string) => bashActive || name !== "bash",
+		});
+		return { seen, streamSimple, dir };
+	};
+	await withEnv({ AGY_SYSTEM_PROMPT: "on", AGY_AGENT: undefined }, async () => {
+		resetSyspromptAgentForTests();
+		const on = mkHarness(true);
+		const off = mkHarness(false);
+		try {
+			await runTurn(on, "hello", SYS);
+			await runTurn(off, "hello", SYS);
+			assert.ok(String(on.seen.opts?.prompt).includes(ACP_TOOL_NOTE), "bash active: note rides the inline ACP prompt");
+			assert.equal(String(off.seen.opts?.prompt).includes(ACP_TOOL_NOTE), false, "bash inactive: the note must not advertise tools pi does not have");
+			assert.ok(String(on.seen.opts?.prompt).includes(TOOL_PRIORITY_NOTE));
+		} finally {
+			fs.rmSync(on.dir, { recursive: true, force: true });
+			fs.rmSync(off.dir, { recursive: true, force: true });
+		}
+	});
+});
+
 test("order: system prompt block, then digest, then user prompt", () => {
 	const out = buildFullPrompt(SYS, "[pi compaction summary]\nwe chose sqlite", "do it");
 	const iSys = out.indexOf(SYS);

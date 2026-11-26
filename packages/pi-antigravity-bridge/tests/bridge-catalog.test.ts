@@ -38,10 +38,17 @@ describe("live Pi bridge catalog", () => {
 		const active = all.map((tool) => tool.name);
 		expect(bridgedPiTools(all, active, "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
 	});
-	it("ACP 'all' declares pi builtins directly; stream-json keeps them off (native mapping covers them)", () => {
+	it("ACP 'all' declares pi's default builtins directly; stream-json keeps them native", () => {
 		const active = all.map((tool) => tool.name);
 		expect(bridgedPiTools(all, active, "all", new Set(), "acp").map((t) => t.name)).toEqual(["web_search", "mcp:files", "read", "bash"]);
 		expect(bridgedPiTools(all, active, "all", new Set(), "stream-json").map((t) => t.name)).toEqual(["web_search", "mcp:files"]);
+	});
+	it("ACP admission is limited to the default builtins; codemode stays codemode-mode-only", () => {
+		const active = all.map((tool) => tool.name);
+		const withCm = [...all, { name: "codemode", sourceInfo: { source: "builtin" } }];
+		const allActive = [...active, "codemode"];
+		expect(bridgedPiTools(withCm, allActive, "all", new Set(), "acp").map((t) => t.name)).toEqual(["web_search", "mcp:files", "read", "bash"]);
+		expect(bridgedPiTools(withCm, allActive, "codemode", new Set(), "acp").map((t) => t.name)).toEqual(["web_search", "mcp:files", "codemode"]);
 	});
 	it("ACP non-'all' modes keep the current catalog shape", () => {
 		const active = all.map((tool) => tool.name);

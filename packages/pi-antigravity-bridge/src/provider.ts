@@ -1051,7 +1051,7 @@ export function formatPollAnswer(callId: string, view: PollView | undefined): Br
 					text: handoff
 						? `STILL RUNNING: "${view.name}" (callId ${callId}) is taking long. Stop polling: end your turn now, and the bridge will deliver the result as your next message in this conversation. Do not call ${POLL_TOOL_NAME} again for this callId.`
 						: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Call ${POLL_TOOL_NAME} again now: it blocks up to 110 seconds and returns the moment the call settles.`,
-					},
+				},
 			],
 			isError: false,
 		};
@@ -1990,10 +1990,14 @@ async function runTurnDriver(
 			codemodeNote = true;
 		}
 	}
-	// The ACP note ships only when pi's builtins are actually declared in the
-	// engine's catalog (mirrors bridgedPiTools' ACP admission); otherwise the
-	// steer would point at tools agy cannot call.
-	const acpToolsDirect = deps.engine === "acp" && config.bridgeTools === "all";
+	// The ACP note ships only when the engine's catalog actually declares
+	// pi's builtins: bridgeTools "all" on ACP AND bash in pi's active set
+	// (pi can start with a narrowed toolset; a hidden bash is a deliberate
+	// session-local override and keeps the note). Without the probe the note
+	// would point at tools agy cannot call and forbid its only working ones.
+	// Same staleness window as codemodeNote: a /agy bridge flip re-reads on
+	// the next conversation, the held one keeps its note until then.
+	const acpToolsDirect = deps.engine === "acp" && config.bridgeTools === "all" && (deps.hasActiveTool?.("bash") ?? true);
 	// The sync orchestrator for THIS pass when the sync gate dispatched; the
 	// settle (and the park persist) sit outside the fresh-pass block, so the
 	// binding is function-level (the round-1 settle scope trap).

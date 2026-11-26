@@ -61,12 +61,15 @@ export function bridgedPiTools(
 			? tool.name === "codemode" || tool.sourceInfo?.source !== "builtin"
 			: mode === "mcp"
 				? /pi-mcp-adapter/.test(tool.sourceInfo?.source ?? "")
-				// ACP must declare pi's builtins directly: its native tool calls
-				// execute agy-side (provider Gate C), so unbuilt tools would be
+				// ACP must declare pi's default builtins directly: its native tool
+				// calls execute agy-side (provider Gate C), so pi's tools would be
 				// unreachable pi-side and long commands would bypass the poll
-				// machinery entirely. stream-json maps every native call onto pi
-				// tools, so the MCP duplicates stay hidden.
-				: engine === "acp" || tool.sourceInfo?.source !== "builtin"),
+				// machinery entirely. Limited to the seven defaults: a builtin like
+				// codemode stays codemode-mode-only on both engines. stream-json
+				// keeps them out: its native commands also run agy-side (pi only
+				// re-executes read-only calls for card rendering), so the catalog
+				// there stays exactly as it shipped.
+				: tool.sourceInfo?.source !== "builtin" || (engine === "acp" && PI_DEFAULT_TOOLS.has(tool.name))),
 	);
 }
 
