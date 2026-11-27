@@ -74,7 +74,7 @@ Tags always mark a released version: `<name>-v<version>` (pi-slack-me-v1.2.2). A
 Rules:
 
 - Never hand-edit a package version. Use `rel`, or a fleet stamp.
-- npm refuses publishing a version that already exists on the registry; `pub` checks for that before publishing and stops cleanly. As of the migration every package sits exactly at its legacy registry version, so each package's first monorepo publish must come from a `rel` bump or a fleet stamp. Exception: pi-deepwiki was never published, so 1.0.1 publishes as-is.
+- npm refuses publishing a version that already exists on the registry; `pub` checks for that before publishing and stops cleanly. As of the migration every package sits exactly at its legacy registry version, so each package's first monorepo publish must come from a `rel` bump or a fleet stamp.
 - The registry can hold different versions per package. That is by design.
 - Publish is the only irreversible step. Everything before it is a local commit you can reset.
 - Check what the registry has before publishing: `npm view @estebanforge/<name> version`.

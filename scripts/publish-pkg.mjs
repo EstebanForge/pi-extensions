@@ -72,8 +72,8 @@ if (sh("git rev-list --count origin/main..HEAD") !== "0") run("git push --follow
 
 // Registry guard: npm rejects identical versions, and an exact match here
 // means there is nothing left to publish. A failed lookup is fine: it is
-// the first-publish case (pi-deepwiki) or an offline hiccup the publish
-// step itself will catch.
+// the first-publish case or an offline hiccup the publish step itself
+// will catch.
 const pkgName = JSON.parse(readFileSync(pkgJsonPath, "utf8")).name;
 let registry = null;
 try {

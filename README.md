@@ -60,14 +60,6 @@ CodeGraph code intelligence tools.
 pi install npm:@estebanforge/pi-codegraph-enhanced
 ```
 
-### [pi-deepwiki](packages/pi-deepwiki)
-
-DeepWiki repository research.
-
-```bash
-pi install npm:@estebanforge/pi-deepwiki
-```
-
 ### [pi-egm](packages/pi-egm)
 
 Elephant-Goldfish Model spec-driven development: draft the spec in this session, then fresh zero-context child sessions stress-test it from conflicting perspectives. `/egm-brainstorm`, `/egm-draft`, `/egm-review`, plus resolve, bootstrap, and drift-report.
