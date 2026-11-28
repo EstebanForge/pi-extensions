@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "vitest";
 import {
+	carrierSafeBody,
 	resetSyspromptAgentForTests,
 	stageSyspromptAgent,
 	syspromptAgentMd,
@@ -121,4 +122,36 @@ test("staging failure returns null instead of throwing", () => {
 	const root = tmpAgentsRoot();
 	assert.ok(stageSyspromptAgent("BODY", { agentsRoot: root })?.startsWith("pi-bridge-sys-"));
 	fs.rmSync(bad, { recursive: true, force: true });
+});
+
+test("carrier body rewords pi's opening sentence, which trips a backend 429", () => {
+	const body =
+		"PREAMBLE\n\nYou are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.\n\nREST";
+	const md = syspromptAgentMd("pi-bridge-sys-x", body);
+	assert.equal(md.includes("running inside pi, a coding agent harness"), false);
+	assert.ok(
+		md.includes(
+			"You are a coding assistant running inside the pi coding agent harness. Help users inspect files, run commands, and modify code.",
+		),
+	);
+	assert.ok(md.includes("PREAMBLE\n"));
+	assert.ok(md.endsWith("REST\n"));
+});
+
+test("carrier body drops pi's docs-index line, which trips the same 429", () => {
+	const body = [
+		"- Examples: /x/examples (extensions, custom tools, SDK)",
+		"- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md)",
+		"- Before implementing harness changes, read the relevant docs.",
+	].join("\n");
+	assert.equal(
+		carrierSafeBody(body),
+		"- Examples: /x/examples (extensions, custom tools, SDK)\n- Before implementing harness changes, read the relevant docs.",
+	);
+});
+
+test("carrier body leaves a custom system prompt untouched", () => {
+	const body = "You are a reviewer running inside pi.\n\n- When asked about: billing, answer briefly.\n";
+	assert.equal(carrierSafeBody(body), body);
+	assert.ok(syspromptAgentMd("pi-bridge-sys-x", body).endsWith(`${body}\n`));
 });

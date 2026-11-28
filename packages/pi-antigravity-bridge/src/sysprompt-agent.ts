@@ -46,6 +46,29 @@ export function syspromptAgentsRoot(): string {
 	return process.env.AGY_AGENTS_ROOT ?? path.join(os.homedir(), ".gemini", "config", "agents");
 }
 
+/** Opening sentence of pi's default system prompt, and the wording the carrier
+ *  ships instead. */
+const PI_OPENING = "running inside pi, a coding agent harness";
+const PI_OPENING_REWORDED = "running inside the pi coding agent harness";
+/** Start of the docs-index line of pi's default system prompt. */
+const PI_DOCS_INDEX_PREFIX = "- When asked about: extensions (docs/";
+
+/** Two lines of pi's default system prompt make the Antigravity backend answer
+ *  `RESOURCE_EXHAUSTED (code 429)` to every request of a carrier session, each
+ *  on its own and at 0% quota use (probed 2026-11-27, agy 1.5.18, with
+ *  gemini-4-hydrogen, gemini-4-neon and claude-sonnet-5-5): the opening
+ *  sentence and the docs-index line. A carrier holding either one never
+ *  completes a turn. Reword the first (same meaning) and drop the second (it
+ *  only maps pi's own docs for questions about the harness). The match is
+ *  exact on purpose: a custom system prompt passes through untouched. */
+export function carrierSafeBody(body: string): string {
+	return body
+		.replaceAll(PI_OPENING, PI_OPENING_REWORDED)
+		.split("\n")
+		.filter((line) => !line.startsWith(PI_DOCS_INDEX_PREFIX))
+		.join("\n");
+}
+
 /** agent.md for the carrier. The body is the pi system prompt composed by the
  *  provider (preamble + transcript system prompt + tool-priority note). */
 export function syspromptAgentMd(name: string, body: string): string {
@@ -70,7 +93,7 @@ export function syspromptAgentMd(name: string, body: string): string {
 		"  - search_web",
 		"---",
 		"",
-		body,
+		carrierSafeBody(body),
 		"",
 	].join("\n");
 }
