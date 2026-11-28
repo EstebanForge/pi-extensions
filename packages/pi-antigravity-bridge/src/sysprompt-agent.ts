@@ -53,6 +53,14 @@ const PI_OPENING_REWORDED = "running inside the pi coding agent harness";
 /** Start of the docs-index line of pi's default system prompt. */
 export const PI_DOCS_INDEX_PREFIX = "- When asked about: extensions (docs/";
 
+/** Scrubbed carrier text plus which scrubs applied (the `sysprompt-scrub`
+ *  staging event's payload). */
+export interface CarrierScrub {
+	text: string;
+	opening: boolean;
+	docsLine: boolean;
+}
+
 /** Two lines of pi's default system prompt make the Antigravity backend answer
  *  `RESOURCE_EXHAUSTED (code 429)` to every request of a carrier session, each
  *  on its own and at 0% quota use (probed 2026-11-27, agy 1.5.18, with
@@ -65,23 +73,21 @@ export const PI_DOCS_INDEX_PREFIX = "- When asked about: extensions (docs/";
  *  (the upstream match is not exact text), so a future reword of pi's prompt
  *  can silently re-break staging; the provider's `sysprompt-scrub` staging
  *  event exists to tell "scrub ran, still 429" from "scrub no longer
- *  matches". */
-export interface CarrierScrub {
-	text: string;
-	opening: boolean;
-	docsLine: boolean;
-}
-
+ *  matches" (needs AGY_DEBUG=1: the daily log is error-only by default). */
 export function carrierScrubInfo(body: string): CarrierScrub {
 	const lines = body.split("\n");
 	const kept = lines.filter((line) => !line.startsWith(PI_DOCS_INDEX_PREFIX));
+	const keptText = kept.join("\n");
 	return {
-		text: kept.join("\n").replaceAll(PI_OPENING, PI_OPENING_REWORDED),
-		opening: body.includes(PI_OPENING),
+		text: keptText.replaceAll(PI_OPENING, PI_OPENING_REWORDED),
+		// On the kept text: the phrase sitting only inside a dropped docs line
+		// must not report a reword that never happened.
+		opening: keptText.includes(PI_OPENING),
 		docsLine: kept.length !== lines.length,
 	};
 }
 
+/** carrierScrubInfo's text, for callers that do not log the flags. */
 export function carrierSafeBody(body: string): string {
 	return carrierScrubInfo(body).text;
 }

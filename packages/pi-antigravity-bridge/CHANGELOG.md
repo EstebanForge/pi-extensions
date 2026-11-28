@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- stream-json provider sessions no longer fail every turn with `RESOURCE_EXHAUSTED (code 429)` at 0% quota use when pi runs with its default system prompt. Two lines of that prompt make the Antigravity backend reject any request of a session whose carrier agent holds them: the opening sentence ("running inside pi, a coding agent harness") and the docs-index line ("- When asked about: extensions (docs/..."). The carrier now rewords the first and omits the second; a custom system prompt passes through unchanged. The backend rule behind the two lines is unknown (the upstream match is not exact text), so this is a point fix: an upstream reword of pi's default prompt can bring the 429 back, and the `sysprompt-scrub` staging log event then shows whether the scrub still matched.
+- stream-json provider sessions no longer fail every turn with `RESOURCE_EXHAUSTED (code 429)` at 0% quota use when pi runs with its default system prompt. Two lines of that prompt make the Antigravity backend reject any request of a session whose carrier agent holds them: the opening sentence ("running inside pi, a coding agent harness") and the docs-index line ("- When asked about: extensions (docs/..."). The carrier now rewords the first and omits the second; a custom system prompt passes through unchanged. The backend rule behind the two lines is unknown (the upstream match is not exact text), so this is a point fix: an upstream reword of pi's default prompt can bring the 429 back, and the `sysprompt-scrub` staging log event then shows whether the scrub still matched (needs `AGY_DEBUG=1`; the daily log is error-only by default).
 
 ## [1.16.0] - 2026-11-26
 

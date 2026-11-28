@@ -185,6 +185,11 @@ test("carrierScrubInfo reports which scrubs a body needed (issue #30 telemetry)"
 	assert.equal(clean.opening, false);
 	assert.equal(clean.docsLine, false);
 	assert.equal(clean.text, "You are a billing assistant.");
+	// The phrase sitting only inside a dropped docs line reports no reword.
+	const buried = carrierScrubInfo(`${PI_DOCS_INDEX_PREFIX}docs, e.g. ${PI_OPENING}`);
+	assert.equal(buried.opening, false);
+	assert.equal(buried.docsLine, true);
+	assert.equal(buried.text, "");
 });
 
 test("staged agent.md holds the safe body while the dir name keys on the original (issue #30)", () => {
