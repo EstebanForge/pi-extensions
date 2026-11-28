@@ -48,10 +48,10 @@ export function syspromptAgentsRoot(): string {
 
 /** Opening sentence of pi's default system prompt, and the wording the carrier
  *  ships instead. */
-const PI_OPENING = "running inside pi, a coding agent harness";
+export const PI_OPENING = "running inside pi, a coding agent harness";
 const PI_OPENING_REWORDED = "running inside the pi coding agent harness";
 /** Start of the docs-index line of pi's default system prompt. */
-const PI_DOCS_INDEX_PREFIX = "- When asked about: extensions (docs/";
+export const PI_DOCS_INDEX_PREFIX = "- When asked about: extensions (docs/";
 
 /** Two lines of pi's default system prompt make the Antigravity backend answer
  *  `RESOURCE_EXHAUSTED (code 429)` to every request of a carrier session, each
@@ -60,13 +60,30 @@ const PI_DOCS_INDEX_PREFIX = "- When asked about: extensions (docs/";
  *  sentence and the docs-index line. A carrier holding either one never
  *  completes a turn. Reword the first (same meaning) and drop the second (it
  *  only maps pi's own docs for questions about the harness). The match is
- *  exact on purpose: a custom system prompt passes through untouched. */
+ *  exact on purpose: a custom system prompt passes through untouched.
+ *  Point fix (issue #30): the backend rule behind the two lines is unknown
+ *  (the upstream match is not exact text), so a future reword of pi's prompt
+ *  can silently re-break staging; the provider's `sysprompt-scrub` staging
+ *  event exists to tell "scrub ran, still 429" from "scrub no longer
+ *  matches". */
+export interface CarrierScrub {
+	text: string;
+	opening: boolean;
+	docsLine: boolean;
+}
+
+export function carrierScrubInfo(body: string): CarrierScrub {
+	const lines = body.split("\n");
+	const kept = lines.filter((line) => !line.startsWith(PI_DOCS_INDEX_PREFIX));
+	return {
+		text: kept.join("\n").replaceAll(PI_OPENING, PI_OPENING_REWORDED),
+		opening: body.includes(PI_OPENING),
+		docsLine: kept.length !== lines.length,
+	};
+}
+
 export function carrierSafeBody(body: string): string {
-	return body
-		.replaceAll(PI_OPENING, PI_OPENING_REWORDED)
-		.split("\n")
-		.filter((line) => !line.startsWith(PI_DOCS_INDEX_PREFIX))
-		.join("\n");
+	return carrierScrubInfo(body).text;
 }
 
 /** agent.md for the carrier. The body is the pi system prompt composed by the

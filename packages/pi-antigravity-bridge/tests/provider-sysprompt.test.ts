@@ -234,7 +234,9 @@ interface Harness {
 	dir: string;
 }
 
-function gateHarness(): Harness {
+type HarnessLogs = Array<{ event: string; data?: unknown; level?: string }>;
+
+function gateHarness(logs: HarnessLogs = []): Harness {
 	const seen: { opts?: DriverTurnRequest } = {};
 	const driver: StreamDriver = {
 		run: async (opts: DriverTurnRequest) => {
@@ -260,6 +262,7 @@ function gateHarness(): Harness {
 		store: new SessionStore(path.join(dir, "sessions.json")),
 		driver,
 		roundTrips: new ToolRoundTrips(driver),
+		log: (event, data, level) => logs.push({ event, data, level }),
 	});
 	return { seen, streamSimple, dir };
 }
@@ -303,6 +306,37 @@ test("gate: fresh conversation stages the system prompt as an agent, not prompt 
 			const md = fs.readFileSync(path.join(root, agent, "agent.md"), "utf8");
 			assert.ok(md.includes(SYS));
 			assert.ok(md.includes(TOOL_PRIORITY_NOTE));
+		} finally {
+			fs.rmSync(h.dir, { recursive: true, force: true });
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+test("staged carrier logs the sysprompt-scrub telemetry (issue #30)", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-gate-agents-"));
+	await withEnv({ AGY_SYSTEM_PROMPT: "on", AGY_AGENT: undefined, AGY_AGENTS_ROOT: root }, async () => {
+		resetSyspromptAgentForTests();
+		const logs: HarnessLogs = [];
+		const h = gateHarness(logs);
+		try {
+			const sys = [
+				"You are a coding assistant running inside pi, a coding agent harness. Help users inspect files.",
+				"",
+				"- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md)",
+			].join("\n");
+			await runTurn(h, "hello", sys);
+			const agent = h.seen.opts?.agent ?? "";
+			assert.ok(agent.startsWith("pi-bridge-sys-"), "carrier agent passed via --agent");
+			// Separates "scrub ran, still 429" from "pi reworded upstream and
+			// the scrub no longer matches" when the backend rejects a carrier.
+			const ev = logs.find((l) => l.event === "sysprompt-scrub");
+			assert.ok(ev, "sysprompt-scrub telemetry event expected");
+			assert.deepEqual(ev.data, { opening: true, docsLine: true });
+			const md = fs.readFileSync(path.join(root, agent, "agent.md"), "utf8");
+			assert.equal(md.includes("running inside pi, a coding agent harness"), false);
+			assert.equal(md.includes("When asked about: extensions"), false);
+			assert.ok(md.includes("running inside the pi coding agent harness"));
 		} finally {
 			fs.rmSync(h.dir, { recursive: true, force: true });
 			fs.rmSync(root, { recursive: true, force: true });

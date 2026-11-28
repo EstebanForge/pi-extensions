@@ -48,7 +48,7 @@ import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-ga
 import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-server.js";
 import path from "node:path";
 import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
-import { stageSyspromptAgent } from "./sysprompt-agent.js";
+import { carrierScrubInfo, stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
@@ -2340,14 +2340,17 @@ async function runTurnDriver(
 		let agent = config.agent;
 		if (deps.engine !== "acp") {
 			if (rawSysPrompt && !config.agent) {
-				const stagedName = stageSyspromptAgent(
-					[
-						SYSTEM_PROMPT_PREAMBLE,
-						rawSysPrompt,
-						toolNotes({ codemodeOnly: codemodeNote, acpToolsDirect }),
-					].join("\n\n"),
-				);
+				const stagedBody = [
+					SYSTEM_PROMPT_PREAMBLE,
+					rawSysPrompt,
+					toolNotes({ codemodeOnly: codemodeNote, acpToolsDirect }),
+				].join("\n\n");
+				const stagedName = stageSyspromptAgent(stagedBody);
 				if (stagedName) {
+					// Issue #30 telemetry: separates "scrub ran, still 429" from
+					// "pi reworded upstream and the scrub no longer matches".
+					const scrub = carrierScrubInfo(stagedBody);
+					deps.log?.("sysprompt-scrub", { opening: scrub.opening, docsLine: scrub.docsLine }, "info");
 					agent = stagedName;
 					sysPrompt = undefined;
 					stagedAgentName = stagedName;
